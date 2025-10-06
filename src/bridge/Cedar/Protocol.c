@@ -103,6 +103,8 @@
 // SoftEther protocol related routines
 
 #include "CedarPch.h"
+// Performance tuning integration
+#include "../performance_tuning.h"
 
 static UCHAR ssl_packet_start[3] = {0x17, 0x03, 0x00};
 
@@ -7984,7 +7986,12 @@ SOCK *ClientConnectGetSocket(CONNECTION *c, bool additional_connect, bool no_tls
 	}
 	else
 	{
-		// Success to connect
+		// Success to connect - Apply performance tuning to socket
+		if (s->socket != INVALID_SOCKET)
+		{
+			ApplySocketPerformanceTuning(s->socket);
+		}
+		
 		// Keep a note of the IP address
 		if (additional_connect == false || IsZeroIP(&s->RemoteIP))
 		{

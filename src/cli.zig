@@ -78,7 +78,8 @@ fn printUsage() void {
         \\    --password-hash <HASH>  Pre-hashed password (base64, use instead of -P)
         \\    -a, --account <NAME>    Account name (default: username)
         \\    --no-encrypt            Disable encryption (not recommended)
-        \\    --no-compress           Disable compression
+        \\    --compress              Enable compression (disabled by default for performance)
+        \\    --max-connection <N>    Number of parallel TCP connections 1-32 (default: 8)
         \\    -d, --daemon            Run as daemon (background)
         \\    --profile               Enable performance profiling
         \\    --use-zig-adapter       Use Zig packet adapter (experimental, better performance)
@@ -166,8 +167,8 @@ const CliArgs = struct {
     password_hash: ?[]const u8 = null,
     account: ?[]const u8 = null,
     use_encrypt: bool = true,
-    use_compress: bool = true,
-    max_connection: u32 = 0, // 0 = follow server policy, 1-32 = force specific count
+    use_compress: bool = false, // Disabled: 100% compression rate = pure overhead
+    max_connection: u32 = 1, // Let server decide (server policy controls this)
     daemon: bool = false,
     profile: bool = false, // Enable performance profiling
     use_zig_adapter: bool = false, // Use Zig packet adapter instead of C adapter
@@ -258,8 +259,8 @@ fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
             }
         } else if (std.mem.eql(u8, arg, "--no-encrypt")) {
             result.use_encrypt = false;
-        } else if (std.mem.eql(u8, arg, "--no-compress")) {
-            result.use_compress = false;
+        } else if (std.mem.eql(u8, arg, "--compress")) {
+            result.use_compress = true;
         } else if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--daemon")) {
             result.daemon = true;
         } else if (std.mem.eql(u8, arg, "--profile")) {
@@ -475,11 +476,11 @@ pub fn main() !void {
     std.debug.print("Virtual Hub:   {s}\n", .{hub});
     std.debug.print("User:          {s}\n", .{username});
     std.debug.print("Encryption:    {s}\n", .{if (args.use_encrypt) "Enabled" else "Disabled"});
-    std.debug.print("Compression:   {s}\n", .{if (args.use_compress) "Enabled" else "Disabled"});
+    std.debug.print("Compression:   {s}\n", .{if (args.use_compress) "Enabled (may reduce performance)" else "Disabled (optimal)"});
     if (args.max_connection == 0) {
         std.debug.print("Max Connections: Server Policy\n", .{});
     } else {
-        std.debug.print("Max Connections: {d}\n", .{args.max_connection});
+        std.debug.print("Max Connections: {d} (parallel TCP streams)\n", .{args.max_connection});
     }
     std.debug.print("IP Version:    {s}\n", .{args.ip_version});
 

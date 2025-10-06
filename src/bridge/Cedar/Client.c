@@ -4,6 +4,9 @@
 // SoftEther VPN Server, Client and Bridge are free software under the Apache License, Version 2.0.
 // 
 // Copyright (c) Daiyuu Nobori.
+
+// Performance tuning integration
+#include "../performance_tuning.h"
 // Copyright (c) SoftEther VPN Project, University of Tsukuba, Japan.
 // Copyright (c) SoftEther Corporation.
 // Copyright (c) all contributors on SoftEther VPN project in GitHub.
@@ -10696,6 +10699,11 @@ CLIENT *CiNewClient()
 	printf("[CiNewClient] Calling NewCedar()...\n"); fflush(stdout);
 	c->Cedar = NewCedar(NULL, NULL);
 	printf("[CiNewClient] NewCedar() returned\n"); fflush(stdout);
+
+	// Initialize performance tuning module
+	printf("[CiNewClient] Initializing performance tuning...\n"); fflush(stdout);
+	InitPerformanceTuning();
+	printf("[CiNewClient] Performance tuning initialized\n"); fflush(stdout);
 
 	c->Cedar->Client = c;
 
