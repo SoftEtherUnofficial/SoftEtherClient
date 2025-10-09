@@ -45,9 +45,8 @@ main
 # Temporary build files
 *.dSYM/
 
-# Rust/Cargo build artifacts
-rust_tls/target/
-rust_tls/Cargo.lock
+# Obsolete rust_tls directory (superseded by Mayaqua Rust - see ZIGSE-38)
+rust_tls/
 
 # Mayaqua (flattened structure)
 mayaqua/target/
