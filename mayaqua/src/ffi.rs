@@ -2,7 +2,7 @@
 //! 
 //! Drop-in replacement for Mayaqua C API with Rust implementation.
 
-use mayaqua_core::{Buffer, UINT};
+use crate::Buffer;
 use std::os::raw::{c_void, c_uint};
 use std::ptr;
 use std::slice;
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn mayaqua_malloc(size: c_uint) -> *mut c_void {
     if size == 0 {
         return ptr::null_mut();
     }
-    mayaqua_core::malloc(size as usize) as *mut c_void
+    crate::malloc(size as usize) as *mut c_void
 }
 
 /// Allocate zero-initialized memory (equivalent to ZeroMalloc)
@@ -39,7 +39,7 @@ pub unsafe extern "C" fn mayaqua_zero_malloc(size: c_uint) -> *mut c_void {
     if size == 0 {
         return ptr::null_mut();
     }
-    mayaqua_core::zero_malloc(size as usize) as *mut c_void
+    crate::zero_malloc(size as usize) as *mut c_void
 }
 
 /// Free memory (equivalent to Free)
@@ -50,14 +50,14 @@ pub unsafe extern "C" fn mayaqua_zero_malloc(size: c_uint) -> *mut c_void {
 #[no_mangle]
 pub unsafe extern "C" fn mayaqua_free(ptr: *mut c_void, size: c_uint) {
     if !ptr.is_null() && size > 0 {
-        mayaqua_core::free(ptr as *mut u8, size as usize);
+        crate::free(ptr as *mut u8, size as usize);
     }
 }
 
 /// Zero memory (equivalent to Zero/ZeroMem)
 #[no_mangle]
 pub unsafe extern "C" fn mayaqua_zero(addr: *mut c_void, size: c_uint) {
-    mayaqua_core::zero_mem(addr as *mut u8, size as usize);
+    crate::zero_mem(addr as *mut u8, size as usize);
 }
 
 /// Copy memory (equivalent to Copy)
@@ -67,7 +67,7 @@ pub unsafe extern "C" fn mayaqua_copy(
     src: *const c_void,
     size: c_uint,
 ) {
-    mayaqua_core::copy_mem(dst as *mut u8, src as *const u8, size as usize);
+    crate::copy_mem(dst as *mut u8, src as *const u8, size as usize);
 }
 
 // ============================================================================

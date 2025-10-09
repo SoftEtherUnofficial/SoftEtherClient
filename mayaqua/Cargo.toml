@@ -1,22 +1,35 @@
-[workspace]
-resolver = "2"
-members = [
-    "mayaqua-core",
-    "mayaqua-ffi",
-]
-
-[workspace.package]
+[package]
+name = "mayaqua"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["SoftEther VPN Project"]
+description = "Mayaqua - Memory, Buffer, and Utility Library for SoftEther VPN"
 
-[workspace.dependencies]
-# Shared dependencies
+[dependencies]
 libc = "0.2"
+tokio = { version = "1.0", features = ["time"], optional = true }
+sha1 = { version = "0.10", optional = true }
+
+[features]
+default = []
+async = ["tokio"]
+sha1-compat = ["sha1"]
+
+[dev-dependencies]
+# For sha0 compatibility tests
+sha1 = "0.10"
+base64 = "0.22"
+
+[lib]
+name = "mayaqua"
+crate-type = ["rlib", "staticlib", "cdylib"]
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
 strip = false  # Keep symbols for debugging initially
+
+[build-dependencies]
+cbindgen = "0.27"

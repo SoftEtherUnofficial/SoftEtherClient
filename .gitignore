@@ -3,6 +3,9 @@
 zig-cache/
 zig-out/
 
+# Temporary/junk files
+.junk/
+
 # iOS build artifacts
 build_ios/
 xcframework/
@@ -46,10 +49,21 @@ main
 rust_tls/target/
 rust_tls/Cargo.lock
 
-# Rust Mayaqua build artifacts
+# Mayaqua (flattened structure)
 mayaqua/target/
 mayaqua/Cargo.lock
 mayaqua/include/mayaqua_ffi.h
+mayaqua/.zig-cache/
+
+# Cedar build artifacts
+cedar/target/
+cedar/Cargo.lock
+
+# Old workspace directories (removed after flattening)
+mayaqua/mayaqua-core/
+mayaqua/mayaqua-ffi/
+rust_mayaqua/
+rust_cedar/
 
 # rustls integration test binaries
 test_rustls_integration
