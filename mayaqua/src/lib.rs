@@ -20,6 +20,9 @@ pub mod compress;  // Compression utilities (zlib/deflate)
 pub mod http;      // HTTP request/response handling
 pub mod logging;   // Logging abstraction
 
+// Extracted modules from softether-rust (Phase 3.1)
+pub mod crypto;    // Cryptographic functions (SHA-0, RC4, password hashing)
+
 // FFI exports for C compatibility
 pub mod ffi;
 
@@ -39,6 +42,11 @@ pub use time::{get_tick64, Tick64};
 pub use compress::{compress_deflate, decompress_deflate};
 pub use http::{HttpRequest, HttpResponse};
 // logging module doesn't need re-exports (internal use)
+
+// Re-export Phase 3.1 (Crypto)
+// Re-export commonly used crypto functions
+pub use crypto::{sha1, softether_password_hash, rc4_apply, rc4_apply_inplace};
+// Note: SHA1_SIZE and Sha1Sum already re-exported from sha0 module
 
 // Constants from Pack.h - Architecture-dependent sizes
 #[cfg(target_pointer_width = "64")]
