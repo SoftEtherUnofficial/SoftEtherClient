@@ -21,6 +21,8 @@ fn buildMayaquaLibrary(b: *std.Build) !void {
         "cargo",
         "build",
         "--release",
+        "--features",
+        "compress,sha1-compat",
         "--manifest-path",
         "mayaqua/Cargo.toml",
     });
@@ -522,4 +524,31 @@ pub fn build(b: *std.Build) void {
 
     const run_mayaqua_step = b.step("test-mayaqua", "Run Mayaqua Rust integration test");
     run_mayaqua_step.dependOn(&run_mayaqua_cmd.step);
+
+    // ========================================================================
+    // Tier 2A FFI Tests (compress, HTTP)
+    // ========================================================================
+    const test_tier2a = b.addTest(.{
+        .name = "test_tier2a_ffi",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test_tier2a_ffi.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    // Add Mayaqua library with Tier 2A features
+    test_tier2a.addObjectFile(b.path(b.fmt("{s}/libmayaqua.a", .{mayaqua_lib_path})));
+    test_tier2a.addIncludePath(b.path(mayaqua_header_path));
+    test_tier2a.linkLibC();
+
+    // Install test binary
+    const install_test_tier2a = b.addInstallArtifact(test_tier2a, .{});
+
+    // Run step for Tier 2A test
+    const run_tier2a_cmd = b.addRunArtifact(test_tier2a);
+    run_tier2a_cmd.step.dependOn(&install_test_tier2a.step);
+
+    const run_tier2a_step = b.step("test-tier2a", "Run Tier 2A FFI tests (compress, HTTP)");
+    run_tier2a_step.dependOn(&run_tier2a_cmd.step);
 }

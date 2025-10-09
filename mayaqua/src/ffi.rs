@@ -234,6 +234,315 @@ pub extern "C" fn mayaqua_version() -> *const i8 {
     b"Mayaqua-Rust 0.1.0\0".as_ptr() as *const i8
 }
 
+// ============================================================================
+// Compression Functions (Tier 2A)
+// ============================================================================
+
+#[cfg(feature = "compress")]
+/// Compress data using zlib/deflate
+/// 
+/// # Safety
+/// - `data` must be valid for `data_len` bytes
+/// - `out_len` will be set to the compressed size
+/// - Returns null on error
+/// - Caller must free result with mayaqua_free()
+#[no_mangle]
+pub unsafe extern "C" fn mayaqua_compress_deflate(
+    data: *const u8,
+    data_len: c_uint,
+    out_len: *mut c_uint,
+) -> *mut u8 {
+    if data.is_null() || data_len == 0 || out_len.is_null() {
+        return ptr::null_mut();
+    }
+
+    let input = slice::from_raw_parts(data, data_len as usize);
+    
+    match crate::compress::compress_deflate(input) {
+        Ok(compressed) => {
+            let len = compressed.len();
+            let output = crate::malloc(len);
+            if output.is_null() {
+                return ptr::null_mut();
+            }
+            ptr::copy_nonoverlapping(compressed.as_ptr(), output, len);
+            *out_len = len as c_uint;
+            output
+        }
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+#[cfg(feature = "compress")]
+/// Decompress zlib/deflate data
+/// 
+/// # Safety
+/// - `data` must be valid for `data_len` bytes
+/// - `out_len` will be set to the decompressed size
+/// - Returns null on error
+/// - Caller must free result with mayaqua_free()
+#[no_mangle]
+pub unsafe extern "C" fn mayaqua_decompress_deflate(
+    data: *const u8,
+    data_len: c_uint,
+    out_len: *mut c_uint,
+) -> *mut u8 {
+    if data.is_null() || data_len == 0 || out_len.is_null() {
+        return ptr::null_mut();
+    }
+
+    let input = slice::from_raw_parts(data, data_len as usize);
+    
+    match crate::compress::decompress_deflate(input) {
+        Ok(decompressed) => {
+            let len = decompressed.len();
+            let output = crate::malloc(len);
+            if output.is_null() {
+                return ptr::null_mut();
+            }
+            ptr::copy_nonoverlapping(decompressed.as_ptr(), output, len);
+            *out_len = len as c_uint;
+            output
+        }
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+// ============================================================================
+// HTTP Functions (Tier 2A)
+// ============================================================================
+
+/// Opaque HTTP request handle
+#[repr(C)]
+pub struct MayaquaHttpRequest {
+    _private: [u8; 0],
+}
+
+/// Opaque HTTP response handle
+#[repr(C)]
+pub struct MayaquaHttpResponse {
+    _private: [u8; 0],
+}
+
+use std::os::raw::c_char;
+use std::ffi::{CStr, CString};
+
+/// Create a new HTTP request
+/// 
+/// # Safety
+/// - `method` and `path` must be valid null-terminated C strings
+/// - Returns null on error
+/// - Caller must free with mayaqua_http_request_free()
+#[no_mangle]
+pub unsafe extern "C" fn mayaqua_http_request_new(
+    method: *const c_char,
+    path: *const c_char,
+) -> *mut MayaquaHttpRequest {
+    if method.is_null() || path.is_null() {
+        return ptr::null_mut();
+    }
+
+    let method_str = match CStr::from_ptr(method).to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return ptr::null_mut(),
+    };
+
+    let path_str = match CStr::from_ptr(path).to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return ptr::null_mut(),
+    };
+
+    let request = Box::new(crate::http::HttpRequest::new(method_str, path_str));
+    Box::into_raw(request) as *mut MayaquaHttpRequest
+}
+
+/// Add a header to HTTP request
+/// 
+/// # Safety
+/// - `request` must be a valid MayaquaHttpRequest pointer
+/// - `name` and `value` must be valid null-terminated C strings
+#[no_mangle]
+pub unsafe extern "C" fn mayaqua_http_request_add_header(
+    request: *mut MayaquaHttpRequest,
+    name: *const c_char,
+    value: *const c_char,
+) -> bool {
+    if request.is_null() || name.is_null() || value.is_null() {
+        return false;
+    }
+
+    let req = &mut *(request as *mut crate::http::HttpRequest);
+    
+    let name_str = match CStr::from_ptr(name).to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return false,
+    };
+
+    let value_str = match CStr::from_ptr(value).to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return false,
+    };
+
+    req.add_header(name_str, value_str);
+    true
+}
+
+/// Set HTTP request body
+/// 
+/// # Safety
+/// - `request` must be a valid MayaquaHttpRequest pointer
+/// - `body` must be valid for `body_len` bytes
+#[no_mangle]
+pub unsafe extern "C" fn mayaqua_http_request_set_body(
+    request: *mut MayaquaHttpRequest,
+    body: *const u8,
+    body_len: c_uint,
+) -> bool {
+    if request.is_null() || body.is_null() {
+        return false;
+    }
+
+    let req = &mut *(request as *mut crate::http::HttpRequest);
+    let body_data = slice::from_raw_parts(body, body_len as usize).to_vec();
+    
+    req.set_body(body_data);
+    true
+}
+
+/// Convert HTTP request to bytes for transmission
+/// 
+/// # Safety
+/// - `request` must be a valid MayaquaHttpRequest pointer
+/// - `out_len` will be set to the output size
+/// - Returns null on error
+/// - Caller must free result with mayaqua_free()
+#[no_mangle]
+pub unsafe extern "C" fn mayaqua_http_request_to_bytes(
+    request: *const MayaquaHttpRequest,
+    out_len: *mut c_uint,
+) -> *mut u8 {
+    if request.is_null() || out_len.is_null() {
+        return ptr::null_mut();
+    }
+
+    let req = &*(request as *const crate::http::HttpRequest);
+    let bytes = req.to_bytes();
+    let len = bytes.len();
+    
+    let output = crate::malloc(len);
+    if output.is_null() {
+        return ptr::null_mut();
+    }
+    
+    ptr::copy_nonoverlapping(bytes.as_ptr(), output, len);
+    *out_len = len as c_uint;
+    output
+}
+
+/// Free HTTP request
+/// 
+/// # Safety
+/// - `request` must be a valid MayaquaHttpRequest pointer
+#[no_mangle]
+pub unsafe extern "C" fn mayaqua_http_request_free(request: *mut MayaquaHttpRequest) {
+    if !request.is_null() {
+        let _ = Box::from_raw(request as *mut crate::http::HttpRequest);
+    }
+}
+
+/// Get HTTP response status code
+/// 
+/// # Safety
+/// - `response` must be a valid MayaquaHttpResponse pointer
+#[no_mangle]
+pub unsafe extern "C" fn mayaqua_http_response_status(
+    response: *const MayaquaHttpResponse,
+) -> c_uint {
+    if response.is_null() {
+        return 0;
+    }
+
+    let resp = &*(response as *const crate::http::HttpResponse);
+    resp.status_code as c_uint
+}
+
+/// Get HTTP response body
+/// 
+/// # Safety
+/// - `response` must be a valid MayaquaHttpResponse pointer
+/// - `out_len` will be set to the body size
+/// - Returns pointer to body data (valid until response is freed)
+/// - DO NOT free the returned pointer separately
+#[no_mangle]
+pub unsafe extern "C" fn mayaqua_http_response_body(
+    response: *const MayaquaHttpResponse,
+    out_len: *mut c_uint,
+) -> *const u8 {
+    if response.is_null() || out_len.is_null() {
+        return ptr::null();
+    }
+
+    let resp = &*(response as *const crate::http::HttpResponse);
+    *out_len = resp.body.len() as c_uint;
+    resp.body.as_ptr()
+}
+
+/// Get HTTP response header value
+/// 
+/// # Safety
+/// - `response` must be a valid MayaquaHttpResponse pointer
+/// - `name` must be a valid null-terminated C string
+/// - Returns null if header not found
+/// - Caller must free result with mayaqua_free_cstring()
+#[no_mangle]
+pub unsafe extern "C" fn mayaqua_http_response_get_header(
+    response: *const MayaquaHttpResponse,
+    name: *const c_char,
+) -> *mut c_char {
+    if response.is_null() || name.is_null() {
+        return ptr::null_mut();
+    }
+
+    let resp = &*(response as *const crate::http::HttpResponse);
+    
+    let name_str = match CStr::from_ptr(name).to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null_mut(),
+    };
+
+    match resp.headers.get(name_str) {
+        Some(value) => {
+            match CString::new(value.as_str()) {
+                Ok(cstr) => cstr.into_raw(),
+                Err(_) => ptr::null_mut(),
+            }
+        }
+        None => ptr::null_mut(),
+    }
+}
+
+/// Free C string returned by mayaqua functions
+/// 
+/// # Safety
+/// - `s` must be a pointer returned by a mayaqua function that returns C strings
+#[no_mangle]
+pub unsafe extern "C" fn mayaqua_free_cstring(s: *mut c_char) {
+    if !s.is_null() {
+        let _ = CString::from_raw(s);
+    }
+}
+
+/// Free HTTP response
+/// 
+/// # Safety
+/// - `response` must be a valid MayaquaHttpResponse pointer
+#[no_mangle]
+pub unsafe extern "C" fn mayaqua_http_response_free(response: *mut MayaquaHttpResponse) {
+    if !response.is_null() {
+        let _ = Box::from_raw(response as *mut crate::http::HttpResponse);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
