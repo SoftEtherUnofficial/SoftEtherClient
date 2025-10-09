@@ -23,6 +23,7 @@ pub mod logging;   // Logging abstraction
 // Extracted modules from softether-rust (Phase 3.1)
 pub mod crypto;    // Cryptographic functions (SHA-0, RC4, password hashing)
 pub mod fs;        // Filesystem operations (atomic write, safe read, permissions)
+pub mod platform;  // Platform-specific utilities (directories, network interfaces)
 
 // FFI exports for C compatibility
 pub mod ffi;
@@ -51,6 +52,9 @@ pub use crypto::{sha1, softether_password_hash, rc4_apply, rc4_apply_inplace};
 
 // Re-export Phase 3.1 (Filesystem)
 pub use fs::{ensure_dir, read_all, write_all_atomic, set_user_rw_only};
+
+// Re-export Phase 3.1 (Platform)
+pub use platform::{get_system_directory, get_config_directory};
 
 // Constants from Pack.h - Architecture-dependent sizes
 #[cfg(target_pointer_width = "64")]
