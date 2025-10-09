@@ -10,11 +10,13 @@ description = "Mayaqua - Memory, Buffer, and Utility Library for SoftEther VPN"
 libc = "0.2"
 tokio = { version = "1.0", features = ["time"], optional = true }
 sha1 = { version = "0.10", optional = true }
+flate2 = { version = "1.0", optional = true }
 
 [features]
 default = []
 async = ["tokio"]
 sha1-compat = ["sha1"]
+compress = ["flate2"]
 
 [dev-dependencies]
 # For sha0 compatibility tests

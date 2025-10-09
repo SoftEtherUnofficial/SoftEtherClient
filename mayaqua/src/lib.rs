@@ -14,6 +14,12 @@ pub mod sha0;      // SHA-0 for password hashing
 pub mod pack;      // Pack/Element serialization system
 pub mod time;      // Tick64 utilities
 
+// Extracted modules from softether-rust (Tier 2A)
+#[cfg(feature = "compress")]
+pub mod compress;  // Compression utilities (zlib/deflate)
+pub mod http;      // HTTP request/response handling
+pub mod logging;   // Logging abstraction
+
 // FFI exports for C compatibility
 pub mod ffi;
 
@@ -27,6 +33,12 @@ pub use error::{Error, Result};
 pub use sha0::{Sha0Context, Sha1Sum, SHA1_SIZE};
 pub use pack::{Pack, Element, Value, ValueType};
 pub use time::{get_tick64, Tick64};
+
+// Re-export Tier 2A
+#[cfg(feature = "compress")]
+pub use compress::{compress_deflate, decompress_deflate};
+pub use http::{HttpRequest, HttpResponse};
+// logging module doesn't need re-exports (internal use)
 
 // Constants from Pack.h - Architecture-dependent sizes
 #[cfg(target_pointer_width = "64")]
