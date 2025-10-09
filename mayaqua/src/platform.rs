@@ -122,14 +122,19 @@ mod tests {
         let config_dir = get_config_directory().unwrap();
         println!("Config directory: {:?}", config_dir);
         // Config directory may not exist yet, so don't assert existence
-        assert!(config_dir.as_os_str().len() > 0, "Config directory path should not be empty");
+        assert!(
+            config_dir.as_os_str().len() > 0,
+            "Config directory path should not be empty"
+        );
     }
 
     #[test]
     fn test_network_interfaces() {
         let interfaces = network_interface::get_interfaces().unwrap();
-        assert!(!interfaces.is_empty(), "Should have at least one network interface");
+        assert!(
+            !interfaces.is_empty(),
+            "Should have at least one network interface"
+        );
         println!("Network interfaces: {:?}", interfaces);
     }
 }
-

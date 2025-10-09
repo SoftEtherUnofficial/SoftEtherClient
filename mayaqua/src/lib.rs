@@ -1,42 +1,43 @@
 //! Mayaqua - Memory, Buffer, and Utility Library
-//! 
+//!
 //! This is a Rust port of SoftEther's Mayaqua kernel core utilities.
 //! Provides memory-safe equivalents to Memory.c functions.
 
 // Phase 1 modules (our implementation)
-pub mod memory;
 pub mod buffer;
+pub mod memory;
 pub mod types;
 
 // Extracted modules from softether-rust (Tier 1)
-pub mod error;     // Error types
-pub mod sha0;      // SHA-0 for password hashing
-pub mod pack;      // Pack/Element serialization system
-pub mod time;      // Tick64 utilities
+pub mod error; // Error types
+pub mod pack; // Pack/Element serialization system
+pub mod sha0; // SHA-0 for password hashing
+pub mod time; // Tick64 utilities
 
 // Extracted modules from softether-rust (Tier 2A)
 #[cfg(feature = "compress")]
-pub mod compress;  // Compression utilities (zlib/deflate)
-pub mod http;      // HTTP request/response handling
-pub mod logging;   // Logging abstraction
+pub mod compress; // Compression utilities (zlib/deflate)
+pub mod http; // HTTP request/response handling
+pub mod logging; // Logging abstraction
 
 // Extracted modules from softether-rust (Phase 3.1)
-pub mod crypto;    // Cryptographic functions (SHA-0, RC4, password hashing)
-pub mod fs;        // Filesystem operations (atomic write, safe read, permissions)
-pub mod platform;  // Platform-specific utilities (directories, network interfaces)
+pub mod config;
+pub mod crypto; // Cryptographic functions (SHA-0, RC4, password hashing)
+pub mod fs; // Filesystem operations (atomic write, safe read, permissions)
+pub mod platform; // Platform-specific utilities (directories, network interfaces) // Configuration management (JSON-based, schema-validated)
 
 // FFI exports for C compatibility
 pub mod ffi;
 
 // Re-export Phase 1
-pub use memory::*;
 pub use buffer::*;
+pub use memory::*;
 pub use types::*;
 
-// Re-export Tier 1 
+// Re-export Tier 1
 pub use error::{Error, Result};
+pub use pack::{Element, Pack, Value, ValueType};
 pub use sha0::{Sha0Context, Sha1Sum, SHA1_SIZE};
-pub use pack::{Pack, Element, Value, ValueType};
 pub use time::{get_tick64, Tick64};
 
 // Re-export Tier 2A
@@ -47,14 +48,17 @@ pub use http::{HttpRequest, HttpResponse};
 
 // Re-export Phase 3.1 (Crypto)
 // Re-export commonly used crypto functions
-pub use crypto::{sha1, softether_password_hash, rc4_apply, rc4_apply_inplace};
+pub use crypto::{rc4_apply, rc4_apply_inplace, sha1, softether_password_hash};
 // Note: SHA1_SIZE and Sha1Sum already re-exported from sha0 module
 
 // Re-export Phase 3.1 (Filesystem)
-pub use fs::{ensure_dir, read_all, write_all_atomic, set_user_rw_only};
+pub use fs::{ensure_dir, read_all, set_user_rw_only, write_all_atomic};
 
 // Re-export Phase 3.1 (Platform)
-pub use platform::{get_system_directory, get_config_directory};
+pub use platform::{get_config_directory, get_system_directory};
+
+// Re-export Phase 3.1 (Config)
+pub use config::{IpVersion, PerformanceConfig, VpnConfig};
 
 // Constants from Pack.h - Architecture-dependent sizes
 #[cfg(target_pointer_width = "64")]

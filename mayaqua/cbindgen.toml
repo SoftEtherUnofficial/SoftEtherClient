@@ -7,6 +7,11 @@ cpp_compat = true
 tab_width = 4
 line_length = 100
 
+[parse]
+parse_deps = false
+include = []
+exclude = ["config"]  # Skip config module (serde attributes cause parse errors)
+
 [export]
 include = ["mayaqua_malloc", "mayaqua_free", "mayaqua_buf_new", "mayaqua_buf_write"]
 

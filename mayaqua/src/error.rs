@@ -42,6 +42,9 @@ pub enum Error {
     IoError(String), // I/O operation failed
     InvalidString,   // String encoding error
 
+    // Configuration errors
+    ConfigError(String), // Configuration validation/parsing error
+
     // Platform-specific errors
     /// Pack-related errors
     Pack(String),
@@ -81,6 +84,7 @@ impl fmt::Display for Error {
             Error::InvalidCertificate => write!(f, "Invalid certificate"),
             Error::IoError(msg) => write!(f, "I/O error: {msg}"),
             Error::InvalidString => write!(f, "Invalid string encoding"),
+            Error::ConfigError(msg) => write!(f, "Configuration error: {msg}"),
             Error::Pack(msg) => write!(f, "Pack error: {msg}"),
             Error::Network(msg) => write!(f, "Network error: {msg}"),
             Error::Http(msg) => write!(f, "HTTP error: {msg}"),
@@ -140,9 +144,10 @@ impl Error {
             Error::InvalidCertificate => 401,
             Error::IoError(_) => 500,
             Error::InvalidString => 501,
-            Error::Pack(_) => 502,
-            Error::Network(_) => 503,
-            Error::Http(_) => 504,
+            Error::ConfigError(_) => 502,
+            Error::Pack(_) => 503,
+            Error::Network(_) => 504,
+            Error::Http(_) => 505,
             Error::PlatformError(_) => 600,
         }
     }

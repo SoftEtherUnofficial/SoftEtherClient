@@ -1,5 +1,5 @@
 //! # crypto - OpenSSL replacement cryptographic primitives
-//! 
+//!
 //! This module provides drop-in replacements for OpenSSL crypto functions used in SoftEther.
 //! Uses pure Rust implementations for SHA-0, SHA-1, and RC4.
 
@@ -7,7 +7,6 @@ use crate::sha0::Sha1Sum;
 
 // Re-export SHA-0 function and types from sha0 module (don't duplicate implementation)
 pub use crate::sha0::{sha0, Sha0Context};
-
 
 /// Compute SHA-1 hash of data (using external crate for non-compatibility cases)
 pub fn sha1(data: &[u8]) -> Sha1Sum {
@@ -157,8 +156,6 @@ mod tests {
             "Password hash doesn't match expected value"
         );
     }
-
-
 
     #[test]
     fn test_rc4_roundtrip() {

@@ -1,11 +1,11 @@
 //! Buffer management (BUF structure)
-//! 
+//!
 //! Rust port of Mayaqua's BUF structure with automatic memory management.
 
 use crate::types::UINT;
 
 /// Dynamically sized buffer (equivalent to C BUF structure)
-/// 
+///
 /// ```c
 /// struct BUF {
 ///     void *Buf;
@@ -17,7 +17,7 @@ use crate::types::UINT;
 #[derive(Debug)]
 pub struct Buffer {
     data: Vec<u8>,
-    current: usize,  // Read/write position
+    current: usize, // Read/write position
 }
 
 impl Buffer {
@@ -61,7 +61,7 @@ impl Buffer {
         if self.current + size > self.data.len() {
             return None;
         }
-        
+
         let start = self.current;
         self.current += size;
         Some(&self.data[start..self.current])
@@ -168,11 +168,11 @@ mod tests {
     #[test]
     fn test_read() {
         let mut buf = Buffer::from_bytes(b"Hello, World!");
-        
+
         let data = buf.read(5).unwrap();
         assert_eq!(data, b"Hello");
         assert_eq!(buf.position(), 5);
-        
+
         let data = buf.read(7).unwrap();
         assert_eq!(data, b", World");
         assert_eq!(buf.position(), 12);
@@ -183,7 +183,7 @@ mod tests {
         let mut buf = Buffer::from_bytes(b"Hello, World!");
         buf.seek(7);
         assert_eq!(buf.position(), 7);
-        
+
         let data = buf.read(5).unwrap();
         assert_eq!(data, b"World");
     }
