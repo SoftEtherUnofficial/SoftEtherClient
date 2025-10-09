@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "mayaqua-core",
+    "mayaqua-ffi",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["SoftEther VPN Project"]
+
+[workspace.dependencies]
+# Shared dependencies
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = false  # Keep symbols for debugging initially

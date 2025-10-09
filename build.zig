@@ -15,6 +15,31 @@ fn buildRustlsLibrary(b: *std.Build) !void {
     b.getInstallStep().dependOn(&cargo_build.step);
 }
 
+/// Build the Mayaqua Rust library using Cargo (Phase 4+)
+fn buildMayaquaLibrary(b: *std.Build) !void {
+    const cargo_build = b.addSystemCommand(&[_][]const u8{
+        "cargo",
+        "build",
+        "--release",
+        "--manifest-path",
+        "mayaqua/Cargo.toml",
+    });
+    cargo_build.cwd = b.path(".");
+
+    // Make this a build dependency
+    b.getInstallStep().dependOn(&cargo_build.step);
+}
+
+/// Get Mayaqua header path
+fn getMayaquaHeaderPath(_: *std.Build) []const u8 {
+    return "mayaqua/include";
+}
+
+/// Get Mayaqua library path
+fn getMayaquaLibPath(_: *std.Build) []const u8 {
+    return "mayaqua/target/release";
+}
+
 /// Find the rustls.h header path
 fn getRustlsHeaderPath(b: *std.Build) ![]const u8 {
     // The header is generated during cargo build
@@ -464,4 +489,37 @@ pub fn build(b: *std.Build) void {
 
     const mobile_ffi_step = b.step("mobile-ffi", "Build mobile FFI library");
     mobile_ffi_step.dependOn(&b.addInstallArtifact(mobile_ffi, .{}).step);
+
+    // ===== Mayaqua Rust Integration Test (Phase 4+) =====
+    // Build Mayaqua library
+    buildMayaquaLibrary(b) catch |err| {
+        std.debug.print("Warning: Failed to build Mayaqua library: {}\n", .{err});
+    };
+
+    const test_mayaqua = b.addExecutable(.{
+        .name = "test_mayaqua",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test_mayaqua.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    // Add Mayaqua library
+    const mayaqua_lib_path = getMayaquaLibPath(b);
+    const mayaqua_header_path = getMayaquaHeaderPath(b);
+
+    test_mayaqua.addObjectFile(b.path(b.fmt("{s}/libmayaqua.a", .{mayaqua_lib_path})));
+    test_mayaqua.addIncludePath(b.path(mayaqua_header_path));
+    test_mayaqua.linkLibC();
+
+    // Install test binary
+    const install_test_mayaqua = b.addInstallArtifact(test_mayaqua, .{});
+
+    // Run step for Mayaqua test
+    const run_mayaqua_cmd = b.addRunArtifact(test_mayaqua);
+    run_mayaqua_cmd.step.dependOn(&install_test_mayaqua.step);
+
+    const run_mayaqua_step = b.step("test-mayaqua", "Run Mayaqua Rust integration test");
+    run_mayaqua_step.dependOn(&run_mayaqua_cmd.step);
 }

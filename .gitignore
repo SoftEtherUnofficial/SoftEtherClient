@@ -46,8 +46,15 @@ main
 rust_tls/target/
 rust_tls/Cargo.lock
 
+# Rust Mayaqua build artifacts
+mayaqua/target/
+mayaqua/Cargo.lock
+mayaqua/include/mayaqua_ffi.h
+
 # rustls integration test binaries
 test_rustls_integration
 test_rustls_integration.o
+test_stdout*
+test_mayaqua
 
 config.json
