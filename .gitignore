@@ -42,4 +42,12 @@ main
 # Temporary build files
 *.dSYM/
 
+# Rust/Cargo build artifacts
+rust_tls/target/
+rust_tls/Cargo.lock
+
+# rustls integration test binaries
+test_rustls_integration
+test_rustls_integration.o
+
 config.json

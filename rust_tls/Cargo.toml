@@ -1,0 +1,23 @@
+[package]
+name = "softether_tls"
+version = "0.1.0"
+edition = "2021"
+description = "Rust TLS wrapper for SoftEtherZig using rustls-ffi"
+license = "Apache-2.0"
+
+[dependencies]
+rustls = { version = "0.23", default-features = false, features = ["std"] }
+rustls-ffi = "0.15"
+# Required for proper crypto support
+aws-lc-rs = { version = "1.0", features = ["fips"] }
+
+[lib]
+# Build as both static and dynamic library
+crate-type = ["staticlib", "cdylib"]
+name = "softether_tls"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
