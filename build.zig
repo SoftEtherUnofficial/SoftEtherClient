@@ -1,6 +1,43 @@
 const std = @import("std");
 
+/// Build the rustls-ffi library using Cargo
+fn buildRustlsLibrary(b: *std.Build) !void {
+    const cargo_build = b.addSystemCommand(&[_][]const u8{
+        "cargo",
+        "build",
+        "--release",
+        "--manifest-path",
+        "rust_tls/Cargo.toml",
+    });
+    cargo_build.cwd = b.path(".");
+
+    // Make this a build dependency
+    b.getInstallStep().dependOn(&cargo_build.step);
+}
+
+/// Find the rustls.h header path
+fn getRustlsHeaderPath(b: *std.Build) ![]const u8 {
+    // The header is generated during cargo build
+    // Path: rust_tls/target/release/build/rustls-ffi-*/out/include
+    const header_dir = "rust_tls/target/release/build";
+
+    // We need to find the rustls-ffi-* directory
+    // For now, use a known path (will be fixed after first build)
+    return b.fmt("{s}/rustls-ffi-aa1ae85b063e7faf/out/include", .{header_dir});
+}
+
+/// Find the AWS-LC crypto library path
+fn getAwsLcLibPath(_: *std.Build) []const u8 {
+    const lib_dir = "rust_tls/target/release/build/aws-lc-fips-sys-d83b924224385cce/out/build/artifacts";
+    return lib_dir;
+}
+
 pub fn build(b: *std.Build) void {
+    // Build rustls-ffi library first (Phase 2)
+    buildRustlsLibrary(b) catch |err| {
+        std.debug.print("Warning: Failed to build rustls library: {}\n", .{err});
+    };
+
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{
         .preferred_optimize_mode = .ReleaseFast,
@@ -21,6 +58,10 @@ pub fn build(b: *std.Build) void {
         .windows => "C:/OpenSSL-Win64",
         else => "/usr",
     };
+
+    // rustls library paths (Phase 2)
+    const rustls_header_path = getRustlsHeaderPath(b) catch "rust_tls/target/release/build/rustls-ffi-aa1ae85b063e7faf/out/include";
+    const aws_lc_lib_path = getAwsLcLibPath(b);
 
     // Base C flags (common to all platforms)
     const base_c_flags = &[_][]const u8{
@@ -181,6 +222,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
     lib_module.addIncludePath(b.path("src"));
+
+    // Add rustls include path to module (Phase 2)
+    lib_module.addIncludePath(.{ .cwd_relative = rustls_header_path });
+
     lib_module.addImport("taptun", taptun.module("taptun"));
     lib_module.link_libc = true;
 
@@ -208,6 +253,9 @@ pub fn build(b: *std.Build) void {
     // Add OpenSSL include path (platform-specific)
     const openssl_include = b.fmt("{s}/include", .{openssl_prefix});
     cli.addIncludePath(.{ .cwd_relative = openssl_include });
+
+    // Add rustls include path (Phase 2)
+    cli.addIncludePath(.{ .cwd_relative = rustls_header_path });
 
     cli.addCSourceFiles(.{
         .files = c_sources,
@@ -260,6 +308,13 @@ pub fn build(b: *std.Build) void {
     cli.linkSystemLibrary("ssl");
     cli.linkSystemLibrary("crypto");
     cli.linkLibC();
+
+    // Link rustls-ffi library (Phase 2)
+    // Static library
+    cli.addObjectFile(.{ .cwd_relative = "rust_tls/target/release/libsoftether_tls.a" });
+    // AWS-LC crypto dynamic library
+    cli.addLibraryPath(.{ .cwd_relative = aws_lc_lib_path });
+    cli.addRPath(.{ .cwd_relative = aws_lc_lib_path });
 
     // Platform-specific system libraries
     if (target_os != .windows) {

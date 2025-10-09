@@ -2,11 +2,51 @@ const std = @import("std");
 
 /// Zig bindings for rustls-ffi
 /// This wraps the C API provided by rustls-ffi in idiomatic Zig
+///
+/// Phase 2: Full integration with build system
+/// - Idiomatic Zig API over rustls-ffi C bindings
+/// - Memory-safe error handling
+/// - Zero-copy where possible
 
 // Import rustls C headers
+// Note: Include path must be provided at compile time via -I flag
 pub const c = @cImport({
     @cInclude("rustls.h");
 });
+
+// Re-export custom wrapper functions from rust_tls
+extern "c" fn softether_tls_init() c_int;
+extern "c" fn softether_tls_version() [*:0]const u8;
+
+/// Initialize the rustls library
+pub fn init() !void {
+    const result = softether_tls_init();
+    if (result != 0) return Error.InitializationFailed;
+}
+
+/// Get the rustls version string
+pub fn version() []const u8 {
+    const ver = softether_tls_version();
+    return std.mem.span(ver);
+}
+
+/// Get the rustls-ffi version as a struct
+pub fn rustlsVersion() RustlsVersion {
+    const ver_struct = c.rustls_version();
+    return RustlsVersion{
+        .data = ver_struct.data,
+        .len = ver_struct.len,
+    };
+}
+
+pub const RustlsVersion = struct {
+    data: [*]const u8,
+    len: usize,
+
+    pub fn slice(self: RustlsVersion) []const u8 {
+        return self.data[0..self.len];
+    }
+};
 
 pub const Error = error{
     NullPointer,
@@ -16,6 +56,9 @@ pub const Error = error{
     InvalidParameter,
     CertificateError,
     UnexpectedEof,
+    InitializationFailed,
+    AlreadyInitialized,
+    NotInitialized,
 };
 
 /// Convert rustls_result to Zig error
@@ -192,6 +235,19 @@ pub const VpnTlsConnection = struct {
 
 test "rustls basic import" {
     // Just verify the C imports work
-    const version = c.rustls_version();
-    try std.testing.expect(version != null);
+    const ver = c.rustls_version();
+    try std.testing.expect(ver.len > 0);
+}
+
+test "rustls version" {
+    const ver = rustlsVersion();
+    const slice = ver.slice();
+    try std.testing.expect(slice.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, slice, "rustls") != null);
+}
+
+test "softether tls init" {
+    try init();
+    const ver = version();
+    try std.testing.expect(ver.len > 0);
 }
