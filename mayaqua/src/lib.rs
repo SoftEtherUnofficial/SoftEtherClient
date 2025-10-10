@@ -26,6 +26,10 @@ pub mod crypto; // Cryptographic functions (SHA-0, RC4, password hashing)
 pub mod fs; // Filesystem operations (atomic write, safe read, permissions)
 pub mod platform; // Platform-specific utilities (directories, network interfaces)
 pub mod strings; // String utilities (UTF-8/UTF-16, conversion, manipulation)
+pub mod tables;  // Data structures (LIST, QUEUE, TABLE from SoftEther C)
+pub mod network; // Network I/O (blocking TCP/UDP sockets, DNS resolution)
+
+// Phase 4: Crypto and TLS
 
 // FFI exports for C compatibility
 pub mod ffi;
@@ -62,11 +66,26 @@ pub use platform::{get_config_directory, get_system_directory};
 pub use config::{IpVersion, PerformanceConfig, VpnConfig};
 
 // Re-export Phase 3.1 (Strings)
+// Strings module re-exports
 pub use strings::{
-    bin_to_str, ends_with_i, is_printable_ascii, is_safe_str, mac_to_str, make_safe_str,
-    replace_str, replace_stri, search_str, search_stri, starts_with_i, str_cmpi, str_to_bin,
-    str_to_lines, str_to_mac, tokenize, trim_str, truncate_str, utf16_to_utf8, utf8_to_utf16,
+    utf8_to_utf16, utf16_to_utf8, bin_to_str, str_to_bin, mac_to_str, str_to_mac,
+    is_printable_ascii, is_safe_str, make_safe_str, search_str, search_stri,
+    replace_str, replace_stri, str_cmpi, starts_with_i, ends_with_i, tokenize,
+    str_to_lines, trim_str, truncate_str,
 };
+
+// Tables module re-exports
+pub use tables::{
+    List, Queue, Table, IntList, Int64List, StrList,
+    new_int_list, new_int64_list, new_str_list, new_str_map,
+};
+
+// Network module re-exports
+pub use network::{
+    TcpSocket, TcpSocketListener, UdpSocketWrapper,
+    SOCK_TCP, SOCK_UDP, DEFAULT_TIMEOUT, DEFAULT_BUFFER_SIZE,
+};
+
 
 // Constants from Pack.h - Architecture-dependent sizes
 #[cfg(target_pointer_width = "64")]
