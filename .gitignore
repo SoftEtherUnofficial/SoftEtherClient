@@ -71,3 +71,4 @@ test_stdout*
 test_mayaqua
 
 config.json
+target/
