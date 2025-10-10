@@ -352,56 +352,126 @@ impl TlsConnection {
         Ok(bytes_received)
     }
 
-    /// Perform TLS handshake on TCP stream
-    pub fn handshake(&mut self, _stream: &mut TcpStream) -> Result<()> {
+    /// Perform TLS handshake on existing TCP stream
+    pub fn handshake(&mut self, stream: &mut TcpStream) -> Result<()> {
         if self.state != TlsState::Disconnected {
             return Err(Error::InvalidState);
         }
 
         self.state = TlsState::Handshaking;
 
-        // Handshake is now handled in connect()
+        // Create rustls config
+        let config = Arc::new(self.create_rustls_config()?);
+
+        // Get server name for SNI
+        let server_name = self
+            .config
+            .server_name
+            .as_ref()
+            .ok_or(Error::IoError("Server name required for handshake".to_string()))?
+            .to_string();
+
+        let server_name = ServerName::try_from(server_name)
+            .map_err(|_| Error::IoError("Invalid server name".to_string()))?;
+
+        // Create TLS connection
+        let mut tls_conn = ClientConnection::new(config, server_name)
+            .map_err(|_| Error::TlsError)?;
+
+        // Perform TLS handshake loop
+        while tls_conn.is_handshaking() {
+            // Write TLS data to socket
+            tls_conn.write_tls(stream)
+                .map_err(|e| Error::IoError(format!("TLS write failed: {}", e)))?;
+
+            // Read TLS data from socket
+            tls_conn.read_tls(stream)
+                .map_err(|e| Error::IoError(format!("TLS read failed: {}", e)))?;
+
+            // Process TLS messages
+            tls_conn.process_new_packets()
+                .map_err(|_| Error::TlsError)?;
+        }
+
+        // Clone the stream (we need ownership)
+        let cloned_stream = stream.try_clone()
+            .map_err(|e| Error::IoError(format!("Failed to clone stream: {}", e)))?;
+
+        self.stream = Some(cloned_stream);
+        self.tls_conn = Some(tls_conn);
         self.state = TlsState::Connected;
+
         Ok(())
     }
 
-    /// Encrypt data
+    /// Encrypt data (uses TLS connection's crypto)
     pub fn encrypt(&mut self, plaintext: &[u8], ciphertext: &mut [u8]) -> Result<usize> {
         if self.state != TlsState::Connected {
             return Err(Error::InvalidState);
         }
 
-        if ciphertext.len() < plaintext.len() + 32 {
-            // Need space for authentication tag
-            return Err(Error::BufferTooSmall);
+        // For TLS connections, we can't do direct encrypt/decrypt
+        // This method is for compatibility with code that expects raw encryption
+        // In practice, use send() and receive() which handle TLS properly
+        
+        // We'll use the TLS connection's writer which handles encryption
+        if let (Some(ref mut tls_conn), Some(ref mut stream)) = (&mut self.tls_conn, &mut self.stream) {
+            use std::io::Write;
+            
+            // Write plaintext to TLS writer (this encrypts it internally)
+            tls_conn.writer().write_all(plaintext)
+                .map_err(|e| Error::IoError(format!("TLS write failed: {}", e)))?;
+            
+            // Flush TLS records to a temporary buffer
+            let mut temp_buffer = Vec::new();
+            tls_conn.write_tls(&mut temp_buffer)
+                .map_err(|e| Error::IoError(format!("TLS flush failed: {}", e)))?;
+            
+            if ciphertext.len() < temp_buffer.len() {
+                return Err(Error::BufferTooSmall);
+            }
+            
+            // Copy encrypted data to output buffer
+            ciphertext[..temp_buffer.len()].copy_from_slice(&temp_buffer);
+            
+            self.bytes_encrypted += plaintext.len() as u64;
+            Ok(temp_buffer.len())
+        } else {
+            Err(Error::InvalidState)
         }
-
-        // TODO: Implement actual encryption
-        // For now, just copy data (INSECURE - placeholder only)
-        let len = plaintext.len();
-        ciphertext[..len].copy_from_slice(plaintext);
-
-        self.bytes_encrypted += len as u64;
-        Ok(len)
     }
 
-    /// Decrypt data
+    /// Decrypt data (uses TLS connection's crypto)
     pub fn decrypt(&mut self, ciphertext: &[u8], plaintext: &mut [u8]) -> Result<usize> {
         if self.state != TlsState::Connected {
             return Err(Error::InvalidState);
         }
 
-        if plaintext.len() < ciphertext.len() {
-            return Err(Error::BufferTooSmall);
+        // For TLS connections, we can't do direct encrypt/decrypt
+        // This method is for compatibility with code that expects raw encryption
+        // In practice, use send() and receive() which handle TLS properly
+        
+        if let Some(ref mut tls_conn) = &mut self.tls_conn {
+            use std::io::{Cursor, Read};
+            
+            // Feed encrypted data to TLS connection
+            let mut cursor = Cursor::new(ciphertext);
+            tls_conn.read_tls(&mut cursor)
+                .map_err(|e| Error::IoError(format!("TLS read failed: {}", e)))?;
+            
+            // Process TLS records
+            tls_conn.process_new_packets()
+                .map_err(|_| Error::TlsError)?;
+            
+            // Read decrypted plaintext
+            let bytes_read = tls_conn.reader().read(plaintext)
+                .map_err(|e| Error::IoError(format!("TLS decrypt failed: {}", e)))?;
+            
+            self.bytes_decrypted += bytes_read as u64;
+            Ok(bytes_read)
+        } else {
+            Err(Error::InvalidState)
         }
-
-        // TODO: Implement actual decryption
-        // For now, just copy data (INSECURE - placeholder only)
-        let len = ciphertext.len();
-        plaintext[..len].copy_from_slice(ciphertext);
-
-        self.bytes_decrypted += len as u64;
-        Ok(len)
     }
 
     /// Get connection state
