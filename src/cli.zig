@@ -352,6 +352,24 @@ pub fn main() !void {
     // Performance configuration (defaults from config.PerformanceConfig)
     var final_recv_buffer_slots: u16 = 128;
     var final_send_buffer_slots: u16 = 64;
+    var final_max_connection: u32 = args.max_connection;
+    var final_use_compress: bool = args.use_compress;
+
+    // Buffers for duplicated strings from config file
+    var config_server_buf: ?[]const u8 = null;
+    var config_hub_buf: ?[]const u8 = null;
+    var config_username_buf: ?[]const u8 = null;
+    var config_password_buf: ?[]const u8 = null;
+    var config_password_hash_buf: ?[]const u8 = null;
+    var config_account_buf: ?[]const u8 = null;
+    defer {
+        if (config_server_buf) |buf| allocator.free(buf);
+        if (config_hub_buf) |buf| allocator.free(buf);
+        if (config_username_buf) |buf| allocator.free(buf);
+        if (config_password_buf) |buf| allocator.free(buf);
+        if (config_password_hash_buf) |buf| allocator.free(buf);
+        if (config_account_buf) |buf| allocator.free(buf);
+    }
 
     if (config_path) |path| {
         std.debug.print("[●] Loading configuration from: {s}\n", .{path});
@@ -362,10 +380,15 @@ pub fn main() !void {
         defer parsed_config.deinit(); // Free JSON memory
         const file_config = parsed_config.value;
 
-        // Apply config file values if CLI args not provided
+        // Duplicate strings from config file before JSON is deallocated
         // Priority: CLI args > env vars > config file
         if (final_server == null) {
-            final_server = getEnvVar("SOFTETHER_SERVER") orelse file_config.server;
+            if (getEnvVar("SOFTETHER_SERVER")) |env_val| {
+                final_server = env_val;
+            } else if (file_config.server) |cfg_val| {
+                config_server_buf = try allocator.dupe(u8, cfg_val);
+                final_server = config_server_buf;
+            }
         }
         if (final_port == 443 and args.server == null) { // Default not overridden by CLI
             if (getEnvVar("SOFTETHER_PORT")) |port_str| {
@@ -375,19 +398,44 @@ pub fn main() !void {
             }
         }
         if (final_hub == null) {
-            final_hub = getEnvVar("SOFTETHER_HUB") orelse file_config.hub;
+            if (getEnvVar("SOFTETHER_HUB")) |env_val| {
+                final_hub = env_val;
+            } else if (file_config.hub) |cfg_val| {
+                config_hub_buf = try allocator.dupe(u8, cfg_val);
+                final_hub = config_hub_buf;
+            }
         }
         if (final_username == null) {
-            final_username = getEnvVar("SOFTETHER_USER") orelse file_config.username;
+            if (getEnvVar("SOFTETHER_USER")) |env_val| {
+                final_username = env_val;
+            } else if (file_config.username) |cfg_val| {
+                config_username_buf = try allocator.dupe(u8, cfg_val);
+                final_username = config_username_buf;
+            }
         }
         if (final_password == null) {
-            final_password = getEnvVar("SOFTETHER_PASSWORD") orelse file_config.password;
+            if (getEnvVar("SOFTETHER_PASSWORD")) |env_val| {
+                final_password = env_val;
+            } else if (file_config.password) |cfg_val| {
+                config_password_buf = try allocator.dupe(u8, cfg_val);
+                final_password = config_password_buf;
+            }
         }
         if (final_password_hash == null) {
-            final_password_hash = getEnvVar("SOFTETHER_PASSWORD_HASH") orelse file_config.password_hash;
+            if (getEnvVar("SOFTETHER_PASSWORD_HASH")) |env_val| {
+                final_password_hash = env_val;
+            } else if (file_config.password_hash) |cfg_val| {
+                config_password_hash_buf = try allocator.dupe(u8, cfg_val);
+                final_password_hash = config_password_hash_buf;
+            }
         }
         if (final_account == null) {
-            final_account = getEnvVar("SOFTETHER_ACCOUNT") orelse file_config.account;
+            if (getEnvVar("SOFTETHER_ACCOUNT")) |env_val| {
+                final_account = env_val;
+            } else if (file_config.account) |cfg_val| {
+                config_account_buf = try allocator.dupe(u8, cfg_val);
+                final_account = config_account_buf;
+            }
         }
 
         // Load compression setting (CLI > env > config > default)
@@ -411,6 +459,16 @@ pub fn main() !void {
             if (perf.send_buffer_slots) |slots| {
                 final_send_buffer_slots = slots;
             }
+        }
+
+        // Load max_connection from config if not set via CLI
+        if (final_max_connection == 0 and file_config.max_connection != null) {
+            final_max_connection = file_config.max_connection.?;
+        }
+
+        // Load use_compress from config if not explicitly disabled via CLI
+        if (final_use_compress and file_config.use_compress != null) {
+            final_use_compress = file_config.use_compress.?;
         }
     }
 
@@ -538,8 +596,8 @@ pub fn main() !void {
             .is_hashed = use_password_hash,
         } },
         .use_encrypt = args.use_encrypt,
-        .use_compress = args.use_compress,
-        .max_connection = args.max_connection,
+        .use_compress = final_use_compress,
+        .max_connection = final_max_connection,
         .ip_version = ip_version,
         .static_ip = static_ip,
         .use_zig_adapter = args.use_zig_adapter,
@@ -556,11 +614,11 @@ pub fn main() !void {
     std.debug.print("Virtual Hub:   {s}\n", .{hub});
     std.debug.print("User:          {s}\n", .{username});
     std.debug.print("Encryption:    {s}\n", .{if (args.use_encrypt) "Enabled" else "Disabled"});
-    std.debug.print("Compression:   {s}\n", .{if (args.use_compress) "Enabled" else "Disabled"});
-    if (args.max_connection == 0) {
+    std.debug.print("Compression:   {s}\n", .{if (final_use_compress) "Enabled" else "Disabled"});
+    if (final_max_connection == 0) {
         std.debug.print("Max Connections: Server Policy\n", .{});
     } else {
-        std.debug.print("Max Connections: {d}\n", .{args.max_connection});
+        std.debug.print("Max Connections: {d}\n", .{final_max_connection});
     }
     std.debug.print("IP Version:    {s}\n", .{args.ip_version});
 
