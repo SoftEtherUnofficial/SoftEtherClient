@@ -15,8 +15,9 @@ parse_deps = false
 include = ["cedar"]
 
 [fn]
-prefix = "cedar_"
-args = "vertical"
+# Don't use automatic prefix - causes formatting issues
+# prefix = "cedar_"
+args = "horizontal"
 rename_args = "None"
 
 [struct]

@@ -299,7 +299,12 @@ pub const CompressionAlgorithm = enum(c_int) {
     Lz4 = 3,
 
     fn toC(self: CompressionAlgorithm) c.CedarCompressionAlgorithm {
-        return @enumFromInt(@intFromEnum(self));
+        return switch (self) {
+            .None => c.CompressionNone,
+            .Deflate => c.Deflate,
+            .Gzip => c.Gzip,
+            .Lz4 => c.Lz4,
+        };
     }
 };
 
@@ -360,8 +365,8 @@ pub const UdpAccelMode = enum(c_int) {
     Hybrid = 1,
     UdpOnly = 2,
 
-    fn toC(self: UdpAccelMode) c.CedarUdpAccelMode {
-        return @enumFromInt(@intFromEnum(self));
+    fn toC(self: UdpAccelMode) c_uint {
+        return @intCast(@intFromEnum(self));
     }
 };
 
@@ -402,7 +407,7 @@ pub const NatType = enum {
 
     fn fromC(nat_type: c.CedarNatType) NatType {
         return switch (nat_type) {
-            c.None => .None,
+            c.NatNone => .None,
             c.FullCone => .FullCone,
             c.RestrictedCone => .RestrictedCone,
             c.PortRestrictedCone => .PortRestrictedCone,

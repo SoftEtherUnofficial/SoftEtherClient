@@ -252,10 +252,14 @@ pub extern "C" fn cedar_packet_add_int(
         }
     };
 
-    // Take ownership, modify, and put back
-    let packet = unsafe { Box::from_raw(handle as *mut Packet) };
-    let updated_packet = packet.add_int(key_str, value);
-    let _ = Box::into_raw(Box::new(updated_packet));
+    // Take ownership from the handle
+    let mut packet = unsafe { Box::from_raw(handle as *mut Packet) };
+    
+    // Modify in place (packet.add_int consumes self, but we can use the result)
+    *packet = packet.clone().add_int(key_str, value);
+    
+    // Put it back without dropping
+    Box::into_raw(packet);
     
     CedarErrorCode::Success
 }
@@ -285,10 +289,14 @@ pub extern "C" fn cedar_packet_add_string(
         }
     };
 
-    // Take ownership, modify, and put back
-    let packet = unsafe { Box::from_raw(handle as *mut Packet) };
-    let updated_packet = packet.add_string(key_str, value_str);
-    let _ = Box::into_raw(Box::new(updated_packet));
+    // Take ownership from the handle
+    let mut packet = unsafe { Box::from_raw(handle as *mut Packet) };
+    
+    // Modify in place (packet.add_string consumes self, but we can use the result)
+    *packet = packet.clone().add_string(key_str, value_str);
+    
+    // Put it back without dropping
+    Box::into_raw(packet);
     
     CedarErrorCode::Success
 }
@@ -455,7 +463,7 @@ pub type CedarCompressorHandle = *mut c_void;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CedarCompressionAlgorithm {
-    None = 0,
+    CompressionNone = 0,
     Deflate = 1,
     Gzip = 2,
     Lz4 = 3,
@@ -464,7 +472,7 @@ pub enum CedarCompressionAlgorithm {
 impl From<CedarCompressionAlgorithm> for CompressionAlgorithm {
     fn from(algo: CedarCompressionAlgorithm) -> Self {
         match algo {
-            CedarCompressionAlgorithm::None => CompressionAlgorithm::None,
+            CedarCompressionAlgorithm::CompressionNone => CompressionAlgorithm::None,
             CedarCompressionAlgorithm::Deflate => CompressionAlgorithm::Deflate,
             CedarCompressionAlgorithm::Gzip => CompressionAlgorithm::Gzip,
             CedarCompressionAlgorithm::Lz4 => CompressionAlgorithm::Lz4,
@@ -616,7 +624,7 @@ pub type CedarNatTraversalHandle = *mut c_void;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CedarNatType {
-    None = 0,
+    NatNone = 0,
     FullCone = 1,
     RestrictedCone = 2,
     PortRestrictedCone = 3,
@@ -627,7 +635,7 @@ pub enum CedarNatType {
 impl From<NatType> for CedarNatType {
     fn from(nat_type: NatType) -> Self {
         match nat_type {
-            NatType::None => CedarNatType::None,
+            NatType::None => CedarNatType::NatNone,
             NatType::FullCone => CedarNatType::FullCone,
             NatType::RestrictedCone => CedarNatType::RestrictedCone,
             NatType::PortRestrictedCone => CedarNatType::PortRestrictedCone,

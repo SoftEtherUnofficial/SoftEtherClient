@@ -70,7 +70,7 @@
  * Compression algorithm for FFI
  */
 typedef enum CedarCompressionAlgorithm {
-  None = 0,
+  CompressionNone = 0,
   Deflate = 1,
   Gzip = 2,
   Lz4 = 3,
@@ -97,7 +97,7 @@ typedef enum CedarErrorCode {
  * NAT type for FFI
  */
 typedef enum CedarNatType {
-  None = 0,
+  NatNone = 0,
   FullCone = 1,
   RestrictedCone = 2,
   PortRestrictedCone = 3,
@@ -186,190 +186,136 @@ extern "C" {
 /**
  * Create new session
  */
-cedar_
-CedarSessionHandle cedar_session_new(const char *server,
-                                     uint16_t port,
-                                     const char *hub);
+CedarSessionHandle cedar_session_new(const char *server, uint16_t port, const char *hub);
 
 /**
  * Free session
  */
-cedar_
 void cedar_session_free(CedarSessionHandle handle);
 
 /**
  * Get session status
  */
-cedar_
 enum CedarSessionStatus cedar_session_get_status(CedarSessionHandle handle);
 
 /**
  * Get session statistics
  */
-cedar_
-enum CedarErrorCode cedar_session_get_stats(CedarSessionHandle handle,
-                                            struct CedarSessionStats *stats);
+enum CedarErrorCode cedar_session_get_stats(CedarSessionHandle handle, struct CedarSessionStats *stats);
 
 /**
  * Create new packet
  */
-cedar_
 CedarPacketHandle cedar_packet_new(const char *command);
 
 /**
  * Free packet
  */
-cedar_
 void cedar_packet_free(CedarPacketHandle handle);
 
 /**
  * Add integer parameter to packet
  */
-cedar_
-enum CedarErrorCode cedar_packet_add_int(CedarPacketHandle handle,
-                                         const char *key,
-                                         uint32_t value);
+enum CedarErrorCode cedar_packet_add_int(CedarPacketHandle handle, const char *key, uint32_t value);
 
 /**
  * Add string parameter to packet
  */
-cedar_
-enum CedarErrorCode cedar_packet_add_string(CedarPacketHandle handle,
-                                            const char *key,
-                                            const char *value);
+enum CedarErrorCode cedar_packet_add_string(CedarPacketHandle handle, const char *key, const char *value);
 
 /**
  * Get integer parameter from packet
  */
-cedar_
-enum CedarErrorCode cedar_packet_get_int(CedarPacketHandle handle,
-                                         const char *key,
-                                         uint32_t *value);
+enum CedarErrorCode cedar_packet_get_int(CedarPacketHandle handle, const char *key, uint32_t *value);
 
 /**
  * Get string parameter from packet (copies to buffer)
  */
-cedar_
-enum CedarErrorCode cedar_packet_get_string(CedarPacketHandle handle,
-                                            const char *key,
-                                            char *buffer,
-                                            uintptr_t buffer_len);
+enum CedarErrorCode cedar_packet_get_string(CedarPacketHandle handle, const char *key, char *buffer, uintptr_t buffer_len);
 
 /**
  * Create new TLS connection
  */
-cedar_
 CedarTlsHandle cedar_tls_new(void);
 
 /**
  * Free TLS connection
  */
-cedar_
 void cedar_tls_free(CedarTlsHandle handle);
 
 /**
  * Get TLS state
  */
-cedar_
 enum CedarTlsState cedar_tls_get_state(CedarTlsHandle handle);
 
 /**
  * Encrypt data
  */
-cedar_
-enum CedarErrorCode cedar_tls_encrypt(CedarTlsHandle handle,
-                                      const uint8_t *plaintext,
-                                      uintptr_t plaintext_len,
-                                      uint8_t *ciphertext,
-                                      uintptr_t ciphertext_len,
-                                      uintptr_t *bytes_written);
+enum CedarErrorCode cedar_tls_encrypt(CedarTlsHandle handle, const uint8_t *plaintext, uintptr_t plaintext_len, uint8_t *ciphertext, uintptr_t ciphertext_len, uintptr_t *bytes_written);
 
 /**
  * Create new compressor
  */
-cedar_
 CedarCompressorHandle cedar_compressor_new(enum CedarCompressionAlgorithm algorithm);
 
 /**
  * Free compressor
  */
-cedar_
 void cedar_compressor_free(CedarCompressorHandle handle);
 
 /**
  * Compress data
  */
-cedar_
-enum CedarErrorCode cedar_compressor_compress(CedarCompressorHandle handle,
-                                              const uint8_t *input,
-                                              uintptr_t input_len,
-                                              uint8_t *output,
-                                              uintptr_t output_len,
-                                              uintptr_t *bytes_written);
+enum CedarErrorCode cedar_compressor_compress(CedarCompressorHandle handle, const uint8_t *input, uintptr_t input_len, uint8_t *output, uintptr_t output_len, uintptr_t *bytes_written);
 
 /**
  * Decompress data
  */
-cedar_
-enum CedarErrorCode cedar_compressor_decompress(CedarCompressorHandle handle,
-                                                const uint8_t *input,
-                                                uintptr_t input_len,
-                                                uint8_t *output,
-                                                uintptr_t output_len,
-                                                uintptr_t *bytes_written);
+enum CedarErrorCode cedar_compressor_decompress(CedarCompressorHandle handle, const uint8_t *input, uintptr_t input_len, uint8_t *output, uintptr_t output_len, uintptr_t *bytes_written);
 
 /**
  * Create new UDP accelerator
  */
-cedar_
 CedarUdpAccelHandle cedar_udp_accel_new(enum CedarUdpAccelMode mode);
 
 /**
  * Free UDP accelerator
  */
-cedar_
 void cedar_udp_accel_free(CedarUdpAccelHandle handle);
 
 /**
  * Check if UDP acceleration is healthy
  */
-cedar_
 int cedar_udp_accel_is_healthy(CedarUdpAccelHandle handle);
 
 /**
  * Create new NAT traversal engine
  */
-cedar_
 CedarNatTraversalHandle cedar_nat_traversal_new(void);
 
 /**
  * Free NAT traversal engine
  */
-cedar_
 void cedar_nat_traversal_free(CedarNatTraversalHandle handle);
 
 /**
  * Detect NAT type
  */
-cedar_
 enum CedarNatType cedar_nat_traversal_detect(CedarNatTraversalHandle handle);
 
 /**
  * Check if NAT traversal is supported
  */
-cedar_
 int cedar_nat_traversal_is_supported(CedarNatTraversalHandle handle);
 
 /**
  * Get Cedar version string
  */
-cedar_
 const char *cedar_version(void);
 
 /**
  * Get Cedar protocol version
  */
-cedar_
 uint32_t cedar_protocol_version(void);
 
 #ifdef __cplusplus
