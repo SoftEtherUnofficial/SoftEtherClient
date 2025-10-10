@@ -497,4 +497,31 @@ pub fn build(b: *std.Build) void {
 
     const run_tier2a_step = b.step("test-tier2a", "Run Tier 2A FFI tests (compress, HTTP)");
     run_tier2a_step.dependOn(&run_tier2a_cmd.step);
+
+    // ========================================================================
+    // Mayaqua Zig Wrapper Tests
+    // ========================================================================
+    const test_mayaqua_wrapper = b.addTest(.{
+        .name = "test_mayaqua_wrapper",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/mayaqua.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    // Add Mayaqua library
+    test_mayaqua_wrapper.addObjectFile(b.path(b.fmt("{s}/libmayaqua.a", .{mayaqua_lib_path})));
+    test_mayaqua_wrapper.addIncludePath(b.path(mayaqua_header_path));
+    test_mayaqua_wrapper.linkLibC();
+
+    // Run step for wrapper tests
+    const run_wrapper_cmd = b.addRunArtifact(test_mayaqua_wrapper);
+    run_wrapper_cmd.step.dependOn(b.getInstallStep());
+
+    const test_step = b.step("test", "Run Mayaqua Zig wrapper tests");
+    test_step.dependOn(&run_wrapper_cmd.step);
+
+    const run_wrapper_step = b.step("test-wrapper", "Run Mayaqua Zig wrapper tests");
+    run_wrapper_step.dependOn(&run_wrapper_cmd.step);
 }
