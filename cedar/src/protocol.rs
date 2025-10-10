@@ -312,11 +312,187 @@ impl Packet {
     }
 
     /// Deserialize packet from bytes
+    /// Automatically detects format (command vs response)
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() > MAX_PACKET_SIZE {
             return Err(Error::PacketTooLarge);
         }
 
+        if data.len() < 4 {
+            return Err(Error::BufferTooSmall);
+        }
+
+        // Detect format by examining first 4 bytes
+        let first_u32 = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+        
+        // Response format has element count < 256 (typically 3-10)
+        // Command format has command length > 256 (typically command string length)
+        if first_u32 < 256 {
+            eprintln!("[PACK] Detected RESPONSE format (element count: {})", first_u32);
+            Self::from_bytes_response(data)
+        } else {
+            eprintln!("[PACK] Detected COMMAND format (command length: {})", first_u32);
+            Self::from_bytes_command(data)
+        }
+    }
+
+    /// Deserialize response format: [element_count][key-value pairs]
+    /// No command string, just parameters
+    fn from_bytes_response(data: &[u8]) -> Result<Self> {
+        let mut cursor = 0;
+
+        // Read element count
+        let element_count = u32::from_be_bytes([
+            data[cursor],
+            data[cursor + 1],
+            data[cursor + 2],
+            data[cursor + 3],
+        ]) as usize;
+        cursor += 4;
+
+        eprintln!("[PACK] Parsing {} elements from response", element_count);
+
+        let mut params = Vec::with_capacity(element_count);
+
+        // Read each key-value pair
+        for i in 0..element_count {
+            // Read key length
+            if data.len() < cursor + 4 {
+                return Err(Error::BufferTooSmall);
+            }
+            let key_len = u32::from_be_bytes([
+                data[cursor],
+                data[cursor + 1],
+                data[cursor + 2],
+                data[cursor + 3],
+            ]) as usize;
+            cursor += 4;
+
+            // Read key
+            if data.len() < cursor + key_len {
+                return Err(Error::BufferTooSmall);
+            }
+            let key = String::from_utf8(data[cursor..cursor + key_len].to_vec())
+                .map_err(|_| Error::EncodingError)?;
+            cursor += key_len;
+
+            // Read value type
+            if data.len() < cursor + 4 {
+                return Err(Error::BufferTooSmall);
+            }
+            let value_type = u32::from_be_bytes([
+                data[cursor],
+                data[cursor + 1],
+                data[cursor + 2],
+                data[cursor + 3],
+            ]);
+            cursor += 4;
+
+            eprintln!("[PACK] Element {}: key='{}' type={} cursor={} remaining={}", 
+                     i, key, value_type, cursor, data.len() - cursor);
+            if data.len() >= cursor + 32 {
+                eprintln!("[PACK]   Next 32 bytes: {:02X?}", &data[cursor..cursor+32]);
+            } else if data.len() > cursor {
+                eprintln!("[PACK]   Remaining bytes: {:02X?}", &data[cursor..]);
+            }
+
+            // Read value based on type
+            let value = match value_type {
+                0 => {
+                    // Int - skip 4 bytes, skip 1 byte, read 2-byte value, skip 1 byte
+                    // Format: [type][4 mystery bytes][pad][2-byte BE value][pad]
+                    if data.len() < cursor + 8 {
+                        return Err(Error::BufferTooSmall);
+                    }
+                    
+                    // Skip the mystery 4 bytes
+                    cursor += 4;
+                    
+                    // Skip 1 padding byte
+                    cursor += 1;
+                    
+                    // Read 2 bytes as big-endian value
+                    let v = u16::from_be_bytes([
+                        data[cursor],
+                        data[cursor + 1],
+                    ]) as u32;
+                    cursor += 2;
+                    
+                    // Skip 1 more padding byte
+                    cursor += 1;
+                    
+                    eprintln!("[PACK] Element {}: key='{}' type=Int value={}", i, key, v);
+                    PacketValue::Int(v)
+                }
+                1 => {
+                    // Data
+                    if data.len() < cursor + 4 {
+                        return Err(Error::BufferTooSmall);
+                    }
+                    let data_len = u32::from_be_bytes([
+                        data[cursor],
+                        data[cursor + 1],
+                        data[cursor + 2],
+                        data[cursor + 3],
+                    ]) as usize;
+                    cursor += 4;
+
+                    if data.len() < cursor + data_len {
+                        return Err(Error::BufferTooSmall);
+                    }
+                    let d = data[cursor..cursor + data_len].to_vec();
+                    cursor += data_len;
+                    eprintln!("[PACK] Element {}: key='{}' type=Data length={}", i, key, data_len);
+                    PacketValue::Data(d)
+                }
+                2 => {
+                    // String (UTF-16 encoded)
+                    if data.len() < cursor + 4 {
+                        return Err(Error::BufferTooSmall);
+                    }
+                    let str_len = u32::from_be_bytes([
+                        data[cursor],
+                        data[cursor + 1],
+                        data[cursor + 2],
+                        data[cursor + 3],
+                    ]) as usize;
+                    cursor += 4;
+
+                    if data.len() < cursor + str_len {
+                        return Err(Error::BufferTooSmall);
+                    }
+                    
+                    // UTF-16 decoding
+                    let utf16_data = &data[cursor..cursor + str_len];
+                    let mut utf16_chars = Vec::new();
+                    for chunk in utf16_data.chunks_exact(2) {
+                        utf16_chars.push(u16::from_be_bytes([chunk[0], chunk[1]]));
+                    }
+                    let s = String::from_utf16(&utf16_chars)
+                        .map_err(|_| Error::EncodingError)?;
+                    cursor += str_len;
+                    
+                    eprintln!("[PACK] Element {}: key='{}' type=String value='{}'", i, key, s);
+                    PacketValue::String(s)
+                }
+                _ => {
+                    eprintln!("[PACK] WARNING: Unknown value type {} for key '{}'", value_type, key);
+                    return Err(Error::InvalidPacketFormat);
+                }
+            };
+
+            params.push((key, value));
+        }
+
+        // Response format packets have no command, use empty string
+        Ok(Self {
+            command: String::new(),
+            params,
+        })
+    }
+
+    /// Deserialize command format: [cmd_len][command][param_count][parameters]
+    fn from_bytes_command(data: &[u8]) -> Result<Self> {
         let mut cursor = 0;
 
         // Read command
@@ -338,6 +514,8 @@ impl Packet {
             .map_err(|_| Error::EncodingError)?;
         cursor += cmd_len;
 
+        eprintln!("[PACK] Command: '{}'", command);
+
         // Read param count
         if data.len() < cursor + 4 {
             return Err(Error::BufferTooSmall);
@@ -349,6 +527,8 @@ impl Packet {
             data[cursor + 3],
         ]) as usize;
         cursor += 4;
+
+        eprintln!("[PACK] Parameter count: {}", param_count);
 
         let mut params = Vec::with_capacity(param_count);
 

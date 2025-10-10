@@ -282,12 +282,36 @@ impl Session {
         eprintln!("[HTTP] Response body (first 100 bytes): {:02X?}", 
                  &response.body[..response.body.len().min(100)]);
 
-        // Step 7: Parse PACK from HTTP response body
-        let server_hello = Packet::from_bytes(&response.body)?;
+        // Step 7: Handle watermark in response (may or may not be present)
+        // Server sends watermark (1411 bytes) + PACK in initial handshake
+        // But may send PACK directly in subsequent responses
+        let pack_data = if response.body.len() > WATERMARK.len() && 
+                          &response.body[0..6] == &WATERMARK[0..6] {
+            eprintln!("[HANDSHAKE] Detected watermark, stripping {} bytes", WATERMARK.len());
+            &response.body[WATERMARK.len()..]
+        } else {
+            eprintln!("[HANDSHAKE] No watermark detected, parsing {} bytes of PACK data directly", response.body.len());
+            &response.body[..]
+        };
+
+        // Step 8: Parse PACK from HTTP response body
+        eprintln!("[HANDSHAKE] Attempting to parse PACK from {} bytes", pack_data.len());
+        eprintln!("[HANDSHAKE] First 50 bytes: {:02X?}", &pack_data[..pack_data.len().min(50)]);
+        
+        let server_hello = match Packet::from_bytes(pack_data) {
+            Ok(packet) => {
+                eprintln!("[HANDSHAKE] ✅ PACK parsed successfully");
+                packet
+            },
+            Err(e) => {
+                eprintln!("[HANDSHAKE] ❌ PACK parsing failed: {:?}", e);
+                return Err(e);
+            }
+        };
 
         eprintln!("[HANDSHAKE] Received server hello packet");
         
-        // Step 8: Extract and validate server information
+        // Step 9: Extract and validate server information
         let server_str = server_hello
             .get_string("server_str")
             .ok_or(Error::InvalidResponse)?;
@@ -295,8 +319,14 @@ impl Session {
         let server_version = server_hello
             .get_int("version")
             .ok_or(Error::InvalidResponse)?;
+        
+        let server_build = server_hello
+            .get_int("build")
+            .unwrap_or(0);
 
-        eprintln!("[HANDSHAKE] Server: {} (version: {})", server_str, server_version);
+        eprintln!("[HANDSHAKE] ✅ Server: {} (version: {}, build: {})", 
+                 server_str, server_version, server_build);
+        eprintln!("[HANDSHAKE] Protocol handshake completed successfully!");
 
         // Validate protocol version compatibility
         if server_version != PROTOCOL_VERSION {

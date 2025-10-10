@@ -589,4 +589,20 @@ pub fn build(b: *std.Build) void {
     const run_cedar_client_test = b.addRunArtifact(test_cedar_client);
     const cedar_client_test_step = b.step("test-cedar-client", "Test Cedar client path selection");
     cedar_client_test_step.dependOn(&run_cedar_client_test.step);
+
+    // ========================================================================
+    // Handshake Comparison Test
+    // ========================================================================
+    const test_handshake = b.addTest(.{
+        .name = "test_handshake_comparison",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/test_handshake_comparison.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_handshake_test = b.addRunArtifact(test_handshake);
+    const handshake_test_step = b.step("test-handshake", "Test Cedar vs OpenSSL handshake comparison");
+    handshake_test_step.dependOn(&run_handshake_test.step);
 }
