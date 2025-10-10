@@ -13,7 +13,45 @@ include = []
 exclude = ["config"]  # Skip config module (serde attributes cause parse errors)
 
 [export]
-include = ["mayaqua_malloc", "mayaqua_free", "mayaqua_buf_new", "mayaqua_buf_write"]
+include = [
+    # Memory management
+    "mayaqua_malloc", "mayaqua_free", "mayaqua_zero_malloc",
+    # Buffer operations
+    "mayaqua_buf_new", "mayaqua_buf_write", "mayaqua_buf_read", "mayaqua_buf_size",
+    "mayaqua_buf_seek", "mayaqua_buf_free",
+    # Crypto functions (Phase 3.1)
+    "mayaqua_sha0", "mayaqua_sha1", "mayaqua_password_hash",
+    "mayaqua_rc4_apply", "mayaqua_rc4_apply_inplace",
+    # Filesystem functions (Phase 3.1)
+    "mayaqua_ensure_dir", "mayaqua_read_file", "mayaqua_write_file",
+    "mayaqua_set_user_rw_only",
+    # String functions (Phase 3.1)
+    "mayaqua_utf8_to_utf16", "mayaqua_utf16_to_utf8",
+    "mayaqua_bin_to_str", "mayaqua_str_to_bin",
+    "mayaqua_mac_to_str", "mayaqua_str_to_mac",
+    # Network functions (Phase 3.1)
+    "mayaqua_tcp_connect", "mayaqua_tcp_connect_timeout",
+    "mayaqua_tcp_send", "mayaqua_tcp_recv", "mayaqua_tcp_close",
+    "mayaqua_tcp_listen", "mayaqua_tcp_listen_ex",
+    "mayaqua_tcp_accept", "mayaqua_tcp_listener_close",
+    "mayaqua_udp_new", "mayaqua_udp_send_to", "mayaqua_udp_recv_from", "mayaqua_udp_close",
+    # Tables functions (Phase 3.1)
+    "mayaqua_list_new", "mayaqua_list_add", "mayaqua_list_get",
+    "mayaqua_list_remove", "mayaqua_list_len", "mayaqua_list_clear", "mayaqua_list_free",
+    "mayaqua_queue_new", "mayaqua_queue_push", "mayaqua_queue_pop",
+    "mayaqua_queue_len", "mayaqua_queue_free",
+    "mayaqua_table_new", "mayaqua_table_insert", "mayaqua_table_get",
+    "mayaqua_table_remove", "mayaqua_table_contains", "mayaqua_table_len", "mayaqua_table_free",
+    # Platform functions (Phase 3.1)
+    "mayaqua_get_system_dir", "mayaqua_get_config_dir",
+    "mayaqua_get_interfaces", "mayaqua_free_string_array",
+    # Config functions (Phase 3.1)
+    "mayaqua_config_load", "mayaqua_config_save", "mayaqua_config_validate",
+    "mayaqua_config_get_string", "mayaqua_config_get_int", "mayaqua_config_get_bool",
+    "mayaqua_config_free",
+    # Memory cleanup functions
+    "mayaqua_free_buffer", "mayaqua_free_string", "mayaqua_free_utf16",
+]
 
 [export.rename]
 "MayaquaBuf" = "MAYAQUA_BUF"
