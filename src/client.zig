@@ -235,14 +235,10 @@ pub const VpnClient = struct {
         std.debug.print("  Server: {s}:{d}\n", .{ self.config.server_name, self.config.server_port });
         std.debug.print("  Hub: {s}\n", .{self.config.hub_name});
 
-        // Extract username and password from auth config
+        // Extract username for display
         const username = switch (self.config.auth) {
             .password => |p| p.username,
             else => "anonymous",
-        };
-        const password = switch (self.config.auth) {
-            .password => |p| p.password,
-            else => "",
         };
         std.debug.print("  User: {s}\n", .{username});
 
@@ -266,37 +262,20 @@ pub const VpnClient = struct {
             auth_username,
             auth_password,
         );
-        errdefer session.deinit(); // Step 2: Connect (TCP + TLS handshake)
-        std.debug.print("🔌 Connecting to server...\n", .{});
+        errdefer session.deinit();
+
+        // Step 2: Connect (establishes TLS, performs handshake, and authenticates)
+        std.debug.print("🔌 Connecting to server (TLS + handshake + auth)...\n", .{});
         try session.connect();
-        std.debug.print("✅ TLS connection established!\n", .{});
+        std.debug.print("✅ Connection established!\n", .{});
 
-        // Step 3: Send protocol hello packet
-        std.debug.print("👋 Sending hello packet...\n", .{});
-        var hello_packet = try cedar.Packet.init("hello");
-        defer hello_packet.deinit();
+        // NOTE: session.connect() already does:
+        // - TLS connection establishment
+        // - Protocol handshake (hello exchange)
+        // - User authentication
+        // So we don't need to do hello/auth again!
 
-        try hello_packet.addString("client_str", "Cedar-Zig-Client");
-        try hello_packet.addInt("version", 4);
-        try hello_packet.addInt("build", 9999);
-
-        try session.sendPacket(&hello_packet);
-
-        // Step 4: Receive hello response
-        std.debug.print("📥 Waiting for hello response...\n", .{});
-        var hello_response = try session.receivePacket();
-        defer hello_response.deinit();
-
-        var server_str_buf: [256]u8 = undefined;
-        const server_str = try hello_response.getString("server_str", &server_str_buf);
-        std.debug.print("✅ Server: {s}\n", .{server_str});
-
-        // Step 5: Authenticate
-        std.debug.print("🔐 Authenticating as {s}...\n", .{username});
-        try session.authenticate(username, password);
-        std.debug.print("✅ Authentication successful!\n", .{});
-
-        // Step 6: Session established
+        // Step 3: Session established
         const status = session.getStatus();
         std.debug.print("🎉 Connection established! Status: {}\n", .{status});
 

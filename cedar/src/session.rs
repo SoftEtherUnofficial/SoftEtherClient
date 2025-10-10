@@ -665,28 +665,45 @@ impl Session {
         eprintln!("[AUTH] === End response fields ===");
 
         // Check authentication result
-        // Server sends "auth" response with status
+        // C bridge (Protocol.c:5923) exits immediately on any error code
         if let Some(error_code) = auth_response.get_int("error") {
-            eprintln!("[AUTH] ❌ Authentication failed with error code: {}", error_code);
-            if let Some(error_msg) = auth_response.get_string("error_str") {
-                eprintln!("[AUTH] Error message: {}", error_msg);
+            if error_code != 0 {
+                eprintln!("[AUTH] ❌ Server returned error code: {}", error_code);
+                
+                // Check if pencore contains error details
+                if let Some(pencore) = auth_response.get_data("pencore") {
+                    eprintln!("[AUTH] Pencore error data: {} bytes", pencore.len());
+                }
+                
+                // Map error codes
+                let error_desc = match error_code {
+                    3 => "Connection interrupted (ERR_DISCONNECTED)",
+                    7 => "Auth type not supported (ERR_AUTHTYPE_NOT_SUPPORTED)",
+                    9 => "Authentication failed (ERR_AUTH_FAILED)",
+                    68 => "User auth type not password (ERR_USER_AUTHTYPE_NOT_PASSWORD)",
+                    _ => "Unknown error",
+                };
+                eprintln!("[AUTH] Error: {}", error_desc);
+                
+                return Err(Error::AuthenticationFailed);
             }
-            return Err(Error::AuthenticationFailed);
         }
 
-        // Check for success indicator
-        let authenticated = auth_response.get_int("authok").unwrap_or(0) != 0;
-        if !authenticated {
-            eprintln!("[AUTH] ❌ Authentication rejected by server");
-            return Err(Error::AuthenticationFailed);
-        }
+        eprintln!("[AUTH] ✅ No error code - authentication successful!");
 
-        eprintln!("[AUTH] ✅ Authentication successful!");
+        // Check for explicit success indicator (authok field)
+        if let Some(authok) = auth_response.get_int("authok") {
+            if authok != 0 {
+                eprintln!("[AUTH] authok={}", authok);
+            }
+        }
 
         // Extract session information if provided
         if let Some(session_key) = auth_response.get_data("session_key") {
             eprintln!("[AUTH] Received session key: {} bytes", session_key.len());
         }
+
+        eprintln!("[AUTH] 🎉 Authentication phase complete!");
 
         Ok(())
     }
