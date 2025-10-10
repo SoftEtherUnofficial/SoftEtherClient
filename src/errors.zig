@@ -32,6 +32,7 @@ pub const VpnError = error{
     NotInitialized,
     InternalError,
     OutOfMemory,
+    NotImplemented, // Feature not yet implemented
 
     // Network errors
     NetworkError,
@@ -63,6 +64,7 @@ pub fn errorMessage(err: VpnError) []const u8 {
         VpnError.NotInitialized => "Not initialized",
         VpnError.InternalError => "Internal error",
         VpnError.OutOfMemory => "Out of memory",
+        VpnError.NotImplemented => "Feature not yet implemented",
         VpnError.NetworkError => "Network error occurred",
         VpnError.ProtocolError => "VPN protocol error",
         VpnError.ServerUnreachable => "Server unreachable",

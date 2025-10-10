@@ -36,6 +36,9 @@ pub fn build(b: *std.Build) void {
     // Build option to select packet adapter (Zig adapter is default for better performance)
     const use_zig_adapter = b.option(bool, "use-zig-adapter", "Use Zig packet adapter (default: true)") orelse true;
 
+    // Build option to use Cedar FFI instead of OpenSSL (default: false for gradual migration)
+    const use_cedar = b.option(bool, "use-cedar", "Use Cedar FFI for TLS/protocol (default: false)") orelse false;
+
     // Detect target OS
     const target_os = target.result.os.tag;
     const is_ios = target_os == .ios;
@@ -203,6 +206,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Create build options module to expose build flags to Zig code
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "use_cedar", use_cedar);
+    build_options.addOption(bool, "use_zig_adapter", use_zig_adapter);
+
     const lib_module = b.addModule("softether", .{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -210,6 +218,7 @@ pub fn build(b: *std.Build) void {
     lib_module.addIncludePath(b.path("src"));
 
     lib_module.addImport("taptun", taptun.module("taptun"));
+    lib_module.addImport("build_options", build_options.createModule());
     lib_module.link_libc = true;
 
     // ============================================
@@ -223,6 +232,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "softether", .module = lib_module },
+                .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });
@@ -288,6 +298,17 @@ pub fn build(b: *std.Build) void {
     cli.linkSystemLibrary("ssl");
     cli.linkSystemLibrary("crypto");
     cli.linkLibC();
+
+    // Link Cedar FFI library if enabled
+    if (use_cedar) {
+        cli.addIncludePath(b.path("include")); // Cedar FFI headers
+        cli.addLibraryPath(b.path("cedar/target/release")); // Cedar static lib
+        cli.linkSystemLibrary("cedar"); // libcedar.a
+
+        // Note: Cedar will be built by calling `cargo build --release` in cedar/ directory
+        // Run manually before building with -Duse-cedar=true:
+        //   cd cedar && cargo build --release
+    }
 
     // Platform-specific system libraries
     if (target_os != .windows) {
@@ -524,4 +545,36 @@ pub fn build(b: *std.Build) void {
 
     const run_wrapper_step = b.step("test-wrapper", "Run Mayaqua Zig wrapper tests");
     run_wrapper_step.dependOn(&run_wrapper_cmd.step);
+
+    // ========================================================================
+    // Cedar Client Integration Test
+    // ========================================================================
+    const test_cedar_client = b.addTest(.{
+        .name = "test_cedar_client",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test_cedar_client.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "build_options", .module = build_options.createModule() },
+            },
+        }),
+    });
+
+    test_cedar_client.addIncludePath(b.path("src"));
+    test_cedar_client.addIncludePath(b.path("src/bridge"));
+    test_cedar_client.addIncludePath(b.path("SoftEtherVPN_Stable/src"));
+
+    // Add Cedar library if enabled
+    if (use_cedar) {
+        test_cedar_client.addIncludePath(b.path("include"));
+        test_cedar_client.addLibraryPath(b.path("cedar/target/release"));
+        test_cedar_client.linkSystemLibrary("cedar");
+    }
+
+    test_cedar_client.linkLibC();
+
+    const run_cedar_client_test = b.addRunArtifact(test_cedar_client);
+    const cedar_client_test_step = b.step("test-cedar-client", "Test Cedar client path selection");
+    cedar_client_test_step.dependOn(&run_cedar_client_test.step);
 }

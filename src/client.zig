@@ -4,6 +4,10 @@ const c = c_mod.c;
 const errors = @import("errors.zig");
 const config = @import("config.zig");
 const types = @import("types.zig");
+const build_options = @import("build_options");
+
+// Cedar FFI imports (conditionally compiled)
+const cedar = if (build_options.use_cedar) @import("cedar/wrapper.zig") else struct {};
 
 const VpnError = errors.VpnError;
 const ConnectionConfig = config.ConnectionConfig;
@@ -25,6 +29,9 @@ pub const VpnClient = struct {
     handle: ?*c_mod.VpnBridgeClient,
     allocator: std.mem.Allocator,
     config: ConnectionConfig,
+
+    // Cedar FFI session (when use_cedar is enabled)
+    cedar_session: if (build_options.use_cedar) ?cedar.Session else void = if (build_options.use_cedar) null else {},
 
     /// Initialize a new VPN client
     pub fn init(allocator: std.mem.Allocator, cfg: ConnectionConfig) !VpnClient {
@@ -180,6 +187,14 @@ pub const VpnClient = struct {
 
     /// Clean up and free resources
     pub fn deinit(self: *VpnClient) void {
+        // Clean up Cedar session if using Cedar
+        if (build_options.use_cedar) {
+            if (self.cedar_session) |*session| {
+                session.deinit();
+            }
+        }
+
+        // Clean up SoftEther handle
         if (self.handle) |handle| {
             c.vpn_bridge_free_client(handle);
             self.handle = null;
@@ -188,6 +203,15 @@ pub const VpnClient = struct {
 
     /// Connect to VPN server
     pub fn connect(self: *VpnClient) !void {
+        if (build_options.use_cedar) {
+            return self.connectWithCedar();
+        } else {
+            return self.connectWithOpenSSL();
+        }
+    }
+
+    /// Connect using legacy OpenSSL path (SoftEther C bridge)
+    fn connectWithOpenSSL(self: *VpnClient) !void {
         const handle = self.handle orelse return VpnError.InitializationFailed;
 
         const result = c.vpn_bridge_connect(handle);
@@ -199,6 +223,48 @@ pub const VpnClient = struct {
                 else => VpnError.OperationFailed,
             };
         }
+    }
+
+    /// Connect using Cedar FFI (Rust TLS implementation)
+    fn connectWithCedar(self: *VpnClient) !void {
+        if (!build_options.use_cedar) {
+            return VpnError.InitializationFailed; // Should never happen
+        }
+
+        // TODO: Implement Cedar connection logic
+        // For now, just create a session and print debug info
+
+        std.debug.print("🚀 Cedar FFI Connection Path!\n", .{});
+        std.debug.print("  Server: {s}:{d}\n", .{ self.config.server_name, self.config.server_port });
+        std.debug.print("  Hub: {s}\n", .{self.config.hub_name});
+
+        // Extract username from auth config
+        const username = switch (self.config.auth) {
+            .password => |p| p.username,
+            else => "anonymous",
+        };
+        std.debug.print("  User: {s}\n", .{username});
+
+        // Create Cedar session
+        const session = try cedar.Session.init(
+            self.config.server_name,
+            self.config.server_port,
+            self.config.hub_name,
+        );
+
+        self.cedar_session = session;
+
+        std.debug.print("✅ Cedar session created successfully!\n", .{});
+        std.debug.print("   (Full connection logic not yet implemented)\n", .{});
+
+        // TODO: Implement full connection flow:
+        // 1. session.connect() - TLS handshake
+        // 2. Send authentication packet
+        // 3. Receive server response
+        // 4. Set up virtual network interface
+        // 5. Start packet forwarding loop
+
+        return VpnError.NotImplemented; // Return error for now since not fully implemented
     }
 
     /// Disconnect from VPN server
