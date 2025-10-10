@@ -341,7 +341,7 @@ impl Packet {
     fn from_bytes_response(data: &[u8]) -> Result<Self> {
         let mut cursor = 0;
 
-        // Read element count
+        // Read element count (BIG-ENDIAN - SoftEther uses network byte order)
         let element_count = u32::from_be_bytes([
             data[cursor],
             data[cursor + 1],
@@ -351,16 +351,35 @@ impl Packet {
         cursor += 4;
 
         eprintln!("[PACK] Parsing {} elements from response", element_count);
+        
+        // Debug: dump first 80 bytes to see full structure
+        if data.len() >= 80 {
+            eprintln!("[PACK] First 80 bytes:");
+            for chunk_start in (0..80).step_by(16) {
+                eprint!("[PACK]   {:03}: ", chunk_start);
+                for i in 0..16 {
+                    if chunk_start + i < 80 {
+                        eprint!("{:02X} ", data[chunk_start + i]);
+                    }
+                }
+                eprintln!();
+            }
+        }
 
         let mut params = Vec::with_capacity(element_count);
 
         // Read each key-value pair
         for i in 0..element_count {
+            eprintln!("[PACK] === Processing element {} at cursor={} ===", i, cursor);
+            
             // Read key length
             if data.len() < cursor + 4 {
+                eprintln!("[PACK] ERROR: Not enough bytes for key length. Need 4, have {}", data.len() - cursor);
                 return Err(Error::BufferTooSmall);
             }
-            let key_len = u32::from_be_bytes([
+            eprintln!("[PACK] Reading key_len from positions {}-{}: bytes = {:02X?}", 
+                     cursor, cursor+3, &data[cursor..cursor+4]);
+            let key_len = u32::from_be_bytes([  // BIG-ENDIAN
                 data[cursor],
                 data[cursor + 1],
                 data[cursor + 2],
@@ -368,28 +387,41 @@ impl Packet {
             ]) as usize;
             cursor += 4;
 
+            eprintln!("[PACK] key_len={}, cursor={}, remaining={}", key_len, cursor, data.len() - cursor);
+
             // Read key
             if data.len() < cursor + key_len {
+                eprintln!("[PACK] ERROR: Not enough bytes for key. Need {}, have {}", key_len, data.len() - cursor);
                 return Err(Error::BufferTooSmall);
             }
             let key = String::from_utf8(data[cursor..cursor + key_len].to_vec())
                 .map_err(|_| Error::EncodingError)?;
             cursor += key_len;
+            
+            eprintln!("[PACK] key='{}' (len={}, raw_bytes={:?}), cursor after reading key={}", 
+                     key, key.len(), &data[cursor-key_len..cursor], cursor);
+
+            let end_pos = (cursor + 8).min(data.len());
+            eprintln!("[PACK] DEBUG: About to read type. cursor={}, next {} bytes: {:02X?}", 
+                     cursor, end_pos - cursor, &data[cursor..end_pos]);
 
             // Read value type
             if data.len() < cursor + 4 {
+                eprintln!("[PACK] ERROR: Not enough bytes for value type. Need 4, have {}", data.len() - cursor);
                 return Err(Error::BufferTooSmall);
             }
-            let value_type = u32::from_be_bytes([
+            eprintln!("[PACK] Reading type from positions {}-{}: bytes = {:02X?}", 
+                     cursor, cursor+3, &data[cursor..cursor+4]);
+            let value_type = u32::from_be_bytes([  // BIG-ENDIAN
                 data[cursor],
                 data[cursor + 1],
                 data[cursor + 2],
                 data[cursor + 3],
             ]);
             cursor += 4;
-
-            eprintln!("[PACK] Element {}: key='{}' type={} cursor={} remaining={}", 
-                     i, key, value_type, cursor, data.len() - cursor);
+            
+            eprintln!("[PACK] Element {}: key='{}' type={} (hex: 0x{:X}) cursor={} remaining={}", 
+                     i, key, value_type, value_type, cursor, data.len() - cursor);
             if data.len() >= cursor + 32 {
                 eprintln!("[PACK]   Next 32 bytes: {:02X?}", &data[cursor..cursor+32]);
             } else if data.len() > cursor {
@@ -399,27 +431,23 @@ impl Packet {
             // Read value based on type
             let value = match value_type {
                 0 => {
-                    // Int - skip 4 bytes, skip 1 byte, read 2-byte value, skip 1 byte
-                    // Format: [type][4 mystery bytes][pad][2-byte BE value][pad]
-                    if data.len() < cursor + 8 {
+                    // VALUE_INT: Skip 4, skip 1, read 2 (total 7 bytes)
+                    if data.len() < cursor + 7 {
                         return Err(Error::BufferTooSmall);
                     }
                     
-                    // Skip the mystery 4 bytes
-                    cursor += 4;
+                    eprintln!("[PACK]   Int handler start: cursor={}", cursor);
+                    cursor += 4;  // Skip first 4 bytes (mystery)
+                    eprintln!("[PACK]   After skip 4: cursor={}", cursor);
+                    cursor += 1;  // Skip 1 byte (padding?)
+                    eprintln!("[PACK]   After skip 1: cursor={}", cursor);
                     
-                    // Skip 1 padding byte
-                    cursor += 1;
-                    
-                    // Read 2 bytes as big-endian value
                     let v = u16::from_be_bytes([
                         data[cursor],
                         data[cursor + 1],
                     ]) as u32;
-                    cursor += 2;
-                    
-                    // Skip 1 more padding byte
-                    cursor += 1;
+                    cursor += 2;  // Read 2 bytes (value)
+                    eprintln!("[PACK]   After read 2: cursor={} (end of element {})", cursor, i);
                     
                     eprintln!("[PACK] Element {}: key='{}' type=Int value={}", i, key, v);
                     PacketValue::Int(v)
