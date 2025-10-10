@@ -170,7 +170,6 @@ pub fn sha0(data: &[u8]) -> Sha1Sum {
 }
 
 /// Compute SHA-1 hash of data (using external crate for non-compatibility cases)
-#[cfg(feature = "sha1-compat")]
 pub fn sha1(data: &[u8]) -> Sha1Sum {
     use sha1::{Digest, Sha1};
     let mut hasher = Sha1::new();

@@ -4,6 +4,7 @@
 //! Uses std::net for FFI compatibility (no async/tokio)
 
 use crate::error::{Error, Result};
+use crate::tls::TlsStream;
 use std::io::{Read, Write};
 use std::net::{
     IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs,
@@ -21,9 +22,15 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default socket buffer size
 pub const DEFAULT_BUFFER_SIZE: usize = 65536;
 
+/// TCP socket inner representation (plain or TLS)
+enum TcpSocketInner {
+    Plain(TcpStream),
+    Tls(TlsStream),
+}
+
 /// TCP socket wrapper with SoftEther-compatible API
 pub struct TcpSocket {
-    stream: TcpStream,
+    inner: TcpSocketInner,
     connected: bool,
     server_mode: bool,
 }
@@ -36,7 +43,7 @@ impl TcpSocket {
         })?;
 
         Ok(Self {
-            stream,
+            inner: TcpSocketInner::Plain(stream),
             connected: true,
             server_mode,
         })
@@ -60,26 +67,83 @@ impl TcpSocket {
         Self::from_stream(stream, false)
     }
 
+    /// Connect with TLS encryption
+    pub fn connect_tls(hostname: &str, port: u16) -> Result<Self> {
+        Self::connect_tls_timeout(hostname, port, DEFAULT_TIMEOUT)
+    }
+
+    /// Connect with TLS and timeout
+    pub fn connect_tls_timeout(hostname: &str, port: u16, timeout: Duration) -> Result<Self> {
+        println!("🔒 Establishing TLS connection to {}:{}...", hostname, port);
+        
+        let addr = resolve_hostname(hostname, port)?;
+
+        let stream = TcpStream::connect_timeout(&addr, timeout).map_err(|e| {
+            Error::Network(format!("Failed to connect to {}:{}: {}", hostname, port, e))
+        })?;
+
+        // Set TCP_NODELAY before TLS handshake
+        stream.set_nodelay(true).map_err(|e| {
+            Error::Network(format!("Failed to set TCP_NODELAY: {}", e))
+        })?;
+
+        println!("🤝 Performing TLS handshake...");
+        
+        // Wrap with TLS
+        let tls_stream = TlsStream::connect(stream, hostname)?;
+
+        println!("✅ TLS connection established");
+
+        Ok(Self {
+            inner: TcpSocketInner::Tls(tls_stream),
+            connected: true,
+            server_mode: false,
+        })
+    }
+
     /// Set read timeout
     pub fn set_read_timeout(&self, timeout: Option<Duration>) -> Result<()> {
-        self.stream
-            .set_read_timeout(timeout)
-            .map_err(|e| Error::Network(format!("Failed to set read timeout: {}", e)))
+        match &self.inner {
+            TcpSocketInner::Plain(stream) => {
+                stream
+                    .set_read_timeout(timeout)
+                    .map_err(|e| Error::Network(format!("Failed to set read timeout: {}", e)))
+            }
+            TcpSocketInner::Tls(tls) => {
+                tls.get_ref()
+                    .set_read_timeout(timeout)
+                    .map_err(|e| Error::Network(format!("Failed to set read timeout: {}", e)))
+            }
+        }
     }
 
     /// Set write timeout
     pub fn set_write_timeout(&self, timeout: Option<Duration>) -> Result<()> {
-        self.stream
-            .set_write_timeout(timeout)
-            .map_err(|e| Error::Network(format!("Failed to set write timeout: {}", e)))
+        match &self.inner {
+            TcpSocketInner::Plain(stream) => {
+                stream
+                    .set_write_timeout(timeout)
+                    .map_err(|e| Error::Network(format!("Failed to set write timeout: {}", e)))
+            }
+            TcpSocketInner::Tls(tls) => {
+                tls.get_ref()
+                    .set_write_timeout(timeout)
+                    .map_err(|e| Error::Network(format!("Failed to set write timeout: {}", e)))
+            }
+        }
     }
 
     /// Set TCP keepalive
     pub fn set_keepalive(&self, keepalive: Option<Duration>) -> Result<()> {
+        let tcp_stream = match &self.inner {
+            TcpSocketInner::Plain(stream) => stream,
+            TcpSocketInner::Tls(tls) => tls.get_ref(),
+        };
+
         #[cfg(unix)]
         {
             use std::os::unix::io::AsRawFd;
-            let fd = self.stream.as_raw_fd();
+            let fd = tcp_stream.as_raw_fd();
             unsafe {
                 if let Some(_duration) = keepalive {
                     // Enable keepalive
@@ -176,44 +240,83 @@ impl TcpSocket {
 
     /// Read data from socket
     pub fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
-        self.stream
-            .read(buf)
-            .map_err(|e| Error::Network(format!("Failed to read from socket: {}", e)))
+        match &mut self.inner {
+            TcpSocketInner::Plain(stream) => {
+                stream.read(buf)
+                    .map_err(|e| Error::Network(format!("Failed to read from socket: {}", e)))
+            }
+            TcpSocketInner::Tls(tls) => {
+                tls.read(buf)
+            }
+        }
     }
 
     /// Write data to socket
     pub fn send(&mut self, buf: &[u8]) -> Result<usize> {
-        self.stream
-            .write(buf)
-            .map_err(|e| Error::Network(format!("Failed to write to socket: {}", e)))
+        match &mut self.inner {
+            TcpSocketInner::Plain(stream) => {
+                stream.write(buf)
+                    .map_err(|e| Error::Network(format!("Failed to write to socket: {}", e)))
+            }
+            TcpSocketInner::Tls(tls) => {
+                tls.write(buf)
+            }
+        }
     }
 
     /// Flush the write buffer
     pub fn flush(&mut self) -> Result<()> {
-        self.stream
-            .flush()
-            .map_err(|e| Error::Network(format!("Failed to flush socket: {}", e)))
+        match &mut self.inner {
+            TcpSocketInner::Plain(stream) => {
+                stream.flush()
+                    .map_err(|e| Error::Network(format!("Failed to flush socket: {}", e)))
+            }
+            TcpSocketInner::Tls(tls) => {
+                tls.flush()
+            }
+        }
     }
 
     /// Shutdown the socket
     pub fn shutdown(&self, how: Shutdown) -> Result<()> {
-        self.stream
-            .shutdown(how)
-            .map_err(|e| Error::Network(format!("Failed to shutdown socket: {}", e)))
+        match &self.inner {
+            TcpSocketInner::Plain(stream) => {
+                stream.shutdown(how)
+                    .map_err(|e| Error::Network(format!("Failed to shutdown socket: {}", e)))
+            }
+            TcpSocketInner::Tls(tls) => {
+                tls.get_ref().shutdown(how)
+                    .map_err(|e| Error::Network(format!("Failed to shutdown socket: {}", e)))
+            }
+        }
     }
 
     /// Get local address
     pub fn local_addr(&self) -> Result<SocketAddr> {
-        self.stream
-            .local_addr()
-            .map_err(|e| Error::Network(format!("Failed to get local address: {}", e)))
+        match &self.inner {
+            TcpSocketInner::Plain(stream) => {
+                stream.local_addr()
+                    .map_err(|e| Error::Network(format!("Failed to get local address: {}", e)))
+            }
+            TcpSocketInner::Tls(tls) => {
+                tls.get_ref().local_addr()
+                    .map_err(|e| Error::Network(format!("Failed to get local address: {}", e)))
+            }
+        }
     }
 
     /// Get peer address
     pub fn peer_addr(&self) -> Result<SocketAddr> {
-        self.stream
-            .peer_addr()
-            .map_err(|e| Error::Network(format!("Failed to get peer address: {}", e)))
+        match &self.inner {
+            TcpSocketInner::Plain(stream) => {
+                stream.peer_addr()
+                    .map_err(|e| Error::Network(format!("Failed to get peer address: {}", e)))
+            }
+            TcpSocketInner::Tls(tls) => {
+                tls.get_ref().peer_addr()
+                    .map_err(|e| Error::Network(format!("Failed to get peer address: {}", e)))
+            }
+        }
     }
 
     /// Check if connected

@@ -27,7 +27,7 @@ pub enum Error {
     // Network errors
     ConnectFailed, // Network connection failed
     SocketError,   // Generic socket error
-    TlsError,      // TLS/SSL error
+    TlsError(String), // TLS/SSL error with details
 
     // Protocol errors
     ProtocolError,        // Protocol violation
@@ -90,7 +90,7 @@ impl fmt::Display for Error {
             Error::ValueTypeError => write!(f, "Value type mismatch"),
             Error::ConnectFailed => write!(f, "Connection failed"),
             Error::SocketError => write!(f, "Socket error"),
-            Error::TlsError => write!(f, "TLS error"),
+            Error::TlsError(msg) => write!(f, "TLS error: {msg}"),
             Error::ProtocolError => write!(f, "Protocol error"),
             Error::InvalidSignature => write!(f, "Invalid signature"),
             Error::AuthenticationFailed => write!(f, "Authentication failed"),
@@ -162,7 +162,7 @@ impl Error {
             Error::ValueTypeError => 103,
             Error::ConnectFailed => 200,
             Error::SocketError => 201,
-            Error::TlsError => 202,
+            Error::TlsError(_) => 202,
             Error::ProtocolError => 300,
             Error::InvalidSignature => 301,
             Error::AuthenticationFailed => 302,

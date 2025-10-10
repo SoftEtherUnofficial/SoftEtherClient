@@ -595,12 +595,11 @@ pub unsafe extern "C" fn mayaqua_sha0(
     0 // Success
 }
 
-/// Compute SHA-1 hash (20 bytes) - requires sha1-compat feature
+/// Compute SHA-1 hash (20 bytes)
 /// 
 /// # Safety
 /// - `data` must be valid for reads of `len` bytes
 /// - `output` must be valid for writes of 20 bytes
-#[cfg(feature = "sha1-compat")]
 #[no_mangle]
 pub unsafe extern "C" fn mayaqua_sha1(
     data: *const c_void,

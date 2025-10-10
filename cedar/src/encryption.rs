@@ -252,7 +252,7 @@ impl TlsConnection {
 
         // Create TLS connection
         let mut tls_conn = ClientConnection::new(config, server_name)
-            .map_err(|e| Error::TlsError)?;
+            .map_err(|e| Error::TlsError(format!("Failed to create TLS connection: {}", e)))?;
 
         // Perform TLS handshake
         while tls_conn.is_handshaking() {
@@ -268,7 +268,7 @@ impl TlsConnection {
 
             // Process TLS messages
             if let Err(e) = tls_conn.process_new_packets() {
-                return Err(Error::TlsError);
+                return Err(Error::TlsError(format!("TLS handshake failed: {}", e)));
             }
         }
 
@@ -340,7 +340,7 @@ impl TlsConnection {
         // Process TLS messages
         tls_conn
             .process_new_packets()
-            .map_err(|_| Error::TlsError)?;
+            .map_err(|e| Error::TlsError(format!("TLS packet processing failed: {}", e)))?;
 
         // Read application data
         let bytes_received = tls_conn
@@ -376,7 +376,7 @@ impl TlsConnection {
 
         // Create TLS connection
         let mut tls_conn = ClientConnection::new(config, server_name)
-            .map_err(|_| Error::TlsError)?;
+            .map_err(|e| Error::TlsError(format!("Failed to create TLS connection: {}", e)))?;
 
         // Perform TLS handshake loop
         while tls_conn.is_handshaking() {
@@ -390,7 +390,7 @@ impl TlsConnection {
 
             // Process TLS messages
             tls_conn.process_new_packets()
-                .map_err(|_| Error::TlsError)?;
+                .map_err(|e| Error::TlsError(format!("TLS handshake failed: {}", e)))?;
         }
 
         // Clone the stream (we need ownership)
@@ -461,7 +461,7 @@ impl TlsConnection {
             
             // Process TLS records
             tls_conn.process_new_packets()
-                .map_err(|_| Error::TlsError)?;
+                .map_err(|e| Error::TlsError(format!("TLS packet processing failed: {}", e)))?;
             
             // Read decrypted plaintext
             let bytes_read = tls_conn.reader().read(plaintext)

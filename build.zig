@@ -7,7 +7,7 @@ fn buildMayaquaLibrary(b: *std.Build) !void {
         "build",
         "--release",
         "--features",
-        "compress,sha1-compat",
+        "compress",
         "--manifest-path",
         "mayaqua/Cargo.toml",
     });

@@ -170,18 +170,29 @@ impl Session {
     pub fn connect(&self) -> Result<()> {
         self.set_status(SessionStatus::Connecting);
 
-        // Establish initial TCP connection
-        let socket = TcpSocket::connect(&self.config.server, self.config.port)?;
+        eprintln!("[CONNECT] Establishing TLS connection to {}:{}", self.config.server, self.config.port);
+        
+        // Establish TLS connection
+        let socket = TcpSocket::connect_tls(&self.config.server, self.config.port)?;
+        
+        eprintln!("[CONNECT] TLS connection established");
 
         let mut connections = self.tcp_connections.lock().unwrap();
         connections.push(socket);
+        drop(connections); // Release lock before handshake
 
+        eprintln!("[CONNECT] Starting handshake...");
+        
         // Send initial handshake
         self.send_handshake()?;
+
+        eprintln!("[CONNECT] Handshake complete, authenticating...");
 
         // Authenticate
         self.set_status(SessionStatus::Authenticating);
         self.authenticate_from_config()?;
+
+        eprintln!("[CONNECT] Authentication complete");
 
         // Session established
         self.set_status(SessionStatus::Established);
@@ -191,11 +202,64 @@ impl Session {
 
     /// Send initial handshake
     fn send_handshake(&self) -> Result<()> {
-        // TODO: Implement SoftEther handshake protocol
-        // This would include:
-        // - Send Cedar signature
-        // - Protocol version negotiation
-        // - Capability exchange
+        use crate::protocol::{Packet, PROTOCOL_VERSION, CEDAR_SIGNATURE};
+
+        eprintln!("[HANDSHAKE] Sending protocol signature: {}", CEDAR_SIGNATURE);
+        
+        // Step 1: Send protocol signature
+        let bytes_sent = self.send_raw(CEDAR_SIGNATURE.as_bytes())?;
+        eprintln!("[HANDSHAKE] Sent {} bytes", bytes_sent);
+        
+        // Flush to ensure signature is sent immediately
+        {
+            let mut connections = self.tcp_connections.lock().unwrap();
+            if !connections.is_empty() {
+                connections[0].flush()?;
+                eprintln!("[HANDSHAKE] Flushed");
+            }
+        }
+
+        eprintln!("[HANDSHAKE] Creating hello packet...");
+        
+        // Step 2: Create hello packet with client information
+        let hello_packet = Packet::new("hello")
+            .add_string("client_str", "Cedar-Zig-Client/1.0")
+            .add_int("version", PROTOCOL_VERSION)
+            .add_int("build", 9999)
+            .add_bool("use_encrypt", self.config.use_encrypt)
+            .add_bool("use_compress", self.config.use_compress)
+            .add_int("max_connection", self.config.max_connection);
+
+        eprintln!("[HANDSHAKE] Sending hello packet to server...");
+        
+        // Step 3: Send hello packet
+        self.send_packet_raw(&hello_packet)?;
+        eprintln!("[HANDSHAKE] Hello packet sent");
+
+        eprintln!("[HANDSHAKE] Waiting for server hello response...");
+        
+        // Step 4: Receive hello response from server
+        let response = self.receive_packet_raw()?;
+
+        eprintln!("[HANDSHAKE] Received response from server");
+        
+        // Step 5: Extract and validate server information
+        let server_str = response
+            .get_string("server_str")
+            .ok_or(Error::InvalidResponse)?;
+        
+        let server_version = response
+            .get_int("version")
+            .ok_or(Error::InvalidResponse)?;
+
+        eprintln!("[HANDSHAKE] Server: {} (version: {})", server_str, server_version);
+
+        // Validate protocol version compatibility
+        if server_version != PROTOCOL_VERSION {
+            eprintln!("[HANDSHAKE] WARNING: Version mismatch - Client: {}, Server: {}",
+                    PROTOCOL_VERSION, server_version);
+        }
+
         Ok(())
     }
 
@@ -219,6 +283,82 @@ impl Session {
                 Err(Error::NotImplemented)
             }
         }
+    }
+
+    /// Internal method: Send raw data without status check (for handshake)
+    fn send_raw(&self, data: &[u8]) -> Result<usize> {
+        let mut connections = self.tcp_connections.lock().unwrap();
+        if connections.is_empty() {
+            return Err(Error::NotConnected);
+        }
+
+        // Send through first connection
+        let sent = connections[0].send(data)?;
+
+        // Update statistics
+        let mut stats = self.stats.lock().unwrap();
+        stats.update_send(sent, 1);
+
+        Ok(sent)
+    }
+
+    /// Internal method: Receive raw data without status check (for handshake)
+    fn recv_raw(&self, buffer: &mut [u8]) -> Result<usize> {
+        let mut connections = self.tcp_connections.lock().unwrap();
+        if connections.is_empty() {
+            return Err(Error::NotConnected);
+        }
+
+        // Receive from first connection
+        let received = connections[0].recv(buffer)?;
+
+        // Update statistics
+        let mut stats = self.stats.lock().unwrap();
+        stats.update_recv(received, 1);
+
+        Ok(received)
+    }
+
+    /// Internal method: Send packet without status check (for handshake)
+    fn send_packet_raw(&self, packet: &Packet) -> Result<()> {
+        let data = packet.to_bytes()?;
+
+        // Send packet size first (4 bytes, big-endian)
+        let size_bytes = (data.len() as u32).to_be_bytes();
+        self.send_raw(&size_bytes)?;
+
+        // Then send packet data
+        self.send_raw(&data)?;
+
+        Ok(())
+    }
+
+    /// Internal method: Receive packet without status check (for handshake)
+    fn receive_packet_raw(&self) -> Result<Packet> {
+        // Read packet size first (4 bytes)
+        let mut size_buf = [0u8; 4];
+        self.recv_raw(&mut size_buf)?;
+        let packet_size = u32::from_be_bytes(size_buf) as usize;
+
+        // Validate packet size
+        if packet_size == 0 || packet_size > 16 * 1024 * 1024 {
+            // Max 16MB
+            return Err(Error::InvalidPacketSize);
+        }
+
+        // Read packet data
+        let mut packet_data = vec![0u8; packet_size];
+        let mut total_received = 0;
+        while total_received < packet_size {
+            let received = self.recv_raw(&mut packet_data[total_received..])?;
+            if received == 0 {
+                return Err(Error::DisconnectedError);
+            }
+            total_received += received;
+        }
+
+        // Parse packet
+        Packet::from_bytes(&packet_data)
     }
 
     /// Send data through session

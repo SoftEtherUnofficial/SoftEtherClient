@@ -10,7 +10,7 @@ pub use crate::sha0::{sha0, Sha0Context};
 
 /// Compute SHA-1 hash of data (using external crate for non-compatibility cases)
 pub fn sha1(data: &[u8]) -> Sha1Sum {
-    use sha1::{Digest, Sha1};
+    use ::sha1::{Digest, Sha1};
     let mut hasher = Sha1::new();
     hasher.update(data);
     let result = hasher.finalize();
