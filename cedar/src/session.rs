@@ -238,7 +238,7 @@ impl Session {
             body
         );
         
-        eprintln!("[HANDSHAKE] Sending HTTP POST to /vpnsvc/vpn.cgi");
+        eprintln!("[HANDSHAKE] Sending HTTP POST to /vpnsvc/connect.cgi");
         eprintln!("[HTTP] Content-Type: application/octet-stream");
         eprintln!("[HTTP] Content-Length: {} bytes", http_request.body.len());
         
@@ -277,6 +277,10 @@ impl Session {
             }
             return Err(Error::InvalidResponse);
         }
+
+        // Debug: Show response body (first 100 bytes)
+        eprintln!("[HTTP] Response body (first 100 bytes): {:02X?}", 
+                 &response.body[..response.body.len().min(100)]);
 
         // Step 7: Parse PACK from HTTP response body
         let server_hello = Packet::from_bytes(&response.body)?;
