@@ -1,21 +1,24 @@
-//! Cedar VPN Protocol Layer
+//! Cedar - VPN Protocol Layer
 //!
-//! This crate implements the Cedar VPN protocol layer, built on top of Mayaqua.
-//! Cedar handles the VPN session management, authentication, and protocol logic.
+//! Cedar implements the SoftEther VPN protocol layer, providing:
+//! - Session management
+//! - Connection handling
+//! - Authentication
+//! - Protocol serialization
+//! - Encryption (TLS/SSL)
+//! - Compression
+//! - UDP acceleration
+//! - NAT traversal
 //!
-//! ## Current Status
-//! - constants: Protocol constants and version information
-//! - types: Core protocol data structures
-//! - session: Session management and lifecycle
-//! - connection: Connection handling and packet framing
-//! - auth: Authentication strategies and credential management
-//! - protocol: Wire protocol implementation
-//!
-//! ## Future Modules (Planned)
-//! - encryption: TLS/SSL wrapper and cipher management
-//! - compression: Data compression support
-//! - udp_accel: UDP acceleration implementation
-//! - nat_traversal: NAT-T and hole punching
+//! ## Complete Modules
+//! - `session` - VPN session lifecycle management
+//! - `connection` - TCP connection and packet framing
+//! - `auth` - Authentication system
+//! - `protocol` - Wire protocol format
+//! - `encryption` - TLS/SSL support
+//! - `compression` - Data compression
+//! - `udp_accel` - UDP acceleration
+//! - `nat_traversal` - NAT traversal
 
 // Extracted from softether-rust (Tier 1)
 pub mod constants;
@@ -26,6 +29,10 @@ pub mod session;
 pub mod connection;
 pub mod auth;
 pub mod protocol;
+pub mod encryption;
+pub mod compression;
+pub mod udp_accel;
+pub mod nat_traversal;
 
 // Re-export commonly used items
 pub use constants::*;
@@ -36,6 +43,10 @@ pub use session::{Session, SessionConfig, SessionStats, SessionStatus};
 pub use connection::{Connection, ConnectionState, ConnectionType, PacketHeader};
 pub use auth::{AuthManager, Credentials, AuthRequest, AuthResponse};
 pub use protocol::{Packet, PacketValue, PROTOCOL_VERSION, CEDAR_SIGNATURE};
+pub use encryption::{TlsConnection, TlsConfig, TlsState};
+pub use compression::{Compressor, CompressionConfig, CompressionAlgorithm};
+pub use udp_accel::{UdpAccelerator, UdpAccelConfig, UdpAccelMode};
+pub use nat_traversal::{NatTraversal, NatTraversalConfig, NatType};
 
 #[cfg(test)]
 mod tests {
