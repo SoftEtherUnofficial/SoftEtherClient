@@ -1,0 +1,737 @@
+//! Cedar FFI Exports
+//!
+//! C-compatible FFI exports for Cedar VPN protocol layer.
+//! Provides opaque pointer-based API for use from C/Zig.
+
+use std::ffi::{CStr};
+use std::os::raw::{c_char, c_int, c_void};
+use std::ptr;
+
+use crate::session::{Session, SessionConfig, SessionStats, SessionStatus};
+use crate::protocol::Packet;
+use crate::encryption::{TlsConnection, TlsState};
+use crate::compression::{Compressor, CompressionConfig, CompressionAlgorithm};
+use crate::udp_accel::{UdpAccelerator, UdpAccelConfig, UdpAccelMode};
+use crate::nat_traversal::{NatTraversal, NatType};
+
+// ============================================================================
+// Error Handling
+// ============================================================================
+
+/// FFI error codes
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CedarErrorCode {
+    Success = 0,
+    InternalError = 1,
+    InvalidParameter = 2,
+    NotConnected = 3,
+    InvalidState = 4,
+    BufferTooSmall = 5,
+    PacketTooLarge = 6,
+    AuthenticationFailed = 7,
+    NotImplemented = 8,
+    TimeOut = 9,
+    IoError = 10,
+}
+
+impl From<mayaqua::Error> for CedarErrorCode {
+    fn from(err: mayaqua::Error) -> Self {
+        match err {
+            mayaqua::Error::NoError => CedarErrorCode::Success,
+            mayaqua::Error::InternalError => CedarErrorCode::InternalError,
+            mayaqua::Error::InvalidParameter => CedarErrorCode::InvalidParameter,
+            mayaqua::Error::NotConnected => CedarErrorCode::NotConnected,
+            mayaqua::Error::InvalidState => CedarErrorCode::InvalidState,
+            mayaqua::Error::BufferTooSmall => CedarErrorCode::BufferTooSmall,
+            mayaqua::Error::PacketTooLarge => CedarErrorCode::PacketTooLarge,
+            mayaqua::Error::AuthenticationFailed => CedarErrorCode::AuthenticationFailed,
+            mayaqua::Error::NotImplemented => CedarErrorCode::NotImplemented,
+            mayaqua::Error::TimeOut => CedarErrorCode::TimeOut,
+            mayaqua::Error::IoError(_) => CedarErrorCode::IoError,
+            _ => CedarErrorCode::InternalError,
+        }
+    }
+}
+
+// ============================================================================
+// Session FFI
+// ============================================================================
+
+/// Opaque session handle
+pub type CedarSessionHandle = *mut c_void;
+
+/// Session status for FFI
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CedarSessionStatus {
+    Init = 0,
+    Connecting = 1,
+    Authenticating = 2,
+    Established = 3,
+    Reconnecting = 4,
+    Closing = 5,
+    Terminated = 6,
+}
+
+impl From<SessionStatus> for CedarSessionStatus {
+    fn from(status: SessionStatus) -> Self {
+        match status {
+            SessionStatus::Init => CedarSessionStatus::Init,
+            SessionStatus::Connecting => CedarSessionStatus::Connecting,
+            SessionStatus::Authenticating => CedarSessionStatus::Authenticating,
+            SessionStatus::Established => CedarSessionStatus::Established,
+            SessionStatus::Reconnecting => CedarSessionStatus::Reconnecting,
+            SessionStatus::Closing => CedarSessionStatus::Closing,
+            SessionStatus::Terminated => CedarSessionStatus::Terminated,
+        }
+    }
+}
+
+/// Session statistics for FFI
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CedarSessionStats {
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub packets_sent: u64,
+    pub packets_received: u64,
+    pub duration_secs: u64,
+    pub idle_time_secs: u64,
+}
+
+impl From<&SessionStats> for CedarSessionStats {
+    fn from(stats: &SessionStats) -> Self {
+        Self {
+            bytes_sent: stats.bytes_sent,
+            bytes_received: stats.bytes_received,
+            packets_sent: stats.packets_sent,
+            packets_received: stats.packets_received,
+            duration_secs: stats.duration().as_secs(),
+            idle_time_secs: stats.idle_time().as_secs(),
+        }
+    }
+}
+
+/// Create new session
+#[no_mangle]
+pub extern "C" fn cedar_session_new(
+    server: *const c_char,
+    port: u16,
+    hub: *const c_char,
+) -> CedarSessionHandle {
+    if server.is_null() || hub.is_null() {
+        return ptr::null_mut();
+    }
+
+    let server_str = unsafe {
+        match CStr::from_ptr(server).to_str() {
+            Ok(s) => s,
+            Err(_) => return ptr::null_mut(),
+        }
+    };
+
+    let hub_str = unsafe {
+        match CStr::from_ptr(hub).to_str() {
+            Ok(s) => s,
+            Err(_) => return ptr::null_mut(),
+        }
+    };
+
+    use crate::session::AuthConfig;
+    use std::time::Duration;
+
+    let config = SessionConfig {
+        name: "cedar-vpn".to_string(),
+        server: server_str.to_string(),
+        port,
+        hub: hub_str.to_string(),
+        auth: AuthConfig::Anonymous,
+        use_encrypt: false,
+        use_compress: false,
+        max_connection: 1,
+        keep_alive_interval: Duration::from_secs(30),
+        timeout: Duration::from_secs(15),
+    };
+
+    let session = Box::new(Session::new(config));
+    Box::into_raw(session) as CedarSessionHandle
+}
+
+/// Free session
+#[no_mangle]
+pub extern "C" fn cedar_session_free(handle: CedarSessionHandle) {
+    if !handle.is_null() {
+        unsafe {
+            let _ = Box::from_raw(handle as *mut Session);
+        }
+    }
+}
+
+/// Get session status
+#[no_mangle]
+pub extern "C" fn cedar_session_get_status(handle: CedarSessionHandle) -> CedarSessionStatus {
+    if handle.is_null() {
+        return CedarSessionStatus::Terminated;
+    }
+
+    let session = unsafe { &*(handle as *const Session) };
+    CedarSessionStatus::from(session.status())
+}
+
+/// Get session statistics
+#[no_mangle]
+pub extern "C" fn cedar_session_get_stats(
+    handle: CedarSessionHandle,
+    stats: *mut CedarSessionStats,
+) -> CedarErrorCode {
+    if handle.is_null() || stats.is_null() {
+        return CedarErrorCode::InvalidParameter;
+    }
+
+    let session = unsafe { &*(handle as *const Session) };
+    let session_stats = session.stats();
+    
+    unsafe {
+        *stats = CedarSessionStats::from(&session_stats);
+    }
+
+    CedarErrorCode::Success
+}
+
+// ============================================================================
+// Packet FFI
+// ============================================================================
+
+/// Opaque packet handle
+pub type CedarPacketHandle = *mut c_void;
+
+/// Create new packet
+#[no_mangle]
+pub extern "C" fn cedar_packet_new(command: *const c_char) -> CedarPacketHandle {
+    if command.is_null() {
+        return ptr::null_mut();
+    }
+
+    let command_str = unsafe {
+        match CStr::from_ptr(command).to_str() {
+            Ok(s) => s,
+            Err(_) => return ptr::null_mut(),
+        }
+    };
+
+    let packet = Box::new(Packet::new(command_str));
+    Box::into_raw(packet) as CedarPacketHandle
+}
+
+/// Free packet
+#[no_mangle]
+pub extern "C" fn cedar_packet_free(handle: CedarPacketHandle) {
+    if !handle.is_null() {
+        unsafe {
+            let _ = Box::from_raw(handle as *mut Packet);
+        }
+    }
+}
+
+/// Add integer parameter to packet
+#[no_mangle]
+pub extern "C" fn cedar_packet_add_int(
+    handle: CedarPacketHandle,
+    key: *const c_char,
+    value: u32,
+) -> CedarErrorCode {
+    if handle.is_null() || key.is_null() {
+        return CedarErrorCode::InvalidParameter;
+    }
+
+    let key_str = unsafe {
+        match CStr::from_ptr(key).to_str() {
+            Ok(s) => s,
+            Err(_) => return CedarErrorCode::InvalidParameter,
+        }
+    };
+
+    // Take ownership, modify, and put back
+    let packet = unsafe { Box::from_raw(handle as *mut Packet) };
+    let updated_packet = packet.add_int(key_str, value);
+    let _ = Box::into_raw(Box::new(updated_packet));
+    
+    CedarErrorCode::Success
+}
+
+/// Add string parameter to packet
+#[no_mangle]
+pub extern "C" fn cedar_packet_add_string(
+    handle: CedarPacketHandle,
+    key: *const c_char,
+    value: *const c_char,
+) -> CedarErrorCode {
+    if handle.is_null() || key.is_null() || value.is_null() {
+        return CedarErrorCode::InvalidParameter;
+    }
+
+    let key_str = unsafe {
+        match CStr::from_ptr(key).to_str() {
+            Ok(s) => s,
+            Err(_) => return CedarErrorCode::InvalidParameter,
+        }
+    };
+
+    let value_str = unsafe {
+        match CStr::from_ptr(value).to_str() {
+            Ok(s) => s,
+            Err(_) => return CedarErrorCode::InvalidParameter,
+        }
+    };
+
+    // Take ownership, modify, and put back
+    let packet = unsafe { Box::from_raw(handle as *mut Packet) };
+    let updated_packet = packet.add_string(key_str, value_str);
+    let _ = Box::into_raw(Box::new(updated_packet));
+    
+    CedarErrorCode::Success
+}
+
+/// Get integer parameter from packet
+#[no_mangle]
+pub extern "C" fn cedar_packet_get_int(
+    handle: CedarPacketHandle,
+    key: *const c_char,
+    value: *mut u32,
+) -> CedarErrorCode {
+    if handle.is_null() || key.is_null() || value.is_null() {
+        return CedarErrorCode::InvalidParameter;
+    }
+
+    let packet = unsafe { &*(handle as *const Packet) };
+    
+    let key_str = unsafe {
+        match CStr::from_ptr(key).to_str() {
+            Ok(s) => s,
+            Err(_) => return CedarErrorCode::InvalidParameter,
+        }
+    };
+
+    match packet.get_int(key_str) {
+        Some(v) => {
+            unsafe { *value = v; }
+            CedarErrorCode::Success
+        }
+        None => CedarErrorCode::InvalidParameter,
+    }
+}
+
+/// Get string parameter from packet (copies to buffer)
+#[no_mangle]
+pub extern "C" fn cedar_packet_get_string(
+    handle: CedarPacketHandle,
+    key: *const c_char,
+    buffer: *mut c_char,
+    buffer_len: usize,
+) -> CedarErrorCode {
+    if handle.is_null() || key.is_null() || buffer.is_null() || buffer_len == 0 {
+        return CedarErrorCode::InvalidParameter;
+    }
+
+    let packet = unsafe { &*(handle as *const Packet) };
+    
+    let key_str = unsafe {
+        match CStr::from_ptr(key).to_str() {
+            Ok(s) => s,
+            Err(_) => return CedarErrorCode::InvalidParameter,
+        }
+    };
+
+    match packet.get_string(key_str) {
+        Some(s) => {
+            let bytes = s.as_bytes();
+            if bytes.len() + 1 > buffer_len {
+                return CedarErrorCode::BufferTooSmall;
+            }
+            
+            unsafe {
+                ptr::copy_nonoverlapping(bytes.as_ptr(), buffer as *mut u8, bytes.len());
+                *buffer.add(bytes.len()) = 0; // Null terminator
+            }
+            
+            CedarErrorCode::Success
+        }
+        None => CedarErrorCode::InvalidParameter,
+    }
+}
+
+// ============================================================================
+// Encryption FFI
+// ============================================================================
+
+/// Opaque TLS connection handle
+pub type CedarTlsHandle = *mut c_void;
+
+/// TLS state for FFI
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CedarTlsState {
+    Disconnected = 0,
+    Handshaking = 1,
+    Connected = 2,
+    Error = 3,
+}
+
+impl From<TlsState> for CedarTlsState {
+    fn from(state: TlsState) -> Self {
+        match state {
+            TlsState::Disconnected => CedarTlsState::Disconnected,
+            TlsState::Handshaking => CedarTlsState::Handshaking,
+            TlsState::Connected => CedarTlsState::Connected,
+            TlsState::Error => CedarTlsState::Error,
+        }
+    }
+}
+
+/// Create new TLS connection
+#[no_mangle]
+pub extern "C" fn cedar_tls_new() -> CedarTlsHandle {
+    let tls = Box::new(TlsConnection::with_defaults());
+    Box::into_raw(tls) as CedarTlsHandle
+}
+
+/// Free TLS connection
+#[no_mangle]
+pub extern "C" fn cedar_tls_free(handle: CedarTlsHandle) {
+    if !handle.is_null() {
+        unsafe {
+            let _ = Box::from_raw(handle as *mut TlsConnection);
+        }
+    }
+}
+
+/// Get TLS state
+#[no_mangle]
+pub extern "C" fn cedar_tls_get_state(handle: CedarTlsHandle) -> CedarTlsState {
+    if handle.is_null() {
+        return CedarTlsState::Disconnected;
+    }
+
+    let tls = unsafe { &*(handle as *const TlsConnection) };
+    CedarTlsState::from(tls.state())
+}
+
+/// Encrypt data
+#[no_mangle]
+pub extern "C" fn cedar_tls_encrypt(
+    handle: CedarTlsHandle,
+    plaintext: *const u8,
+    plaintext_len: usize,
+    ciphertext: *mut u8,
+    ciphertext_len: usize,
+    bytes_written: *mut usize,
+) -> CedarErrorCode {
+    if handle.is_null() || plaintext.is_null() || ciphertext.is_null() || bytes_written.is_null() {
+        return CedarErrorCode::InvalidParameter;
+    }
+
+    let tls = unsafe { &mut *(handle as *mut TlsConnection) };
+    let plaintext_slice = unsafe { std::slice::from_raw_parts(plaintext, plaintext_len) };
+    let ciphertext_slice = unsafe { std::slice::from_raw_parts_mut(ciphertext, ciphertext_len) };
+
+    match tls.encrypt(plaintext_slice, ciphertext_slice) {
+        Ok(written) => {
+            unsafe { *bytes_written = written; }
+            CedarErrorCode::Success
+        }
+        Err(e) => CedarErrorCode::from(e),
+    }
+}
+
+// ============================================================================
+// Compression FFI
+// ============================================================================
+
+/// Opaque compressor handle
+pub type CedarCompressorHandle = *mut c_void;
+
+/// Compression algorithm for FFI
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CedarCompressionAlgorithm {
+    None = 0,
+    Deflate = 1,
+    Gzip = 2,
+    Lz4 = 3,
+}
+
+impl From<CedarCompressionAlgorithm> for CompressionAlgorithm {
+    fn from(algo: CedarCompressionAlgorithm) -> Self {
+        match algo {
+            CedarCompressionAlgorithm::None => CompressionAlgorithm::None,
+            CedarCompressionAlgorithm::Deflate => CompressionAlgorithm::Deflate,
+            CedarCompressionAlgorithm::Gzip => CompressionAlgorithm::Gzip,
+            CedarCompressionAlgorithm::Lz4 => CompressionAlgorithm::Lz4,
+        }
+    }
+}
+
+/// Create new compressor
+#[no_mangle]
+pub extern "C" fn cedar_compressor_new(
+    algorithm: CedarCompressionAlgorithm,
+) -> CedarCompressorHandle {
+    let mut config = CompressionConfig::default();
+    config.algorithm = CompressionAlgorithm::from(algorithm);
+    
+    let compressor = Box::new(Compressor::new(config));
+    Box::into_raw(compressor) as CedarCompressorHandle
+}
+
+/// Free compressor
+#[no_mangle]
+pub extern "C" fn cedar_compressor_free(handle: CedarCompressorHandle) {
+    if !handle.is_null() {
+        unsafe {
+            let _ = Box::from_raw(handle as *mut Compressor);
+        }
+    }
+}
+
+/// Compress data
+#[no_mangle]
+pub extern "C" fn cedar_compressor_compress(
+    handle: CedarCompressorHandle,
+    input: *const u8,
+    input_len: usize,
+    output: *mut u8,
+    output_len: usize,
+    bytes_written: *mut usize,
+) -> CedarErrorCode {
+    if handle.is_null() || input.is_null() || output.is_null() || bytes_written.is_null() {
+        return CedarErrorCode::InvalidParameter;
+    }
+
+    let compressor = unsafe { &mut *(handle as *mut Compressor) };
+    let input_slice = unsafe { std::slice::from_raw_parts(input, input_len) };
+    let output_slice = unsafe { std::slice::from_raw_parts_mut(output, output_len) };
+
+    match compressor.compress(input_slice, output_slice) {
+        Ok(written) => {
+            unsafe { *bytes_written = written; }
+            CedarErrorCode::Success
+        }
+        Err(e) => CedarErrorCode::from(e),
+    }
+}
+
+/// Decompress data
+#[no_mangle]
+pub extern "C" fn cedar_compressor_decompress(
+    handle: CedarCompressorHandle,
+    input: *const u8,
+    input_len: usize,
+    output: *mut u8,
+    output_len: usize,
+    bytes_written: *mut usize,
+) -> CedarErrorCode {
+    if handle.is_null() || input.is_null() || output.is_null() || bytes_written.is_null() {
+        return CedarErrorCode::InvalidParameter;
+    }
+
+    let compressor = unsafe { &mut *(handle as *mut Compressor) };
+    let input_slice = unsafe { std::slice::from_raw_parts(input, input_len) };
+    let output_slice = unsafe { std::slice::from_raw_parts_mut(output, output_len) };
+
+    match compressor.decompress(input_slice, output_slice) {
+        Ok(written) => {
+            unsafe { *bytes_written = written; }
+            CedarErrorCode::Success
+        }
+        Err(e) => CedarErrorCode::from(e),
+    }
+}
+
+// ============================================================================
+// UDP Acceleration FFI
+// ============================================================================
+
+/// Opaque UDP accelerator handle
+pub type CedarUdpAccelHandle = *mut c_void;
+
+/// UDP acceleration mode for FFI
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CedarUdpAccelMode {
+    Disabled = 0,
+    Hybrid = 1,
+    UdpOnly = 2,
+}
+
+impl From<CedarUdpAccelMode> for UdpAccelMode {
+    fn from(mode: CedarUdpAccelMode) -> Self {
+        match mode {
+            CedarUdpAccelMode::Disabled => UdpAccelMode::Disabled,
+            CedarUdpAccelMode::Hybrid => UdpAccelMode::Hybrid,
+            CedarUdpAccelMode::UdpOnly => UdpAccelMode::UdpOnly,
+        }
+    }
+}
+
+/// Create new UDP accelerator
+#[no_mangle]
+pub extern "C" fn cedar_udp_accel_new(mode: CedarUdpAccelMode) -> CedarUdpAccelHandle {
+    let mut config = UdpAccelConfig::default();
+    config.mode = UdpAccelMode::from(mode);
+    
+    let accel = Box::new(UdpAccelerator::new(config));
+    Box::into_raw(accel) as CedarUdpAccelHandle
+}
+
+/// Free UDP accelerator
+#[no_mangle]
+pub extern "C" fn cedar_udp_accel_free(handle: CedarUdpAccelHandle) {
+    if !handle.is_null() {
+        unsafe {
+            let _ = Box::from_raw(handle as *mut UdpAccelerator);
+        }
+    }
+}
+
+/// Check if UDP acceleration is healthy
+#[no_mangle]
+pub extern "C" fn cedar_udp_accel_is_healthy(handle: CedarUdpAccelHandle) -> c_int {
+    if handle.is_null() {
+        return 0;
+    }
+
+    let accel = unsafe { &*(handle as *const UdpAccelerator) };
+    if accel.is_healthy() { 1 } else { 0 }
+}
+
+// ============================================================================
+// NAT Traversal FFI
+// ============================================================================
+
+/// Opaque NAT traversal handle
+pub type CedarNatTraversalHandle = *mut c_void;
+
+/// NAT type for FFI
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CedarNatType {
+    None = 0,
+    FullCone = 1,
+    RestrictedCone = 2,
+    PortRestrictedCone = 3,
+    Symmetric = 4,
+    Unknown = 5,
+}
+
+impl From<NatType> for CedarNatType {
+    fn from(nat_type: NatType) -> Self {
+        match nat_type {
+            NatType::None => CedarNatType::None,
+            NatType::FullCone => CedarNatType::FullCone,
+            NatType::RestrictedCone => CedarNatType::RestrictedCone,
+            NatType::PortRestrictedCone => CedarNatType::PortRestrictedCone,
+            NatType::Symmetric => CedarNatType::Symmetric,
+            NatType::Unknown => CedarNatType::Unknown,
+        }
+    }
+}
+
+/// Create new NAT traversal engine
+#[no_mangle]
+pub extern "C" fn cedar_nat_traversal_new() -> CedarNatTraversalHandle {
+    let nat = Box::new(NatTraversal::with_defaults());
+    Box::into_raw(nat) as CedarNatTraversalHandle
+}
+
+/// Free NAT traversal engine
+#[no_mangle]
+pub extern "C" fn cedar_nat_traversal_free(handle: CedarNatTraversalHandle) {
+    if !handle.is_null() {
+        unsafe {
+            let _ = Box::from_raw(handle as *mut NatTraversal);
+        }
+    }
+}
+
+/// Detect NAT type
+#[no_mangle]
+pub extern "C" fn cedar_nat_traversal_detect(handle: CedarNatTraversalHandle) -> CedarNatType {
+    if handle.is_null() {
+        return CedarNatType::Unknown;
+    }
+
+    let nat = unsafe { &mut *(handle as *mut NatTraversal) };
+    match nat.detect_nat_type() {
+        Ok(nat_type) => CedarNatType::from(nat_type),
+        Err(_) => CedarNatType::Unknown,
+    }
+}
+
+/// Check if NAT traversal is supported
+#[no_mangle]
+pub extern "C" fn cedar_nat_traversal_is_supported(handle: CedarNatTraversalHandle) -> c_int {
+    if handle.is_null() {
+        return 0;
+    }
+
+    let nat = unsafe { &*(handle as *const NatTraversal) };
+    if nat.is_supported() { 1 } else { 0 }
+}
+
+// ============================================================================
+// Version Information
+// ============================================================================
+
+/// Get Cedar version string
+#[no_mangle]
+pub extern "C" fn cedar_version() -> *const c_char {
+    static VERSION: &str = "0.1.0\0";
+    VERSION.as_ptr() as *const c_char
+}
+
+/// Get Cedar protocol version
+#[no_mangle]
+pub extern "C" fn cedar_protocol_version() -> u32 {
+    crate::protocol::PROTOCOL_VERSION
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_code_conversion() {
+        assert_eq!(
+            CedarErrorCode::from(mayaqua::Error::NoError),
+            CedarErrorCode::Success
+        );
+        assert_eq!(
+            CedarErrorCode::from(mayaqua::Error::InvalidParameter),
+            CedarErrorCode::InvalidParameter
+        );
+    }
+
+    #[test]
+    fn test_session_creation_null_ptr() {
+        let handle = cedar_session_new(ptr::null(), 443, ptr::null());
+        assert!(handle.is_null());
+    }
+
+    #[test]
+    fn test_packet_creation() {
+        let cmd = CString::new("hello").unwrap();
+        let handle = cedar_packet_new(cmd.as_ptr());
+        assert!(!handle.is_null());
+        cedar_packet_free(handle);
+    }
+
+    #[test]
+    fn test_version_info() {
+        let version_ptr = cedar_version();
+        assert!(!version_ptr.is_null());
+        
+        let protocol_ver = cedar_protocol_version();
+        assert_eq!(protocol_ver, 4);
+    }
+}

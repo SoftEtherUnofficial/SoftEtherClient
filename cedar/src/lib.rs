@@ -34,6 +34,9 @@ pub mod compression;
 pub mod udp_accel;
 pub mod nat_traversal;
 
+// FFI exports for C/Zig integration
+pub mod ffi;
+
 // Re-export commonly used items
 pub use constants::*;
 pub use types::*;

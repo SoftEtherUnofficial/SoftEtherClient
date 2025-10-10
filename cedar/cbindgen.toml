@@ -1,0 +1,30 @@
+# cbindgen configuration for Cedar
+language = "C"
+cpp_compat = true
+
+[export]
+include = ["CedarErrorCode", "CedarSessionHandle", "CedarSessionStatus", "CedarSessionStats", "CedarPacketHandle", "CedarTlsHandle", "CedarTlsState", "CedarCompressorHandle", "CedarCompressionAlgorithm", "CedarUdpAccelHandle", "CedarUdpAccelMode", "CedarNatTraversalHandle", "CedarNatType"]
+
+[defines]
+"target_os = windows" = "WIN32"
+"target_os = macos" = "MACOS"
+"target_os = linux" = "LINUX"
+
+[parse]
+parse_deps = false
+include = ["cedar"]
+
+[fn]
+prefix = "cedar_"
+args = "vertical"
+rename_args = "None"
+
+[struct]
+derive_eq = true
+derive_neq = true
+
+[enum]
+rename_variants = "None"
+
+[macro_expansion]
+bitflags = true
