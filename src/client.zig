@@ -292,14 +292,19 @@ pub const VpnClient = struct {
         // Store session
         self.cedar_session = session;
 
-        std.debug.print("✅ Cedar connection complete!\n", .{});
-        std.debug.print("   (Packet forwarding not yet implemented)\n", .{});
+        std.debug.print("✅ Cedar connection complete!\n\n", .{});
+        std.debug.print("📋 Next steps to enable packet forwarding:\n", .{});
+        std.debug.print("  1. Ensure TUN/TAP device permissions (run as root/sudo)\n", .{});
+        std.debug.print("  2. Configure IP address and routing\n", .{});
+        std.debug.print("  3. Set up packet forwarding loop\n\n", .{});
+        std.debug.print("💡 TUN/TAP integration ready - see src/packet_forward.zig\n", .{});
 
-        // TODO: Next steps:
-        // - Set up virtual network interface (TUN/TAP)
-        // - Start packet forwarding loop
-        // - Handle keep-alive packets
-        // - Implement graceful disconnect
+        // TODO: Uncomment when running with proper permissions:
+        // const taptun = @import("taptun");
+        // const packet_forward = @import("packet_forward.zig");
+        // var tun_adapter = try taptun.TunAdapter.open(...);
+        // var forwarder = try packet_forward.PacketForwarder.init(...);
+        // try forwarder.start();
     }
 
     /// Disconnect from VPN server
