@@ -389,36 +389,33 @@ impl Packet {
 
             eprintln!("[PACK] key_len={}, cursor={}, remaining={}", key_len, cursor, data.len() - cursor);
 
-            // Read key
+            // Read key (includes null terminator in the length)
             if data.len() < cursor + key_len {
                 eprintln!("[PACK] ERROR: Not enough bytes for key. Need {}, have {}", key_len, data.len() - cursor);
                 return Err(Error::BufferTooSmall);
             }
-            let key = String::from_utf8(data[cursor..cursor + key_len].to_vec())
+            // Strip null terminator from key string
+            let key_bytes = &data[cursor..cursor + key_len];
+            let key = String::from_utf8(key_bytes.iter()
+                .take_while(|&&b| b != 0)  // Take until null terminator
+                .cloned()
+                .collect())
                 .map_err(|_| Error::EncodingError)?;
             cursor += key_len;
             
             eprintln!("[PACK] key='{}' (len={}, raw_bytes={:?}), cursor after reading key={}", 
                      key, key.len(), &data[cursor-key_len..cursor], cursor);
 
-            let end_pos = (cursor + 8).min(data.len());
-            eprintln!("[PACK] DEBUG: About to read type. cursor={}, next {} bytes: {:02X?}", 
-                     cursor, end_pos - cursor, &data[cursor..end_pos]);
-
-            // Read value type
+            // Read value type: Response format uses [pad(2)][type(1)][pad(1)] = 4 bytes
+            // Type is the 3rd byte (offset +2) in this structure
             if data.len() < cursor + 4 {
-                eprintln!("[PACK] ERROR: Not enough bytes for value type. Need 4, have {}", data.len() - cursor);
+                eprintln!("[PACK] ERROR: Not enough bytes for type field. Need 4, have {}", data.len() - cursor);
                 return Err(Error::BufferTooSmall);
             }
-            eprintln!("[PACK] Reading type from positions {}-{}: bytes = {:02X?}", 
+            eprintln!("[PACK] Reading type structure [pad(2)][type(1)][pad(1)] at positions {}-{}: bytes = {:02X?}", 
                      cursor, cursor+3, &data[cursor..cursor+4]);
-            let value_type = u32::from_be_bytes([  // BIG-ENDIAN
-                data[cursor],
-                data[cursor + 1],
-                data[cursor + 2],
-                data[cursor + 3],
-            ]);
-            cursor += 4;
+            let value_type = data[cursor + 2] as u32;  // Type is 1 byte at offset +2
+            cursor += 4;  // Advance past the 4-byte type structure
             
             eprintln!("[PACK] Element {}: key='{}' type={} (hex: 0x{:X}) cursor={} remaining={}", 
                      i, key, value_type, value_type, cursor, data.len() - cursor);
@@ -431,40 +428,37 @@ impl Packet {
             // Read value based on type
             let value = match value_type {
                 0 => {
-                    // VALUE_INT: Skip 4, skip 1, read 2 (total 7 bytes)
+                    // VALUE_INT: [num_value_struct(4)][pad(1)][value(2)]
                     if data.len() < cursor + 7 {
                         return Err(Error::BufferTooSmall);
                     }
                     
-                    eprintln!("[PACK]   Int handler start: cursor={}", cursor);
-                    cursor += 4;  // Skip first 4 bytes (mystery)
-                    eprintln!("[PACK]   After skip 4: cursor={}", cursor);
-                    cursor += 1;  // Skip 1 byte (padding?)
-                    eprintln!("[PACK]   After skip 1: cursor={}", cursor);
-                    
-                    let v = u16::from_be_bytes([
-                        data[cursor],
-                        data[cursor + 1],
-                    ]) as u32;
-                    cursor += 2;  // Read 2 bytes (value)
-                    eprintln!("[PACK]   After read 2: cursor={} (end of element {})", cursor, i);
+                    let num_value = data[cursor + 2] as usize;  // Count at byte[2]
+                    eprintln!("[PACK]   Int: num_value={}", num_value);
+                    cursor += 4;  // Skip num_value structure
+                    cursor += 1;  // Skip padding
+                    let v = u16::from_be_bytes([data[cursor], data[cursor + 1]]) as u32;
+                    cursor += 2;
                     
                     eprintln!("[PACK] Element {}: key='{}' type=Int value={}", i, key, v);
                     PacketValue::Int(v)
                 }
                 1 => {
-                    // Data
+                    // VALUE_DATA: [num_value_struct(4)][size_struct(3)][data(size)]
                     if data.len() < cursor + 4 {
                         return Err(Error::BufferTooSmall);
                     }
-                    let data_len = u32::from_be_bytes([
-                        data[cursor],
-                        data[cursor + 1],
-                        data[cursor + 2],
-                        data[cursor + 3],
-                    ]) as usize;
+                    let num_value = data[cursor + 2] as usize;  // Count at byte[2]
+                    eprintln!("[PACK]   Data: num_value={}", num_value);
                     cursor += 4;
-
+                    
+                    if data.len() < cursor + 3 {
+                        return Err(Error::BufferTooSmall);
+                    }
+                    // Size structure: [pad(2)][size_byte(1)] = 3 bytes
+                    let data_len = data[cursor + 2] as usize;  // Size at byte[2]
+                    cursor += 3;
+                    
                     if data.len() < cursor + data_len {
                         return Err(Error::BufferTooSmall);
                     }
@@ -474,33 +468,42 @@ impl Packet {
                     PacketValue::Data(d)
                 }
                 2 => {
-                    // String (UTF-16 encoded)
+                    // VALUE_STR: [num_value_struct(4)][size(4)][utf8_string(size)]
+                    // num_value_struct format: [pad(2)][count(1)][pad(1)]
+                    eprintln!("[PACK]   Str handler: cursor={}", cursor);
+                    
+                    // Read num_value structure (4 bytes, value at offset +2)
                     if data.len() < cursor + 4 {
                         return Err(Error::BufferTooSmall);
                     }
-                    let str_len = u32::from_be_bytes([
-                        data[cursor],
-                        data[cursor + 1],
-                        data[cursor + 2],
-                        data[cursor + 3],
-                    ]) as usize;
+                    let num_value = data[cursor + 2] as usize;  // Count at byte[2]
+                    eprintln!("[PACK]   num_value={} (from byte at offset +2)", num_value);
                     cursor += 4;
-
+                    
+                    // Read size structure (3 bytes: [pad(2)][size_byte(1)])
+                    if data.len() < cursor + 3 {
+                        return Err(Error::BufferTooSmall);
+                    }
+                    eprintln!("[PACK]   Reading size structure from positions {}-{}: bytes = {:02X?}", 
+                             cursor, cursor+2, &data[cursor..cursor+3]);
+                    let str_len = data[cursor + 2] as usize;  // Size at byte[2]
+                    cursor += 3;
+                    eprintln!("[PACK]   Str size={} (from byte at offset +2), cursor={} (string starts here)", str_len, cursor);
+                    
                     if data.len() < cursor + str_len {
+                        eprintln!("[PACK]   ERROR: Not enough data for string (need {}, have {})", str_len, data.len() - cursor);
                         return Err(Error::BufferTooSmall);
                     }
                     
-                    // UTF-16 decoding
-                    let utf16_data = &data[cursor..cursor + str_len];
-                    let mut utf16_chars = Vec::new();
-                    for chunk in utf16_data.chunks_exact(2) {
-                        utf16_chars.push(u16::from_be_bytes([chunk[0], chunk[1]]));
-                    }
-                    let s = String::from_utf16(&utf16_chars)
-                        .map_err(|_| Error::EncodingError)?;
+                    // UTF-8 decoding
+                    let s = String::from_utf8(data[cursor..cursor + str_len].to_vec())
+                        .map_err(|e| {
+                            eprintln!("[PACK]   ERROR: UTF-8 decode failed: {}", e);
+                            Error::EncodingError
+                        })?;
                     cursor += str_len;
                     
-                    eprintln!("[PACK] Element {}: key='{}' type=String value='{}'", i, key, s);
+                    eprintln!("[PACK] Element {}: key='{}' type=String value='{}' (len={})", i, key, s, str_len);
                     PacketValue::String(s)
                 }
                 _ => {

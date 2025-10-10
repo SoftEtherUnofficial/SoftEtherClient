@@ -313,7 +313,7 @@ impl Session {
         
         // Step 9: Extract and validate server information
         let server_str = server_hello
-            .get_string("server_str")
+            .get_string("hello")
             .ok_or(Error::InvalidResponse)?;
         
         let server_version = server_hello
