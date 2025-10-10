@@ -202,7 +202,7 @@ impl Session {
 
     /// Send initial handshake
     fn send_handshake(&self) -> Result<()> {
-        use crate::protocol::{Packet, PROTOCOL_VERSION, CEDAR_SIGNATURE};
+        use crate::protocol::{Packet, PROTOCOL_VERSION, WATERMARK};
         use mayaqua::HttpRequest;
 
         // NOTE: Protocol signature is NOT sent in HTTP mode!
@@ -223,11 +223,19 @@ impl Session {
         let pack_data = hello_packet.to_bytes()?;
         eprintln!("[HANDSHAKE] Serialized PACK data: {} bytes", pack_data.len());
 
-        // Step 4: Wrap PACK in HTTP POST request
+        // Step 4: Prepend watermark to PACK data
+        // Server expects: WATERMARK + PACK (not just PACK alone)
+        let mut body = Vec::with_capacity(WATERMARK.len() + pack_data.len());
+        body.extend_from_slice(WATERMARK);
+        body.extend_from_slice(&pack_data);
+        eprintln!("[HANDSHAKE] Total body with watermark: {} bytes (watermark: {} + pack: {})", 
+                 body.len(), WATERMARK.len(), pack_data.len());
+
+        // Step 5: Wrap in HTTP POST request
         let http_request = HttpRequest::new_vpn_post(
             &self.config.server,
             self.config.port,
-            pack_data
+            body
         );
         
         eprintln!("[HANDSHAKE] Sending HTTP POST to /vpnsvc/vpn.cgi");
