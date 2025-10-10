@@ -120,6 +120,18 @@ pub extern "C" fn cedar_session_new(
     port: u16,
     hub: *const c_char,
 ) -> CedarSessionHandle {
+    cedar_session_new_with_auth(server, port, hub, ptr::null(), ptr::null())
+}
+
+/// Create new session with authentication
+#[no_mangle]
+pub extern "C" fn cedar_session_new_with_auth(
+    server: *const c_char,
+    port: u16,
+    hub: *const c_char,
+    username: *const c_char,
+    password: *const c_char,
+) -> CedarSessionHandle {
     if server.is_null() || hub.is_null() {
         return ptr::null_mut();
     }
@@ -141,12 +153,36 @@ pub extern "C" fn cedar_session_new(
     use crate::session::AuthConfig;
     use std::time::Duration;
 
+    // Determine authentication method
+    let auth = if username.is_null() || password.is_null() {
+        AuthConfig::Anonymous
+    } else {
+        let username_str = unsafe {
+            match CStr::from_ptr(username).to_str() {
+                Ok(s) => s,
+                Err(_) => return ptr::null_mut(),
+            }
+        };
+
+        let password_str = unsafe {
+            match CStr::from_ptr(password).to_str() {
+                Ok(s) => s,
+                Err(_) => return ptr::null_mut(),
+            }
+        };
+
+        AuthConfig::Password {
+            username: username_str.to_string(),
+            password: password_str.to_string(),
+        }
+    };
+
     let config = SessionConfig {
         name: "cedar-vpn".to_string(),
         server: server_str.to_string(),
         port,
         hub: hub_str.to_string(),
-        auth: AuthConfig::Anonymous,
+        auth,
         use_encrypt: false,
         use_compress: false,
         max_connection: 1,

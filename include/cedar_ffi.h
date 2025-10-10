@@ -189,6 +189,11 @@ extern "C" {
 CedarSessionHandle cedar_session_new(const char *server, uint16_t port, const char *hub);
 
 /**
+ * Create new session with authentication
+ */
+CedarSessionHandle cedar_session_new_with_auth(const char *server, uint16_t port, const char *hub, const char *username, const char *password);
+
+/**
  * Free session
  */
 void cedar_session_free(CedarSessionHandle handle);

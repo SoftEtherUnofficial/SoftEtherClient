@@ -135,6 +135,8 @@ pub struct Session {
     udp_socket: Arc<Mutex<Option<UdpSocketWrapper>>>,
     /// Session flags
     flags: SessionFlags,
+    /// Server random challenge (20 bytes from handshake)
+    server_random: Arc<Mutex<Option<Vec<u8>>>>,
 }
 
 impl Session {
@@ -147,6 +149,7 @@ impl Session {
             tcp_connections: Arc::new(Mutex::new(Vec::new())),
             udp_socket: Arc::new(Mutex::new(None)),
             flags: SessionFlags::default(),
+            server_random: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -324,6 +327,14 @@ impl Session {
             .get_int("build")
             .unwrap_or(0);
 
+        // CRITICAL: Extract server random challenge for authentication
+        if let Some(random_data) = server_hello.get_data("random") {
+            eprintln!("[HANDSHAKE] Received server random: {} bytes", random_data.len());
+            *self.server_random.lock().unwrap() = Some(random_data.to_vec());
+        } else {
+            eprintln!("[HANDSHAKE] WARNING: No random challenge received from server");
+        }
+
         eprintln!("[HANDSHAKE] ✅ Server: {} (version: {}, build: {})", 
                  server_str, server_version, server_build);
         eprintln!("[HANDSHAKE] Protocol handshake completed successfully!");
@@ -339,24 +350,341 @@ impl Session {
 
     /// Internal authentication helper using config
     fn authenticate_from_config(&self) -> Result<()> {
-        // TODO: Implement authentication based on AuthConfig
-        match &self.config.auth {
+        use crate::protocol::{Packet, WATERMARK};
+        use mayaqua::HttpRequest;
+
+        eprintln!("[AUTH] Starting authentication phase");
+
+        // Create authentication packet based on config
+        const CLIENT_AUTHTYPE_ANONYMOUS: u32 = 0;
+        const CLIENT_AUTHTYPE_PASSWORD: u32 = 1;
+        
+        let auth_packet = match &self.config.auth {
             AuthConfig::Anonymous => {
-                // Anonymous authentication
-                Ok(())
+                eprintln!("[AUTH] Using anonymous authentication");
+                Packet::new("auth")
+                    .add_string("method", "login")
+                    .add_string("hubname", &self.config.hub)
+                    .add_string("username", "")
+                    .add_int("authtype", CLIENT_AUTHTYPE_ANONYMOUS)
             }
             AuthConfig::Password { username, password } => {
-                // Password-based authentication
-                let hash = mayaqua::crypto::softether_password_hash(password, username);
-                // Call public authenticate with username and hash
-                self.authenticate(username, &hash)
+                eprintln!("[AUTH] Using password authentication for user: {}", username);
+                
+                // Get password hash (SHA-0)
+                let password_hash: Vec<u8> = if password.starts_with("SHA:") || password.contains("=") {
+                    // Already a base64-encoded hash
+                    eprintln!("[AUTH] Using pre-hashed password");
+                    let hash_b64 = password.trim_start_matches("SHA:");
+                    use base64::Engine;
+                    base64::engine::general_purpose::STANDARD.decode(hash_b64)
+                        .map_err(|_| Error::InvalidParameter)?
+                } else {
+                    // Hash the password (SHA-0 with username as salt)
+                    eprintln!("[AUTH] Hashing password");
+                    mayaqua::crypto::softether_password_hash(password, username).to_vec()
+                };
+
+                eprintln!("[AUTH] Password hash length: {} bytes", password_hash.len());
+                eprintln!("[AUTH] Password hash (hex): {}", password_hash.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+
+                // Get server random challenge (CRITICAL for authentication)
+                let server_random = self.server_random.lock().unwrap()
+                    .clone()
+                    .ok_or(Error::InvalidResponse)?;
+                
+                eprintln!("[AUTH] Using server random: {} bytes", server_random.len());
+                eprintln!("[AUTH] Server random (hex): {}", server_random.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+
+                // Compute secure_password = SHA-0(password_hash || server_random)
+                // This is the SecurePassword() function from Sam.c
+                // CRITICAL: SoftEther uses SHA-0 (not SHA-1!) for authentication!
+                let mut combined = Vec::with_capacity(password_hash.len() + server_random.len());
+                combined.extend_from_slice(&password_hash);
+                combined.extend_from_slice(&server_random);
+                let secure_token = mayaqua::crypto::sha0(&combined).to_vec();
+
+                eprintln!("[AUTH] Secure token computed: {} bytes", secure_token.len());
+                eprintln!("[AUTH] Secure token (hex): {}", secure_token.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+
+                // Build auth packet with correct SoftEther format:
+                // method="login", authtype=1 (CLIENT_AUTHTYPE_PASSWORD)
+                // CRITICAL: Must include all fields that C client sends
+                
+                let packet = Packet::new("auth")
+                    .add_string("method", "login")
+                    .add_string("hubname", &self.config.hub)
+                    .add_string("username", username)
+                    .add_int("authtype", CLIENT_AUTHTYPE_PASSWORD)
+                    .add_data("secure_password", secure_token);
+                
+                // Add client version info (PackAddClientVersion)
+                let packet = packet
+                    .add_string("client_str", "SoftEther VPN Client")
+                    .add_int("client_ver", 444)  // Match C client version
+                    .add_int("client_build", 9807); // Match C client build
+                
+                // Add protocol and hello (required fields)
+                let packet = packet
+                    .add_int("protocol", 0)
+                    .add_string("hello", "SoftEther VPN Client")
+                    .add_int("version", 444)
+                    .add_int("build", 9807)
+                    .add_int("client_id", 0);
+                
+                // Add connection options that C client sends
+                // NOTE: use_encrypt, use_compress, half_connection are Int (0/1), not Bool!
+                let packet = packet
+                    .add_int("max_connection", self.config.max_connection)
+                    .add_int("use_encrypt", if self.config.use_encrypt { 1 } else { 0 })
+                    .add_int("use_compress", if self.config.use_compress { 1 } else { 0 })
+                    .add_int("half_connection", 0)
+                    .add_bool("require_bridge_routing_mode", false)  // Normal VPN client = false
+                    .add_bool("require_monitor_mode", false)
+                    .add_bool("qos", true)  // Match C: !DisableQoS = true
+                    .add_bool("support_bulk_on_rudp", true)
+                    .add_bool("support_hmac_on_bulk_of_rudp", true)
+                    .add_bool("support_udp_recovery", true);
+
+                // Unique ID (MUST come before NodeInfo)
+                let unique_id = Self::generate_unique_id();
+                let packet = packet.add_data("unique_id", unique_id);
+
+                // RUDP bulk max version (after unique_id, before NodeInfo)
+                let packet = packet.add_int("rudp_bulk_max_version", 2);
+
+                // Generate NodeInfo fields (OutRpcNodeInfo equivalent)
+                let hostname = hostname::get()
+                    .unwrap_or_else(|_| std::ffi::OsString::from("unknown"))
+                    .to_string_lossy()
+                    .to_string();
+                
+                // TEMPORARY: Use empty strings to match C client behavior
+                // C client sends empty ClientOsName/ClientOsVer on macOS
+                let os_name = "";  // was: std::env::consts::OS;
+                let os_ver = "";   // was: Self::get_os_version();
+                
+                let (client_ip, client_port) = {
+                    let connections = self.tcp_connections.lock().unwrap();
+                    if !connections.is_empty() {
+                        Self::get_local_address(&connections[0])
+                    } else {
+                        ([0, 0, 0, 0], 0)
+                    }
+                };
+                
+                let (server_ip, server_port) = {
+                    let connections = self.tcp_connections.lock().unwrap();
+                    if !connections.is_empty() {
+                        Self::get_peer_address(&connections[0])
+                    } else {
+                        ([0, 0, 0, 0], 0)
+                    }
+                };
+
+                // Add NodeInfo fields in same order as C bridge
+                let packet = packet
+                    .add_string("ClientProductName", "SoftEther VPN Client")
+                    .add_string("ServerProductName", "")
+                    .add_string("ClientOsName", os_name)
+                    .add_string("ClientOsVer", os_ver)
+                    .add_string("ClientOsProductId", "")
+                    .add_string("ClientHostname", &hostname)
+                    .add_string("ServerHostname", &self.config.server)
+                    .add_string("ProxyHostname", "")
+                    .add_string("HubName", &self.config.hub)
+                    // UniqueId is the same as unique_id from earlier, not duplicated
+                    .add_int("ClientProductVer", 444)
+                    .add_int("ClientProductBuild", 9807)
+                    .add_int("ServerProductVer", 0)
+                    .add_int("ServerProductBuild", 0)
+                    // ClientIpAddress with IPv6 variants (PackAddIp adds 3 fields automatically)
+                    .add_ip32("ClientIpAddress", client_ip)
+                    .add_bool("ClientIpAddress@ipv6_bool", false) // IPv4
+                    .add_data("ClientIpAddress@ipv6_array", vec![0u8; 16])
+                    .add_int("ClientIpAddress@ipv6_scope_id", 0)
+                    .add_data("ClientIpAddress6", vec![0u8; 16])
+                    .add_int("ClientPort", client_port)
+                    // ServerIpAddress with IPv6 variants
+                    .add_ip32("ServerIpAddress", server_ip)
+                    .add_bool("ServerIpAddress@ipv6_bool", false) // IPv4
+                    .add_data("ServerIpAddress@ipv6_array", vec![0u8; 16])
+                    .add_int("ServerIpAddress@ipv6_scope_id", 0)
+                    .add_data("ServerIpAddress6", vec![0u8; 16])
+                    .add_int("ServerPort2", server_port) // Note: it's "ServerPort2" not "ServerPort"!
+                    // ProxyIpAddress with IPv6 variants
+                    .add_ip32("ProxyIpAddress", [0, 0, 0, 0])
+                    .add_bool("ProxyIpAddress@ipv6_bool", false) // IPv4
+                    .add_data("ProxyIpAddress@ipv6_array", vec![0u8; 16])
+                    .add_int("ProxyIpAddress@ipv6_scope_id", 0)
+                    .add_data("ProxyIpAddress6", vec![0u8; 16])
+                    .add_int("ProxyPort", 0);
+
+                // Add WinVer fields (OutRpcWinVer equivalent)
+                // CRITICAL: All WinVer fields MUST have "V_" prefix to match C client!
+                let (os_type, os_service_pack, os_build, os_system_name, _os_product_name) = Self::get_win_ver_info();
+                let packet = packet
+                    .add_bool("V_IsWindows", cfg!(target_os = "windows"))
+                    .add_bool("V_IsNT", cfg!(target_os = "windows"))
+                    .add_bool("V_IsServer", false)
+                    .add_bool("V_IsBeta", false)
+                    .add_int("V_VerMajor", os_type)
+                    .add_int("V_VerMinor", 0)
+                    .add_int("V_Build", os_build)
+                    .add_int("V_ServicePack", os_service_pack)
+                    .add_string("V_Title", &os_system_name);
+                
+                packet
             }
-            AuthConfig::Certificate { .. } => {
-                // Certificate-based authentication
-                // TODO: Implement certificate auth
-                Err(Error::NotImplemented)
+            AuthConfig::Certificate { username, cert_data } => {
+                eprintln!("[AUTH] Using certificate authentication");
+                Packet::new("auth")
+                    .add_string("method", "cert")
+                    .add_string("hubname", &self.config.hub)
+                    .add_string("username", username)
+                    .add_data("cert_data", cert_data.clone())
+            }
+        };
+
+        eprintln!("[AUTH] Serializing authentication packet");
+        let pack_data = auth_packet.to_bytes()?;
+        eprintln!("[AUTH] PACK data: {} bytes", pack_data.len());
+        
+        // Debug: dump first 512 bytes to compare with C client
+        eprintln!("[AUTH] === PACK DATA HEX DUMP (first {} bytes) ===", std::cmp::min(512, pack_data.len()));
+        for chunk_start in (0..std::cmp::min(512, pack_data.len())).step_by(16) {
+            eprint!("[AUTH]   {:04x}: ", chunk_start);
+            for i in 0..16 {
+                if chunk_start + i < pack_data.len() {
+                    eprint!("{:02X} ", pack_data[chunk_start + i]);
+                }
+            }
+            eprintln!();
+        }
+        eprintln!("[AUTH] === END PACK DATA HEX DUMP ===");
+        
+        // Hex dump of PACK data for debugging
+        eprintln!("[AUTH] === PACK DATA HEX DUMP (first 512 bytes) ===");
+        let dump_len = pack_data.len().min(512);
+        for (i, chunk) in pack_data[..dump_len].chunks(16).enumerate() {
+            eprint!("[AUTH]   {:04x}:", i * 16);
+            for byte in chunk {
+                eprint!(" {:02x}", byte);
+            }
+            eprintln!();
+        }
+        if pack_data.len() > 512 {
+            eprintln!("[AUTH]   ... ({} more bytes)", pack_data.len() - 512);
+        }
+        eprintln!("[AUTH] === END PACK DATA HEX DUMP ===");
+
+        // Wrap with watermark (like handshake)
+        let mut body = Vec::with_capacity(WATERMARK.len() + pack_data.len());
+        body.extend_from_slice(WATERMARK);
+        body.extend_from_slice(&pack_data);
+        eprintln!("[AUTH] Total body with watermark: {} bytes", body.len());
+
+        // Send via HTTP POST
+        let http_request = HttpRequest::new_vpn_post(
+            &self.config.server,
+            self.config.port,
+            body
+        );
+
+        eprintln!("[AUTH] Sending HTTP POST for authentication");
+        let http_bytes = http_request.to_bytes();
+        
+        // Hex dump of HTTP headers (first 512 bytes)
+        eprintln!("[AUTH] === HTTP REQUEST HEX DUMP (first 512 bytes) ===");
+        let http_dump_len = http_bytes.len().min(512);
+        for (i, chunk) in http_bytes[..http_dump_len].chunks(16).enumerate() {
+            eprint!("[AUTH]   {:04x}:", i * 16);
+            for byte in chunk {
+                eprint!(" {:02x}", byte);
+            }
+            eprintln!();
+        }
+        if http_bytes.len() > 512 {
+            eprintln!("[AUTH]   ... ({} more bytes)", http_bytes.len() - 512);
+        }
+        eprintln!("[AUTH] === END HTTP REQUEST HEX DUMP ===");
+        
+        self.send_raw(&http_bytes)?;
+
+        {
+            let mut connections = self.tcp_connections.lock().unwrap();
+            if !connections.is_empty() {
+                connections[0].flush()?;
+                eprintln!("[AUTH] Authentication request sent and flushed");
             }
         }
+
+        eprintln!("[AUTH] Waiting for authentication response...");
+        
+        // Receive HTTP response
+        let response = self.receive_http_response()?;
+
+        if response.status_code != 200 {
+            eprintln!("[AUTH] ❌ Authentication failed: HTTP {}", response.status_code);
+            if let Ok(body_str) = String::from_utf8(response.body.clone()) {
+                eprintln!("[AUTH] Server response: {}", body_str);
+            }
+            return Err(Error::AuthenticationFailed);
+        }
+
+        eprintln!("[AUTH] HTTP 200 OK - parsing response");
+
+        // Strip watermark if present
+        let pack_data = if response.body.len() > WATERMARK.len() && 
+                          &response.body[0..6] == &WATERMARK[0..6] {
+            eprintln!("[AUTH] Stripping watermark");
+            &response.body[WATERMARK.len()..]
+        } else {
+            &response.body[..]
+        };
+
+        // Parse response packet
+        eprintln!("[AUTH] Parsing PACK response ({} bytes)", pack_data.len());
+        let auth_response = Packet::from_bytes(pack_data)?;
+
+        // Debug: Print ALL fields in the response
+        eprintln!("[AUTH] === Response fields ===");
+        for (key, value) in &auth_response.params {
+            match value {
+                crate::protocol::PacketValue::Int(v) => eprintln!("[AUTH]   {} = {} (int)", key, v),
+                crate::protocol::PacketValue::String(s) => eprintln!("[AUTH]   {} = {:?} (string)", key, s),
+                crate::protocol::PacketValue::Data(d) => eprintln!("[AUTH]   {} = <{} bytes> (data)", key, d.len()),
+                crate::protocol::PacketValue::Bool(b) => eprintln!("[AUTH]   {} = {} (bool)", key, b),
+                _ => eprintln!("[AUTH]   {} = <other>", key),
+            }
+        }
+        eprintln!("[AUTH] === End response fields ===");
+
+        // Check authentication result
+        // Server sends "auth" response with status
+        if let Some(error_code) = auth_response.get_int("error") {
+            eprintln!("[AUTH] ❌ Authentication failed with error code: {}", error_code);
+            if let Some(error_msg) = auth_response.get_string("error_str") {
+                eprintln!("[AUTH] Error message: {}", error_msg);
+            }
+            return Err(Error::AuthenticationFailed);
+        }
+
+        // Check for success indicator
+        let authenticated = auth_response.get_int("authok").unwrap_or(0) != 0;
+        if !authenticated {
+            eprintln!("[AUTH] ❌ Authentication rejected by server");
+            return Err(Error::AuthenticationFailed);
+        }
+
+        eprintln!("[AUTH] ✅ Authentication successful!");
+
+        // Extract session information if provided
+        if let Some(session_key) = auth_response.get_data("session_key") {
+            eprintln!("[AUTH] Received session key: {} bytes", session_key.len());
+        }
+
+        Ok(())
     }
 
     /// Internal method: Send raw data without status check (for handshake)
@@ -684,6 +1012,125 @@ impl Session {
             Ok(())
         } else {
             Err(Error::AuthenticationFailed)
+        }
+    }
+
+    // ========================================================================
+    // Helper methods for NodeInfo and WinVer
+    // ========================================================================
+
+    /// Generate OS version string
+    fn get_os_version() -> String {
+        #[cfg(target_os = "macos")]
+        {
+            // Try to get macOS version
+            use std::process::Command;
+            if let Ok(output) = Command::new("sw_vers").arg("-productVersion").output() {
+                if let Ok(version) = String::from_utf8(output.stdout) {
+                    return format!("macOS {}", version.trim());
+                }
+            }
+            "macOS Unknown".to_string()
+        }
+        #[cfg(target_os = "linux")]
+        {
+            // Try to read /etc/os-release
+            if let Ok(contents) = std::fs::read_to_string("/etc/os-release") {
+                for line in contents.lines() {
+                    if line.starts_with("PRETTY_NAME=") {
+                        let name = line.trim_start_matches("PRETTY_NAME=").trim_matches('"');
+                        return name.to_string();
+                    }
+                }
+            }
+            "Linux Unknown".to_string()
+        }
+        #[cfg(target_os = "windows")]
+        {
+            "Windows".to_string()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        {
+            "Unknown OS".to_string()
+        }
+    }
+
+    /// Generate unique machine ID (20 bytes)
+    fn generate_unique_id() -> Vec<u8> {
+        use sha1::{Sha1, Digest};
+        let mut hasher = Sha1::new();
+        
+        // Use hostname as base
+        if let Ok(hostname) = hostname::get() {
+            hasher.update(hostname.as_encoded_bytes());
+        }
+        
+        // Add some system-specific data
+        #[cfg(target_os = "macos")]
+        {
+            use std::process::Command;
+            if let Ok(output) = Command::new("ioreg").args(&["-rd1", "-c", "IOPlatformExpertDevice"]).output() {
+                hasher.update(&output.stdout);
+            }
+        }
+        
+        hasher.finalize().to_vec()
+    }
+
+    /// Get local address from socket
+    fn get_local_address(stream: &TcpSocket) -> ([u8; 4], u32) {
+        if let Ok(addr) = stream.local_addr() {
+            match addr.ip() {
+                std::net::IpAddr::V4(ipv4) => {
+                    return (ipv4.octets(), addr.port() as u32);
+                }
+                _ => {}
+            }
+        }
+        ([0, 0, 0, 0], 0)
+    }
+
+    /// Get peer address from socket
+    fn get_peer_address(stream: &TcpSocket) -> ([u8; 4], u32) {
+        if let Ok(addr) = stream.peer_addr() {
+            match addr.ip() {
+                std::net::IpAddr::V4(ipv4) => {
+                    return (ipv4.octets(), addr.port() as u32);
+                }
+                _ => {}
+            }
+        }
+        ([0, 0, 0, 0], 0)
+    }
+
+    /// Get Windows version info (adapted for cross-platform)
+    /// Returns: (os_type, service_pack, build, system_name, product_name)
+    fn get_win_ver_info() -> (u32, u32, u32, String, String) {
+        #[cfg(target_os = "macos")]
+        {
+            use std::process::Command;
+            if let Ok(output) = Command::new("sw_vers").arg("-productVersion").output() {
+                if let Ok(version) = String::from_utf8(output.stdout) {
+                    let v = version.trim();
+                    let parts: Vec<&str> = v.split('.').collect();
+                    let major = parts.get(0).and_then(|s| s.parse::<u32>().ok()).unwrap_or(10);
+                    let build = parts.get(2).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+                    return (major, 0, build, format!("macOS {}", v), "macOS".to_string());
+                }
+            }
+            (10, 0, 0, "macOS".to_string(), "macOS".to_string())
+        }
+        #[cfg(target_os = "linux")]
+        {
+            (0, 0, 0, "Linux".to_string(), "Linux".to_string())
+        }
+        #[cfg(target_os = "windows")]
+        {
+            (10, 0, 0, "Windows".to_string(), "Windows".to_string())
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        {
+            (0, 0, 0, "Unknown".to_string(), "Unknown".to_string())
         }
     }
 }

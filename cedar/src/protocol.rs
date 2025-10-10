@@ -172,6 +172,13 @@ impl Packet {
         self
     }
 
+    /// Add IPv4 address as 32-bit integer (network byte order)
+    pub fn add_ip32(mut self, key: impl Into<String>, ip: [u8; 4]) -> Self {
+        let ip_u32 = u32::from_be_bytes(ip);
+        self.params.push((key.into(), PacketValue::Int(ip_u32)));
+        self
+    }
+
     /// Get integer parameter
     pub fn get_int(&self, key: &str) -> Option<u32> {
         self.params.iter().find_map(|(k, v)| {
@@ -249,57 +256,71 @@ impl Packet {
 
     /// Serialize packet to bytes
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        // Simple serialization format:
-        // - Command length (4 bytes)
-        // - Command string
-        // - Param count (4 bytes)
-        // - For each param:
-        //   - Key length (4 bytes)
-        //   - Key string
-        //   - Value type (1 byte)
-        //   - Value data
+        // SoftEther PACK format (matching PackToBuf/WritePack from C code):
+        // - Element count (4 bytes, big-endian)
+        // - For each element (sorted alphabetically by key):
+        //   - Key length (4 bytes, big-endian) INCLUDING null terminator
+        //   - Key string WITH null terminator
+        //   - Padding: 2 bytes (00 00)
+        //   - Type: 1 byte
+        //   - Padding: 1 byte (00)
+        //   - Value data (format depends on type)
 
         let mut buf = Vec::new();
 
-        // Write command
-        let cmd_bytes = self.command.as_bytes();
-        buf.extend_from_slice(&(cmd_bytes.len() as u32).to_be_bytes());
-        buf.extend_from_slice(cmd_bytes);
+        // Sort parameters alphabetically by key (critical for SoftEther compatibility!)
+        // IMPORTANT: SoftEther uses case-INSENSITIVE comparison (StrCmpi)!
+        let mut sorted_params: Vec<_> = self.params.iter().collect();
+        sorted_params.sort_by(|a, b| {
+            a.0.to_lowercase().cmp(&b.0.to_lowercase())
+        });
 
-        // Write param count
-        buf.extend_from_slice(&(self.params.len() as u32).to_be_bytes());
+        // Write element count
+        buf.extend_from_slice(&(sorted_params.len() as u32).to_be_bytes());
 
-        // Write each parameter
-        for (key, value) in &self.params {
-            // Write key
+        // Write each parameter in alphabetical order
+        for (key, value) in sorted_params {
+            // Write key length (INCLUDING null terminator in count, but NOT in actual bytes!)
+            // C code: WriteBufInt(len+1) then WriteBuf(str, len) - NO null byte written!
             let key_bytes = key.as_bytes();
-            buf.extend_from_slice(&(key_bytes.len() as u32).to_be_bytes());
+            let key_len_with_null = key_bytes.len() + 1;
+            buf.extend_from_slice(&(key_len_with_null as u32).to_be_bytes());
+            
+            // Write key WITHOUT null terminator (C behavior)
             buf.extend_from_slice(key_bytes);
+            // DO NOT write null byte - C code writes len+1 but only outputs len bytes!
 
-            // Write value type and data
+            // Write type (4 bytes BE), then num_value (4 bytes BE), then actual value data
+            // C struct: [type (4 bytes)][num_value (4 bytes)][value data]
             match value {
                 PacketValue::Int(v) => {
-                    buf.push(1); // Type: Int
-                    buf.extend_from_slice(&v.to_be_bytes());
+                    buf.extend_from_slice(&(0u32).to_be_bytes());  // type = VALUE_INT (0)
+                    buf.extend_from_slice(&(1u32).to_be_bytes());  // num_value = 1
+                    buf.extend_from_slice(&v.to_be_bytes());       // actual int value
                 }
                 PacketValue::Int64(v) => {
-                    buf.push(2); // Type: Int64
-                    buf.extend_from_slice(&v.to_be_bytes());
+                    buf.extend_from_slice(&(4u32).to_be_bytes());  // type = VALUE_INT64 (4)
+                    buf.extend_from_slice(&(1u32).to_be_bytes());  // num_value = 1
+                    buf.extend_from_slice(&v.to_be_bytes());       // actual int64 value
                 }
                 PacketValue::String(s) => {
-                    buf.push(3); // Type: String
+                    buf.extend_from_slice(&(2u32).to_be_bytes());  // type = VALUE_STR (2)
+                    buf.extend_from_slice(&(1u32).to_be_bytes());  // num_value = 1
                     let s_bytes = s.as_bytes();
-                    buf.extend_from_slice(&(s_bytes.len() as u32).to_be_bytes());
-                    buf.extend_from_slice(s_bytes);
+                    buf.extend_from_slice(&(s_bytes.len() as u32).to_be_bytes());  // string length
+                    buf.extend_from_slice(s_bytes);                // string data (no null terminator for VALUE_STR)
                 }
                 PacketValue::Data(d) => {
-                    buf.push(4); // Type: Data
-                    buf.extend_from_slice(&(d.len() as u32).to_be_bytes());
-                    buf.extend_from_slice(d);
+                    buf.extend_from_slice(&(1u32).to_be_bytes());  // type = VALUE_DATA (1)
+                    buf.extend_from_slice(&(1u32).to_be_bytes());  // num_value = 1
+                    buf.extend_from_slice(&(d.len() as u32).to_be_bytes());  // data length
+                    buf.extend_from_slice(d);                      // data bytes
                 }
                 PacketValue::Bool(b) => {
-                    buf.push(5); // Type: Bool
-                    buf.push(if *b { 1 } else { 0 });
+                    // Bool is stored as VALUE_INT (type=0) with value 0 or 1
+                    buf.extend_from_slice(&(0u32).to_be_bytes());  // type = VALUE_INT (0)
+                    buf.extend_from_slice(&(1u32).to_be_bytes());  // num_value = 1
+                    buf.extend_from_slice(&(if *b { 1u32 } else { 0u32 }).to_be_bytes());  // 0 or 1
                 }
             }
         }

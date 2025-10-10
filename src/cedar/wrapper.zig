@@ -90,9 +90,16 @@ pub const Session = struct {
 
     /// Create new session
     pub fn init(server: []const u8, port: u16, hub: []const u8) !Session {
+        return initWithAuth(server, port, hub, null, null);
+    }
+
+    /// Create new session with authentication
+    pub fn initWithAuth(server: []const u8, port: u16, hub: []const u8, username: ?[]const u8, password: ?[]const u8) !Session {
         // Null-terminate strings for C
         var server_buf: [256]u8 = undefined;
         var hub_buf: [256]u8 = undefined;
+        var username_buf: [256]u8 = undefined;
+        var password_buf: [256]u8 = undefined;
 
         if (server.len >= 255 or hub.len >= 255) {
             return error.InvalidParameter;
@@ -104,7 +111,25 @@ pub const Session = struct {
         @memcpy(hub_buf[0..hub.len], hub);
         hub_buf[hub.len] = 0;
 
-        const handle = c.cedar_session_new(&server_buf, port, &hub_buf);
+        var username_ptr: ?[*:0]const u8 = null;
+        var password_ptr: ?[*:0]const u8 = null;
+
+        if (username) |user| {
+            if (user.len >= 255) return error.InvalidParameter;
+            @memcpy(username_buf[0..user.len], user);
+            username_buf[user.len] = 0;
+            username_ptr = @ptrCast(&username_buf);
+        }
+
+        if (password) |pass| {
+            if (pass.len >= 255) return error.InvalidParameter;
+            @memcpy(password_buf[0..pass.len], pass);
+            password_buf[pass.len] = 0;
+            password_ptr = @ptrCast(&password_buf);
+        }
+
+        const handle = c.cedar_session_new_with_auth(&server_buf, port, &hub_buf, if (username_ptr) |p| p else null, if (password_ptr) |p| p else null);
+
         if (handle == null) {
             return error.InvalidParameter;
         }

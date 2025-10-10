@@ -246,16 +246,27 @@ pub const VpnClient = struct {
         };
         std.debug.print("  User: {s}\n", .{username});
 
-        // Step 1: Create Cedar session
+        // Step 1: Create Cedar session with authentication
         std.debug.print("📦 Creating Cedar session...\n", .{});
-        var session = try cedar.Session.init(
+
+        // Get username and password from config auth
+        const auth_username: ?[]const u8 = switch (self.config.auth) {
+            .password => |pwd| pwd.username,
+            else => null,
+        };
+        const auth_password: ?[]const u8 = switch (self.config.auth) {
+            .password => |pwd| pwd.password,
+            else => null,
+        };
+
+        var session = try cedar.Session.initWithAuth(
             self.config.server_name,
             self.config.server_port,
             self.config.hub_name,
+            auth_username,
+            auth_password,
         );
-        errdefer session.deinit();
-
-        // Step 2: Connect (TCP + TLS handshake)
+        errdefer session.deinit(); // Step 2: Connect (TCP + TLS handshake)
         std.debug.print("🔌 Connecting to server...\n", .{});
         try session.connect();
         std.debug.print("✅ TLS connection established!\n", .{});
