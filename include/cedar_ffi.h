@@ -318,6 +318,50 @@ const char *cedar_version(void);
  */
 uint32_t cedar_protocol_version(void);
 
+/**
+ * Connect TLS connection to server
+ * Returns Success on successful connection, error code otherwise
+ */
+enum CedarErrorCode cedar_tls_connect(CedarTlsHandle handle, const char *host, uint16_t port);
+
+/**
+ * Send data over TLS connection
+ * Returns number of bytes sent, or -1 on error
+ */
+int cedar_tls_send(CedarTlsHandle handle, const uint8_t *data, uintptr_t len);
+
+/**
+ * Receive data from TLS connection
+ * Returns number of bytes received, 0 on EOF, or -1 on error
+ */
+int cedar_tls_receive(CedarTlsHandle handle, uint8_t *buffer, uintptr_t buffer_size);
+
+/**
+ * Connect session to server (TLS + initial handshake)
+ * This performs the full connection sequence:
+ * 1. TLS connection
+ * 2. Protocol hello exchange
+ */
+enum CedarErrorCode cedar_session_connect(CedarSessionHandle handle);
+
+/**
+ * Send packet over session
+ */
+enum CedarErrorCode cedar_session_send_packet(CedarSessionHandle handle, CedarPacketHandle packet);
+
+/**
+ * Receive packet from session
+ * On success, writes packet handle to out_packet
+ * Caller must free the returned packet with cedar_packet_free()
+ */
+enum CedarErrorCode cedar_session_receive_packet(CedarSessionHandle handle, CedarPacketHandle *out_packet);
+
+/**
+ * Authenticate with the server
+ * password_hash should be SHA-1 hash of password (20 bytes)
+ */
+enum CedarErrorCode cedar_session_authenticate(CedarSessionHandle handle, const char *username, const uint8_t *password_hash, uintptr_t hash_len);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

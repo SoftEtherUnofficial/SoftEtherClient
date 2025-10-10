@@ -3,6 +3,7 @@
 //! Handles VPN session lifecycle, state management, and connection coordination.
 
 use crate::constants::*;
+use crate::protocol::Packet;
 use mayaqua::error::{Error, Result};
 use mayaqua::network::{TcpSocket, UdpSocketWrapper};
 use std::sync::{Arc, Mutex};
@@ -180,7 +181,7 @@ impl Session {
 
         // Authenticate
         self.set_status(SessionStatus::Authenticating);
-        self.authenticate()?;
+        self.authenticate_from_config()?;
 
         // Session established
         self.set_status(SessionStatus::Established);
@@ -198,8 +199,8 @@ impl Session {
         Ok(())
     }
 
-    /// Authenticate with server
-    fn authenticate(&self) -> Result<()> {
+    /// Internal authentication helper using config
+    fn authenticate_from_config(&self) -> Result<()> {
         // TODO: Implement authentication based on AuthConfig
         match &self.config.auth {
             AuthConfig::Anonymous => {
@@ -208,9 +209,9 @@ impl Session {
             }
             AuthConfig::Password { username, password } => {
                 // Password-based authentication
-                let _hash = mayaqua::crypto::softether_password_hash(password, username);
-                // TODO: Send authentication packet
-                Ok(())
+                let hash = mayaqua::crypto::softether_password_hash(password, username);
+                // Call public authenticate with username and hash
+                self.authenticate(username, &hash)
             }
             AuthConfig::Certificate { .. } => {
                 // Certificate-based authentication
@@ -330,6 +331,82 @@ impl Session {
     /// Check if UDP acceleration is active
     pub fn is_udp_accelerated(&self) -> bool {
         self.udp_socket.lock().unwrap().is_some()
+    }
+
+    /// Send protocol packet over session
+    pub fn send_packet(&self, packet: &Packet) -> Result<()> {
+        if self.status() != SessionStatus::Established {
+            return Err(Error::InvalidState);
+        }
+
+        // Serialize packet to bytes
+        let data = packet.to_bytes()?;
+
+        // Send packet size first (4 bytes, big-endian)
+        let size_bytes = (data.len() as u32).to_be_bytes();
+        self.send(&size_bytes)?;
+
+        // Then send packet data
+        self.send(&data)?;
+
+        Ok(())
+    }
+
+    /// Receive protocol packet from session
+    pub fn receive_packet(&self) -> Result<Packet> {
+        if self.status() != SessionStatus::Established {
+            return Err(Error::InvalidState);
+        }
+
+        // Read packet size first (4 bytes)
+        let mut size_buf = [0u8; 4];
+        let mut connections = self.tcp_connections.lock().unwrap();
+        if connections.is_empty() {
+            return Err(Error::NotConnected);
+        }
+
+        connections[0].recv(&mut size_buf)?;
+        let packet_size = u32::from_be_bytes(size_buf) as usize;
+
+        // Validate packet size
+        if packet_size == 0 || packet_size > 16 * 1024 * 1024 {
+            // Max 16MB
+            return Err(Error::InvalidPacketSize);
+        }
+
+        // Read packet data
+        let mut packet_data = vec![0u8; packet_size];
+        connections[0].recv(&mut packet_data)?;
+
+        // Deserialize packet
+        Packet::from_bytes(&packet_data)
+    }
+
+    /// Authenticate with server using username and password hash
+    /// hash should be SHA-1 hash of the password (20 bytes)
+    pub fn authenticate(&self, username: &str, hash: &[u8]) -> Result<()> {
+        if hash.len() != 20 {
+            return Err(Error::InvalidParameter);
+        }
+
+        // Create authentication packet (using builder pattern)
+        let auth_packet = Packet::new("auth")
+            .add_string("username", username)
+            .add_data("password_hash", hash.to_vec());
+
+        // Send authentication packet
+        self.send_packet(&auth_packet)?;
+
+        // Receive authentication response
+        let response = self.receive_packet()?;
+
+        // Check if authentication succeeded
+        let success = response.get_bool("authenticated").unwrap_or(false);
+        if success {
+            Ok(())
+        } else {
+            Err(Error::AuthenticationFailed)
+        }
     }
 }
 

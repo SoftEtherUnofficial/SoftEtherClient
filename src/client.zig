@@ -231,40 +231,75 @@ pub const VpnClient = struct {
             return VpnError.InitializationFailed; // Should never happen
         }
 
-        // TODO: Implement Cedar connection logic
-        // For now, just create a session and print debug info
-
         std.debug.print("🚀 Cedar FFI Connection Path!\n", .{});
         std.debug.print("  Server: {s}:{d}\n", .{ self.config.server_name, self.config.server_port });
         std.debug.print("  Hub: {s}\n", .{self.config.hub_name});
 
-        // Extract username from auth config
+        // Extract username and password from auth config
         const username = switch (self.config.auth) {
             .password => |p| p.username,
             else => "anonymous",
         };
+        const password = switch (self.config.auth) {
+            .password => |p| p.password,
+            else => "",
+        };
         std.debug.print("  User: {s}\n", .{username});
 
-        // Create Cedar session
-        const session = try cedar.Session.init(
+        // Step 1: Create Cedar session
+        std.debug.print("📦 Creating Cedar session...\n", .{});
+        var session = try cedar.Session.init(
             self.config.server_name,
             self.config.server_port,
             self.config.hub_name,
         );
+        errdefer session.deinit();
 
+        // Step 2: Connect (TCP + TLS handshake)
+        std.debug.print("🔌 Connecting to server...\n", .{});
+        try session.connect();
+        std.debug.print("✅ TLS connection established!\n", .{});
+
+        // Step 3: Send protocol hello packet
+        std.debug.print("👋 Sending hello packet...\n", .{});
+        var hello_packet = try cedar.Packet.init("hello");
+        defer hello_packet.deinit();
+
+        try hello_packet.addString("client_str", "Cedar-Zig-Client");
+        try hello_packet.addInt("version", 4);
+        try hello_packet.addInt("build", 9999);
+
+        try session.sendPacket(&hello_packet);
+
+        // Step 4: Receive hello response
+        std.debug.print("📥 Waiting for hello response...\n", .{});
+        var hello_response = try session.receivePacket();
+        defer hello_response.deinit();
+
+        var server_str_buf: [256]u8 = undefined;
+        const server_str = try hello_response.getString("server_str", &server_str_buf);
+        std.debug.print("✅ Server: {s}\n", .{server_str});
+
+        // Step 5: Authenticate
+        std.debug.print("🔐 Authenticating as {s}...\n", .{username});
+        try session.authenticate(username, password);
+        std.debug.print("✅ Authentication successful!\n", .{});
+
+        // Step 6: Session established
+        const status = session.getStatus();
+        std.debug.print("🎉 Connection established! Status: {}\n", .{status});
+
+        // Store session
         self.cedar_session = session;
 
-        std.debug.print("✅ Cedar session created successfully!\n", .{});
-        std.debug.print("   (Full connection logic not yet implemented)\n", .{});
+        std.debug.print("✅ Cedar connection complete!\n", .{});
+        std.debug.print("   (Packet forwarding not yet implemented)\n", .{});
 
-        // TODO: Implement full connection flow:
-        // 1. session.connect() - TLS handshake
-        // 2. Send authentication packet
-        // 3. Receive server response
-        // 4. Set up virtual network interface
-        // 5. Start packet forwarding loop
-
-        return VpnError.NotImplemented; // Return error for now since not fully implemented
+        // TODO: Next steps:
+        // - Set up virtual network interface (TUN/TAP)
+        // - Start packet forwarding loop
+        // - Handle keep-alive packets
+        // - Implement graceful disconnect
     }
 
     /// Disconnect from VPN server

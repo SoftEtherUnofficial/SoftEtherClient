@@ -131,6 +131,55 @@ pub const Session = struct {
         try errorFromCode(result);
         return SessionStats.fromC(stats);
     }
+
+    /// Connect to VPN server (TLS + initial handshake)
+    pub fn connect(self: *Session) !void {
+        const result = c.cedar_session_connect(self.handle);
+        try errorFromCode(result);
+    }
+
+    /// Send protocol packet
+    pub fn sendPacket(self: *Session, packet: *const Packet) !void {
+        const result = c.cedar_session_send_packet(self.handle, packet.handle);
+        try errorFromCode(result);
+    }
+
+    /// Receive protocol packet
+    pub fn receivePacket(self: *Session) !Packet {
+        var packet_handle: c.CedarPacketHandle = null;
+        const result = c.cedar_session_receive_packet(self.handle, &packet_handle);
+        try errorFromCode(result);
+
+        if (packet_handle == null) {
+            return error.InvalidState;
+        }
+
+        return Packet{ .handle = packet_handle };
+    }
+
+    /// Authenticate with username and password
+    /// Password will be hashed with SHA-1 before sending
+    pub fn authenticate(self: *Session, username: []const u8, password: []const u8) !void {
+        // Compute SHA-1 hash of password
+        var hash: [20]u8 = undefined;
+        std.crypto.hash.Sha1.hash(password, &hash, .{});
+
+        // Null-terminate username
+        var username_buf: [256]u8 = undefined;
+        if (username.len >= 255) {
+            return error.InvalidParameter;
+        }
+        @memcpy(username_buf[0..username.len], username);
+        username_buf[username.len] = 0;
+
+        const result = c.cedar_session_authenticate(
+            self.handle,
+            &username_buf,
+            &hash,
+            hash.len,
+        );
+        try errorFromCode(result);
+    }
 };
 
 /// VPN Packet
@@ -288,6 +337,41 @@ pub const TlsConnection = struct {
         );
         try errorFromCode(result);
         return bytes_written;
+    }
+
+    /// Connect to server and perform TLS handshake
+    pub fn connect(self: *TlsConnection, host: []const u8, port: u16) !void {
+        // Null-terminate host string
+        var host_buf: [256]u8 = undefined;
+        if (host.len >= 255) {
+            return error.InvalidParameter;
+        }
+        @memcpy(host_buf[0..host.len], host);
+        host_buf[host.len] = 0;
+
+        const result = c.cedar_tls_connect(self.handle, &host_buf, port);
+        try errorFromCode(result);
+    }
+
+    /// Send data over TLS connection
+    pub fn send(self: *TlsConnection, data: []const u8) !usize {
+        const bytes_sent = c.cedar_tls_send(self.handle, data.ptr, data.len);
+        if (bytes_sent < 0) {
+            return error.IoError;
+        }
+        return @intCast(bytes_sent);
+    }
+
+    /// Receive data from TLS connection
+    pub fn receive(self: *TlsConnection, buffer: []u8) !usize {
+        const bytes_received = c.cedar_tls_receive(self.handle, buffer.ptr, buffer.len);
+        if (bytes_received < 0) {
+            return error.IoError;
+        }
+        if (bytes_received == 0) {
+            return 0; // EOF
+        }
+        return @intCast(bytes_received);
     }
 };
 

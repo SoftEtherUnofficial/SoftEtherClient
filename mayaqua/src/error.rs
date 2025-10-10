@@ -37,6 +37,7 @@ pub enum Error {
     UnexpectedPacketType, // Unexpected packet type
     InvalidPacketFormat,  // Invalid packet format
     PacketTooLarge,       // Packet size exceeds maximum
+    InvalidPacketSize,    // Invalid packet size (too small or too large)
     BufferTooSmall,       // Buffer too small for operation
     EncodingError,        // String encoding error
 
@@ -97,6 +98,7 @@ impl fmt::Display for Error {
             Error::UnexpectedPacketType => write!(f, "Unexpected packet type"),
             Error::InvalidPacketFormat => write!(f, "Invalid packet format"),
             Error::PacketTooLarge => write!(f, "Packet too large"),
+            Error::InvalidPacketSize => write!(f, "Invalid packet size"),
             Error::BufferTooSmall => write!(f, "Buffer too small"),
             Error::EncodingError => write!(f, "Encoding error"),
             Error::CryptoError => write!(f, "Cryptographic error"),
@@ -168,8 +170,9 @@ impl Error {
             Error::UnexpectedPacketType => 304,
             Error::InvalidPacketFormat => 305,
             Error::PacketTooLarge => 306,
-            Error::BufferTooSmall => 307,
-            Error::EncodingError => 308,
+            Error::InvalidPacketSize => 307,
+            Error::BufferTooSmall => 308,
+            Error::EncodingError => 309,
             Error::CryptoError => 400,
             Error::InvalidCertificate => 401,
             Error::IoError(_) => 500,

@@ -704,6 +704,172 @@ pub extern "C" fn cedar_protocol_version() -> u32 {
     crate::protocol::PROTOCOL_VERSION
 }
 
+// ============================================================================
+// Network I/O Functions (NEW - For Phase 4.1 Step 2)
+// ============================================================================
+
+/// Connect TLS connection to server
+/// Returns Success on successful connection, error code otherwise
+#[no_mangle]
+pub extern "C" fn cedar_tls_connect(
+    handle: CedarTlsHandle,
+    host: *const c_char,
+    port: u16,
+) -> CedarErrorCode {
+    if handle.is_null() || host.is_null() {
+        return CedarErrorCode::InvalidParameter;
+    }
+
+    let host_str = match unsafe { CStr::from_ptr(host) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return CedarErrorCode::InvalidParameter,
+    };
+
+    let tls = unsafe { &mut *(handle as *mut TlsConnection) };
+    
+    match tls.connect(host_str, port) {
+        Ok(_) => CedarErrorCode::Success,
+        Err(e) => CedarErrorCode::from(e),
+    }
+}
+
+/// Send data over TLS connection
+/// Returns number of bytes sent, or -1 on error
+#[no_mangle]
+pub extern "C" fn cedar_tls_send(
+    handle: CedarTlsHandle,
+    data: *const u8,
+    len: usize,
+) -> c_int {
+    if handle.is_null() || data.is_null() {
+        return -1;
+    }
+
+    let tls = unsafe { &mut *(handle as *mut TlsConnection) };
+    let data_slice = unsafe { std::slice::from_raw_parts(data, len) };
+
+    match tls.send(data_slice) {
+        Ok(sent) => sent as c_int,
+        Err(_) => -1,
+    }
+}
+
+/// Receive data from TLS connection
+/// Returns number of bytes received, 0 on EOF, or -1 on error
+#[no_mangle]
+pub extern "C" fn cedar_tls_receive(
+    handle: CedarTlsHandle,
+    buffer: *mut u8,
+    buffer_size: usize,
+) -> c_int {
+    if handle.is_null() || buffer.is_null() {
+        return -1;
+    }
+
+    let tls = unsafe { &mut *(handle as *mut TlsConnection) };
+    let buffer_slice = unsafe { std::slice::from_raw_parts_mut(buffer, buffer_size) };
+
+    match tls.receive(buffer_slice) {
+        Ok(received) => received as c_int,
+        Err(_) => -1,
+    }
+}
+
+/// Connect session to server (TLS + initial handshake)
+/// This performs the full connection sequence:
+/// 1. TLS connection
+/// 2. Protocol hello exchange
+#[no_mangle]
+pub extern "C" fn cedar_session_connect(
+    handle: CedarSessionHandle,
+) -> CedarErrorCode {
+    if handle.is_null() {
+        return CedarErrorCode::InvalidParameter;
+    }
+
+    let session = unsafe { &mut *(handle as *mut Session) };
+    
+    match session.connect() {
+        Ok(_) => CedarErrorCode::Success,
+        Err(e) => CedarErrorCode::from(e),
+    }
+}
+
+/// Send packet over session
+#[no_mangle]
+pub extern "C" fn cedar_session_send_packet(
+    handle: CedarSessionHandle,
+    packet: CedarPacketHandle,
+) -> CedarErrorCode {
+    if handle.is_null() || packet.is_null() {
+        return CedarErrorCode::InvalidParameter;
+    }
+
+    let session = unsafe { &mut *(handle as *mut Session) };
+    let packet_ref = unsafe { &*(packet as *const Packet) };
+    
+    match session.send_packet(packet_ref) {
+        Ok(_) => CedarErrorCode::Success,
+        Err(e) => CedarErrorCode::from(e),
+    }
+}
+
+/// Receive packet from session
+/// On success, writes packet handle to out_packet
+/// Caller must free the returned packet with cedar_packet_free()
+#[no_mangle]
+pub extern "C" fn cedar_session_receive_packet(
+    handle: CedarSessionHandle,
+    out_packet: *mut CedarPacketHandle,
+) -> CedarErrorCode {
+    if handle.is_null() || out_packet.is_null() {
+        return CedarErrorCode::InvalidParameter;
+    }
+
+    let session = unsafe { &mut *(handle as *mut Session) };
+    
+    match session.receive_packet() {
+        Ok(packet) => {
+            let packet_handle = Box::into_raw(Box::new(packet)) as CedarPacketHandle;
+            unsafe { *out_packet = packet_handle; }
+            CedarErrorCode::Success
+        }
+        Err(e) => CedarErrorCode::from(e),
+    }
+}
+
+/// Authenticate with the server
+/// password_hash should be SHA-1 hash of password (20 bytes)
+#[no_mangle]
+pub extern "C" fn cedar_session_authenticate(
+    handle: CedarSessionHandle,
+    username: *const c_char,
+    password_hash: *const u8,
+    hash_len: usize,
+) -> CedarErrorCode {
+    if handle.is_null() || username.is_null() || password_hash.is_null() {
+        return CedarErrorCode::InvalidParameter;
+    }
+
+    if hash_len != 20 {
+        return CedarErrorCode::InvalidParameter; // SHA-1 is 20 bytes
+    }
+
+    let username_str = match unsafe { CStr::from_ptr(username) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return CedarErrorCode::InvalidParameter,
+    };
+
+    let hash_slice = unsafe { std::slice::from_raw_parts(password_hash, hash_len) };
+
+    let session = unsafe { &mut *(handle as *mut Session) };
+    
+    match session.authenticate(username_str, hash_slice) {
+        Ok(_) => CedarErrorCode::Success,
+        Err(e) => CedarErrorCode::from(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
