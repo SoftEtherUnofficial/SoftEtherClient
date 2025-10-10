@@ -33,6 +33,12 @@ pub enum Error {
     ProtocolError,        // Protocol violation
     InvalidSignature,     // Invalid protocol signature
     AuthenticationFailed, // Authentication failed
+    InvalidResponse,      // Invalid response received
+    UnexpectedPacketType, // Unexpected packet type
+    InvalidPacketFormat,  // Invalid packet format
+    PacketTooLarge,       // Packet size exceeds maximum
+    BufferTooSmall,       // Buffer too small for operation
+    EncodingError,        // String encoding error
 
     // Crypto errors
     CryptoError,        // Cryptographic operation failed
@@ -44,6 +50,13 @@ pub enum Error {
 
     // Configuration errors
     ConfigError(String), // Configuration validation/parsing error
+
+    // State errors
+    InvalidState,     // Invalid state for operation
+    NotConnected,     // Not connected
+    NotImplemented,   // Feature not implemented
+    NotSupported,     // Operation not supported
+    TooManyConnections, // Too many connections
 
     // Platform-specific errors
     /// Pack-related errors
@@ -80,11 +93,22 @@ impl fmt::Display for Error {
             Error::ProtocolError => write!(f, "Protocol error"),
             Error::InvalidSignature => write!(f, "Invalid signature"),
             Error::AuthenticationFailed => write!(f, "Authentication failed"),
+            Error::InvalidResponse => write!(f, "Invalid response"),
+            Error::UnexpectedPacketType => write!(f, "Unexpected packet type"),
+            Error::InvalidPacketFormat => write!(f, "Invalid packet format"),
+            Error::PacketTooLarge => write!(f, "Packet too large"),
+            Error::BufferTooSmall => write!(f, "Buffer too small"),
+            Error::EncodingError => write!(f, "Encoding error"),
             Error::CryptoError => write!(f, "Cryptographic error"),
             Error::InvalidCertificate => write!(f, "Invalid certificate"),
             Error::IoError(msg) => write!(f, "I/O error: {msg}"),
             Error::InvalidString => write!(f, "Invalid string encoding"),
             Error::ConfigError(msg) => write!(f, "Configuration error: {msg}"),
+            Error::InvalidState => write!(f, "Invalid state"),
+            Error::NotConnected => write!(f, "Not connected"),
+            Error::NotImplemented => write!(f, "Not implemented"),
+            Error::NotSupported => write!(f, "Not supported"),
+            Error::TooManyConnections => write!(f, "Too many connections"),
             Error::Pack(msg) => write!(f, "Pack error: {msg}"),
             Error::Network(msg) => write!(f, "Network error: {msg}"),
             Error::Http(msg) => write!(f, "HTTP error: {msg}"),
@@ -140,14 +164,25 @@ impl Error {
             Error::ProtocolError => 300,
             Error::InvalidSignature => 301,
             Error::AuthenticationFailed => 302,
+            Error::InvalidResponse => 303,
+            Error::UnexpectedPacketType => 304,
+            Error::InvalidPacketFormat => 305,
+            Error::PacketTooLarge => 306,
+            Error::BufferTooSmall => 307,
+            Error::EncodingError => 308,
             Error::CryptoError => 400,
             Error::InvalidCertificate => 401,
             Error::IoError(_) => 500,
             Error::InvalidString => 501,
             Error::ConfigError(_) => 502,
-            Error::Pack(_) => 503,
-            Error::Network(_) => 504,
-            Error::Http(_) => 505,
+            Error::InvalidState => 503,
+            Error::NotConnected => 504,
+            Error::NotImplemented => 505,
+            Error::NotSupported => 506,
+            Error::TooManyConnections => 507,
+            Error::Pack(_) => 508,
+            Error::Network(_) => 509,
+            Error::Http(_) => 510,
             Error::PlatformError(_) => 600,
         }
     }
