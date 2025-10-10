@@ -21,10 +21,11 @@ pub mod http; // HTTP request/response handling
 pub mod logging; // Logging abstraction
 
 // Extracted modules from softether-rust (Phase 3.1)
-pub mod config;
+pub mod config; // Configuration management (JSON-based, schema-validated)
 pub mod crypto; // Cryptographic functions (SHA-0, RC4, password hashing)
 pub mod fs; // Filesystem operations (atomic write, safe read, permissions)
-pub mod platform; // Platform-specific utilities (directories, network interfaces) // Configuration management (JSON-based, schema-validated)
+pub mod platform; // Platform-specific utilities (directories, network interfaces)
+pub mod strings; // String utilities (UTF-8/UTF-16, conversion, manipulation)
 
 // FFI exports for C compatibility
 pub mod ffi;
@@ -59,6 +60,13 @@ pub use platform::{get_config_directory, get_system_directory};
 
 // Re-export Phase 3.1 (Config)
 pub use config::{IpVersion, PerformanceConfig, VpnConfig};
+
+// Re-export Phase 3.1 (Strings)
+pub use strings::{
+    bin_to_str, ends_with_i, is_printable_ascii, is_safe_str, mac_to_str, make_safe_str,
+    replace_str, replace_stri, search_str, search_stri, starts_with_i, str_cmpi, str_to_bin,
+    str_to_lines, str_to_mac, tokenize, trim_str, truncate_str, utf16_to_utf8, utf8_to_utf16,
+};
 
 // Constants from Pack.h - Architecture-dependent sizes
 #[cfg(target_pointer_width = "64")]
