@@ -80,6 +80,7 @@ pub const ConnectionConfig = struct {
     ip_version: IpVersion = .auto,
     static_ip: ?StaticIpConfig = null,
     use_zig_adapter: bool = true, // Use Zig packet adapter (default, better performance)
+    use_cedar: bool = false, // Use Cedar FFI (Rust TLS) instead of C Bridge (OpenSSL)
     performance: PerformanceConfig = .{}, // Performance tuning options
 
     /// Create a configuration builder
@@ -102,6 +103,7 @@ pub const ConfigBuilder = struct {
     additional_connection_interval: u32 = 1,
     ip_version: IpVersion = .auto,
     static_ip: ?StaticIpConfig = null,
+    use_cedar: bool = false,
 
     /// Set VPN server address and port
     pub fn setServer(self: *ConfigBuilder, name: []const u8, port: u16) *ConfigBuilder {

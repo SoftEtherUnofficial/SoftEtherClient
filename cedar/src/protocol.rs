@@ -6,7 +6,7 @@ use mayaqua::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 /// Protocol version
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 443;
 
 /// Cedar protocol signature (not used in HTTP mode)
 pub const CEDAR_SIGNATURE: &str = "SE-VPN4-PROTOCOL";
@@ -172,9 +172,12 @@ impl Packet {
         self
     }
 
-    /// Add IPv4 address as 32-bit integer (network byte order)
+    /// Add IPv4 address as 32-bit integer (SoftEther uses LITTLE-ENDIAN/reversed byte order!)
+    /// For IP 192.168.1.19, sends as 0x1301A8C0 (bytes: 13 01 A8 C0)
     pub fn add_ip32(mut self, key: impl Into<String>, ip: [u8; 4]) -> Self {
-        let ip_u32 = u32::from_be_bytes(ip);
+        // SoftEther stores IPs in little-endian format (reversed bytes)
+        // IP 192.168.1.19 → [192, 168, 1, 19] → 0x1301A8C0 (little-endian u32)
+        let ip_u32 = u32::from_le_bytes(ip);
         self.params.push((key.into(), PacketValue::Int(ip_u32)));
         self
     }
@@ -292,35 +295,41 @@ impl Packet {
 
             // Write type (4 bytes BE), then num_value (4 bytes BE), then actual value data
             // C struct: [type (4 bytes)][num_value (4 bytes)][value data]
+            // IMPORTANT: All integers written in BIG-ENDIAN (network byte order)
             match value {
                 PacketValue::Int(v) => {
-                    buf.extend_from_slice(&(0u32).to_be_bytes());  // type = VALUE_INT (0)
-                    buf.extend_from_slice(&(1u32).to_be_bytes());  // num_value = 1
-                    buf.extend_from_slice(&v.to_be_bytes());       // actual int value
+                    // VALUE_INT: type=0, num_value=1, value (4 bytes)
+                    buf.extend_from_slice(&0u32.to_be_bytes());  // type = VALUE_INT (0)
+                    buf.extend_from_slice(&1u32.to_be_bytes());  // num_value = 1
+                    buf.extend_from_slice(&v.to_be_bytes());     // actual int value (BE)
                 }
                 PacketValue::Int64(v) => {
-                    buf.extend_from_slice(&(4u32).to_be_bytes());  // type = VALUE_INT64 (4)
-                    buf.extend_from_slice(&(1u32).to_be_bytes());  // num_value = 1
-                    buf.extend_from_slice(&v.to_be_bytes());       // actual int64 value
+                    // VALUE_INT64: type=4, num_value=1, value (8 bytes)
+                    buf.extend_from_slice(&4u32.to_be_bytes());  // type = VALUE_INT64 (4)
+                    buf.extend_from_slice(&1u32.to_be_bytes());  // num_value = 1
+                    buf.extend_from_slice(&v.to_be_bytes());     // actual int64 value (BE)
                 }
                 PacketValue::String(s) => {
-                    buf.extend_from_slice(&(2u32).to_be_bytes());  // type = VALUE_STR (2)
-                    buf.extend_from_slice(&(1u32).to_be_bytes());  // num_value = 1
+                    // VALUE_STR: type=2, num_value=1, length (4 bytes), string data (no null)
+                    buf.extend_from_slice(&2u32.to_be_bytes());  // type = VALUE_STR (2)
+                    buf.extend_from_slice(&1u32.to_be_bytes());  // num_value = 1
                     let s_bytes = s.as_bytes();
                     buf.extend_from_slice(&(s_bytes.len() as u32).to_be_bytes());  // string length
-                    buf.extend_from_slice(s_bytes);                // string data (no null terminator for VALUE_STR)
+                    buf.extend_from_slice(s_bytes);              // string data (no null terminator)
                 }
                 PacketValue::Data(d) => {
-                    buf.extend_from_slice(&(1u32).to_be_bytes());  // type = VALUE_DATA (1)
-                    buf.extend_from_slice(&(1u32).to_be_bytes());  // num_value = 1
+                    // VALUE_DATA: type=1, num_value=1, length (4 bytes), data bytes
+                    buf.extend_from_slice(&1u32.to_be_bytes());  // type = VALUE_DATA (1)
+                    buf.extend_from_slice(&1u32.to_be_bytes());  // num_value = 1
                     buf.extend_from_slice(&(d.len() as u32).to_be_bytes());  // data length
-                    buf.extend_from_slice(d);                      // data bytes
+                    buf.extend_from_slice(d);                    // data bytes
                 }
                 PacketValue::Bool(b) => {
                     // Bool is stored as VALUE_INT (type=0) with value 0 or 1
-                    buf.extend_from_slice(&(0u32).to_be_bytes());  // type = VALUE_INT (0)
-                    buf.extend_from_slice(&(1u32).to_be_bytes());  // num_value = 1
-                    buf.extend_from_slice(&(if *b { 1u32 } else { 0u32 }).to_be_bytes());  // 0 or 1
+                    buf.extend_from_slice(&0u32.to_be_bytes());  // type = VALUE_INT (0)
+                    buf.extend_from_slice(&1u32.to_be_bytes());  // num_value = 1
+                    let val = if *b { 1u32 } else { 0u32 };
+                    buf.extend_from_slice(&val.to_be_bytes());   // 0 or 1 (BE)
                 }
             }
         }

@@ -183,8 +183,8 @@ pub extern "C" fn cedar_session_new_with_auth(
         port,
         hub: hub_str.to_string(),
         auth,
-        use_encrypt: false,
-        use_compress: false,
+        use_encrypt: true,  // FIXED: Default to true (secure by default)
+        use_compress: true, // FIXED: Default to true (better performance)
         max_connection: 1,
         keep_alive_interval: Duration::from_secs(30),
         timeout: Duration::from_secs(15),

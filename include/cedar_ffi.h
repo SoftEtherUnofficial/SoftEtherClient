@@ -59,7 +59,7 @@
 /**
  * Protocol version
  */
-#define PROTOCOL_VERSION 4
+#define PROTOCOL_VERSION 443
 
 /**
  * Maximum packet size (16MB)

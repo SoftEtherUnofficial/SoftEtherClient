@@ -51,8 +51,7 @@ pub fn build(b: *std.Build) void {
     // Build option to select packet adapter (Zig adapter is default for better performance)
     const use_zig_adapter = b.option(bool, "use-zig-adapter", "Use Zig packet adapter (default: true)") orelse true;
 
-    // Build option to use Cedar FFI instead of OpenSSL (default: false for gradual migration)
-    const use_cedar = b.option(bool, "use-cedar", "Use Cedar FFI for TLS/protocol (default: false)") orelse false;
+    // Cedar FFI is always built and available (selected at runtime with --use-cedar flag)
 
     // Detect target OS
     const target_os = target.result.os.tag;
@@ -223,8 +222,8 @@ pub fn build(b: *std.Build) void {
 
     // Create build options module to expose build flags to Zig code
     const build_options = b.addOptions();
-    build_options.addOption(bool, "use_cedar", use_cedar);
     build_options.addOption(bool, "use_zig_adapter", use_zig_adapter);
+    // Cedar FFI selection moved to runtime (--use-cedar flag)
 
     const lib_module = b.addModule("softether", .{
         .root_source_file = b.path("src/main.zig"),
@@ -309,20 +308,16 @@ pub fn build(b: *std.Build) void {
     const openssl_lib = b.fmt("{s}/lib", .{openssl_prefix});
     cli.addLibraryPath(.{ .cwd_relative = openssl_lib });
 
-    // Link OpenSSL (all platforms)
+    // Link OpenSSL (all platforms - still needed for C Bridge fallback)
     cli.linkSystemLibrary("ssl");
     cli.linkSystemLibrary("crypto");
     cli.linkLibC();
 
-    // Link Cedar FFI library if enabled
-    if (use_cedar) {
-        // Build Cedar library automatically
-        buildCedarLibrary(b);
-
-        cli.addIncludePath(b.path("include")); // Cedar FFI headers
-        cli.addLibraryPath(b.path("cedar/target/release")); // Cedar static lib
-        cli.linkSystemLibrary("cedar"); // libcedar.a
-    }
+    // Always build and link Cedar FFI library (runtime selection with --use-cedar)
+    buildCedarLibrary(b);
+    cli.addIncludePath(b.path("include")); // Cedar FFI headers
+    cli.addLibraryPath(b.path("cedar/target/release")); // Cedar static lib
+    cli.linkSystemLibrary("cedar"); // libcedar.a
 
     // Platform-specific system libraries
     if (target_os != .windows) {
@@ -577,12 +572,10 @@ pub fn build(b: *std.Build) void {
     test_cedar_client.addIncludePath(b.path("src/bridge"));
     test_cedar_client.addIncludePath(b.path("SoftEtherVPN_Stable/src"));
 
-    // Add Cedar library if enabled
-    if (use_cedar) {
-        test_cedar_client.addIncludePath(b.path("include"));
-        test_cedar_client.addLibraryPath(b.path("cedar/target/release"));
-        test_cedar_client.linkSystemLibrary("cedar");
-    }
+    // Always add Cedar library (runtime selection)
+    test_cedar_client.addIncludePath(b.path("include"));
+    test_cedar_client.addLibraryPath(b.path("cedar/target/release"));
+    test_cedar_client.linkSystemLibrary("cedar");
 
     test_cedar_client.linkLibC();
 

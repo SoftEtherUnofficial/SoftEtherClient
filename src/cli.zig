@@ -53,6 +53,7 @@ fn printUsage() void {
         \\    --profile               Enable performance profiling
         \\    --use-zig-adapter       Use Zig packet adapter (default, 10x faster)
         \\    --use-c-adapter         Use legacy C adapter (fallback)
+        \\    --use-cedar             Use Cedar FFI (Rust TLS, no OpenSSL) [runtime choice]
         \\    --log-level <LEVEL>     Set log verbosity: silent, error, warn, info, debug, trace (default: info)
         \\
         \\  Reconnection Options:
@@ -156,6 +157,7 @@ const CliArgs = struct {
     daemon: bool = false,
     profile: bool = false, // Enable performance profiling
     use_zig_adapter: bool = true, // Use Zig packet adapter (default for better performance)
+    use_cedar: bool = false, // Use Cedar FFI (Rust TLS) instead of C Bridge (OpenSSL)
     log_level: []const u8 = "info",
 
     // Reconnection settings
@@ -255,6 +257,8 @@ fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
             result.use_zig_adapter = true;
         } else if (std.mem.eql(u8, arg, "--use-c-adapter")) {
             result.use_zig_adapter = false;
+        } else if (std.mem.eql(u8, arg, "--use-cedar")) {
+            result.use_cedar = true;
         } else if (std.mem.eql(u8, arg, "--log-level")) {
             result.log_level = args.next() orelse return error.MissingLogLevel;
         } else if (std.mem.eql(u8, arg, "--reconnect")) {
@@ -601,6 +605,7 @@ pub fn main() !void {
         .ip_version = ip_version,
         .static_ip = static_ip,
         .use_zig_adapter = args.use_zig_adapter,
+        .use_cedar = args.use_cedar,
         .performance = .{
             .recv_buffer_slots = final_recv_buffer_slots,
             .send_buffer_slots = final_send_buffer_slots,

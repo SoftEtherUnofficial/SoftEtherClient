@@ -215,9 +215,9 @@ impl Session {
         
         // Step 2: Create hello packet with client information
         let hello_packet = Packet::new("hello")
-            .add_string("client_str", "Cedar-Zig-Client/1.0")
+            .add_string("client_str", "SoftEther VPN Client")
             .add_int("version", PROTOCOL_VERSION)
-            .add_int("build", 9999)
+            .add_int("build", 9807)
             .add_bool("use_encrypt", self.config.use_encrypt)
             .add_bool("use_compress", self.config.use_compress)
             .add_int("max_connection", self.config.max_connection);
@@ -404,54 +404,69 @@ impl Session {
                 combined.extend_from_slice(&server_random);
                 let secure_token = mayaqua::crypto::sha0(&combined).to_vec();
 
-                eprintln!("[AUTH] Secure token computed: {} bytes", secure_token.len());
-                eprintln!("[AUTH] Secure token (hex): {}", secure_token.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+                eprintln!("[AUTH] ========================================");
+                eprintln!("[AUTH] SECURE PASSWORD CALCULATION");
+                eprintln!("[AUTH] ========================================");
+                eprintln!("[AUTH] Username:            {}", username);
+                eprintln!("[AUTH] Password hash:       {} (20 bytes)", password_hash.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+                eprintln!("[AUTH] Server random:       {} (20 bytes)", server_random.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+                eprintln!("[AUTH] Combined input:      {} (40 bytes)", combined.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+                eprintln!("[AUTH] SHA-0 output:        {} (20 bytes)", secure_token.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+                eprintln!("[AUTH] ========================================");
 
-                // Build auth packet with correct SoftEther format:
-                // method="login", authtype=1 (CLIENT_AUTHTYPE_PASSWORD)
-                // CRITICAL: Must include all fields that C client sends
+                // Build auth packet matching C Bridge format exactly
+                // CRITICAL CHANGES:
+                // 1. Remove duplicate fields: client_build, client_id, client_str, client_ver
+                // 2. Use exact field names from C Bridge (PascalCase)
+                // 3. Fields will be sorted alphabetically by Packet.to_bytes()
                 
+                // Core authentication fields
                 let packet = Packet::new("auth")
-                    .add_string("method", "login")
+                    .add_int("authtype", CLIENT_AUTHTYPE_PASSWORD)  // 1 = password
+                    .add_string("method", "login")  // FIXED: C Bridge uses "login" (see PackLoginWithPassword line 8687)
                     .add_string("hubname", &self.config.hub)
                     .add_string("username", username)
-                    .add_int("authtype", CLIENT_AUTHTYPE_PASSWORD)
                     .add_data("secure_password", secure_token);
                 
-                // Add client version info (PackAddClientVersion)
+                // Client version info - TWO SETS OF VERSION FIELDS!
+                // PackAddClientVersion adds: client_str, client_ver, client_build
+                // Then main code adds: hello, version, build, client_id
+                let client_str = "SoftEther VPN Client";
+                let client_ver = 443;
+                let client_build = 9807;
+                // Add client version (PackAddClientVersion equivalent)
                 let packet = packet
-                    .add_string("client_str", "SoftEther VPN Client")
-                    .add_int("client_ver", 444)  // Match C client version
-                    .add_int("client_build", 9807); // Match C client build
+                    .add_string("client_str", client_str)
+                    .add_int("client_ver", client_ver)
+                    .add_int("client_build", client_build);
                 
-                // Add protocol and hello (required fields)
+                // Protocol version fields (second set - as per C code lines 6903-6908)
                 let packet = packet
                     .add_int("protocol", 0)
-                    .add_string("hello", "SoftEther VPN Client")
-                    .add_int("version", 444)
-                    .add_int("build", 9807)
-                    .add_int("client_id", 0);
+                    .add_string("hello", client_str)  // Must be STRING
+                    .add_int("version", client_ver)
+                    .add_int("build", client_build)
+                    .add_int("client_id", 1);
                 
-                // Add connection options that C client sends
-                // NOTE: use_encrypt, use_compress, half_connection are Int (0/1), not Bool!
+                // Connection options (all as INT, not Bool)
                 let packet = packet
                     .add_int("max_connection", self.config.max_connection)
                     .add_int("use_encrypt", if self.config.use_encrypt { 1 } else { 0 })
                     .add_int("use_compress", if self.config.use_compress { 1 } else { 0 })
                     .add_int("half_connection", 0)
-                    .add_bool("require_bridge_routing_mode", false)  // Normal VPN client = false
-                    .add_bool("require_monitor_mode", false)
-                    .add_bool("qos", true)  // Match C: !DisableQoS = true
-                    .add_bool("support_bulk_on_rudp", true)
-                    .add_bool("support_hmac_on_bulk_of_rudp", true)
-                    .add_bool("support_udp_recovery", true);
+                    .add_int("require_bridge_routing_mode", 0)  // INT 0 = false
+                    .add_int("require_monitor_mode", 0)  // INT 0 = false
+                    .add_int("qos", 1)  // INT 1 = true
+                    .add_int("support_bulk_on_rudp", 1)
+                    .add_int("support_hmac_on_bulk_of_rudp", 1)
+                    .add_int("support_udp_recovery", 1);
 
-                // Unique ID (MUST come before NodeInfo)
+                // Unique ID
                 let unique_id = Self::generate_unique_id();
                 let packet = packet.add_data("unique_id", unique_id);
 
-                // RUDP bulk max version (after unique_id, before NodeInfo)
-                let packet = packet.add_int("rudp_bulk_max_version", 2);
+                // RUDP bulk max version
+                let packet = packet.add_int("rudp_bulk_max_version", 1);  // C uses 1
 
                 // Generate NodeInfo fields (OutRpcNodeInfo equivalent)
                 let hostname = hostname::get()
@@ -464,9 +479,10 @@ impl Session {
                 // let os_name = "";  // was: std::env::consts::OS;
                 // let os_ver = "";   // was: Self::get_os_version();
 
-                // Restore actual OS name and version retrieval
-                let os_name = std::env::consts::OS;
-                let os_ver = Self::get_os_version();
+                // IMPORTANT: C Bridge sends EMPTY OS fields on macOS!
+                // Must match exactly to avoid packet differences
+                let os_name = "";
+                let os_ver = "";
                 
                 let (client_ip, client_port) = {
                     let connections = self.tcp_connections.lock().unwrap();
@@ -486,52 +502,52 @@ impl Session {
                     }
                 };
 
-                // Add NodeInfo fields in same order as C bridge
+                // NodeInfo fields - match C Bridge exactly
+                // Note: Fields will be alphabetically sorted by to_bytes()
                 let packet = packet
-                    .add_string("ClientProductName", "SoftEther VPN Client")
-                    .add_string("ServerProductName", "")
-                    .add_string("ClientOsName", os_name)
-                    .add_string("ClientOsVer", os_ver)
-                    .add_string("ClientOsProductId", "")
+                    // Client info (use EXACT field names from C Bridge)
                     .add_string("ClientHostname", &hostname)
-                    .add_string("ServerHostname", &self.config.server)
-                    .add_string("ProxyHostname", "")
-                    .add_string("HubName", &self.config.hub)
-                    // UniqueId is the same as unique_id from earlier, not duplicated
-                    .add_int("ClientProductVer", 444)
-                    .add_int("ClientProductBuild", 9807)
-                    .add_int("ServerProductVer", 0)
-                    .add_int("ServerProductBuild", 0)
-                    // ClientIpAddress with IPv6 variants (PackAddIp adds 3 fields automatically)
                     .add_ip32("ClientIpAddress", client_ip)
-                    .add_bool("ClientIpAddress@ipv6_bool", false) // IPv4
-                    .add_data("ClientIpAddress@ipv6_array", vec![0u8; 16])
-                    .add_int("ClientIpAddress@ipv6_scope_id", 0)
                     .add_data("ClientIpAddress6", vec![0u8; 16])
+                    .add_data("ClientIpAddress@ipv6_array", vec![0u8; 16])
+                    .add_int("ClientIpAddress@ipv6_bool", 0)  // INT 0 = false (IPv4)
+                    .add_int("ClientIpAddress@ipv6_scope_id", 0)
+                    .add_string("ClientOsName", os_name)  // Empty on macOS
+                    .add_string("ClientOsProductId", "")  // Empty
+                    .add_string("ClientOsVer", os_ver)  // Empty on macOS
                     .add_int("ClientPort", client_port)
-                    // ServerIpAddress with IPv6 variants
+                    .add_int("ClientProductBuild", 9807)
+                    .add_string("ClientProductName", "SoftEther VPN Client")
+                    .add_int("ClientProductVer", 444)
+                    // Server info
+                    .add_string("ServerHostname", &self.config.server)
                     .add_ip32("ServerIpAddress", server_ip)
-                    .add_bool("ServerIpAddress@ipv6_bool", false) // IPv4
-                    .add_data("ServerIpAddress@ipv6_array", vec![0u8; 16])
-                    .add_int("ServerIpAddress@ipv6_scope_id", 0)
                     .add_data("ServerIpAddress6", vec![0u8; 16])
-                    .add_int("ServerPort2", server_port) // Note: it's "ServerPort2" not "ServerPort"!
-                    // ProxyIpAddress with IPv6 variants
+                    .add_data("ServerIpAddress@ipv6_array", vec![0u8; 16])
+                    .add_int("ServerIpAddress@ipv6_bool", 0)
+                    .add_int("ServerIpAddress@ipv6_scope_id", 0)
+                    .add_int("ServerPort2", server_port)  // FIXED: C Bridge uses 'ServerPort2' not 'ServerPort'
+                    .add_int("ServerProductBuild", 0)
+                    .add_string("ServerProductName", "")
+                    .add_int("ServerProductVer", 0)
+                    // Proxy info (all zeros/empty)
+                    .add_string("ProxyHostname", "")
                     .add_ip32("ProxyIpAddress", [0, 0, 0, 0])
-                    .add_bool("ProxyIpAddress@ipv6_bool", false) // IPv4
-                    .add_data("ProxyIpAddress@ipv6_array", vec![0u8; 16])
-                    .add_int("ProxyIpAddress@ipv6_scope_id", 0)
                     .add_data("ProxyIpAddress6", vec![0u8; 16])
-                    .add_int("ProxyPort", 0);
+                    .add_data("ProxyIpAddress@ipv6_array", vec![0u8; 16])
+                    .add_int("ProxyIpAddress@ipv6_bool", 0)
+                    .add_int("ProxyIpAddress@ipv6_scope_id", 0)
+                    .add_int("ProxyPort", 0)
+                    // Hub name
+                    .add_string("HubName", &self.config.hub);
 
-                // Add WinVer fields (OutRpcWinVer equivalent)
-                // CRITICAL: All WinVer fields MUST have "V_" prefix to match C client!
+                // WinVer fields - use INT for bools
                 let (os_type, os_service_pack, os_build, os_system_name, _os_product_name) = Self::get_win_ver_info();
                 let packet = packet
-                    .add_bool("V_IsWindows", cfg!(target_os = "windows"))
-                    .add_bool("V_IsNT", cfg!(target_os = "windows"))
-                    .add_bool("V_IsServer", false)
-                    .add_bool("V_IsBeta", false)
+                    .add_int("V_IsWindows", if cfg!(target_os = "windows") { 1 } else { 0 })
+                    .add_int("V_IsNT", if cfg!(target_os = "windows") { 1 } else { 0 })
+                    .add_int("V_IsServer", 0)
+                    .add_int("V_IsBeta", 0)
                     .add_int("V_VerMajor", os_type)
                     .add_int("V_VerMinor", 0)
                     .add_int("V_Build", os_build)
@@ -552,35 +568,59 @@ impl Session {
 
         eprintln!("[AUTH] Serializing authentication packet");
         let pack_data = auth_packet.to_bytes()?;
-        eprintln!("[AUTH] PACK data: {} bytes", pack_data.len());
         
-        // Debug: dump first 512 bytes to compare with C client
-        eprintln!("[AUTH] === PACK DATA HEX DUMP (first {} bytes) ===", std::cmp::min(512, pack_data.len()));
-        for chunk_start in (0..std::cmp::min(512, pack_data.len())).step_by(16) {
-            eprint!("[AUTH]   {:04x}: ", chunk_start);
-            for i in 0..16 {
-                if chunk_start + i < pack_data.len() {
-                    eprint!("{:02X} ", pack_data[chunk_start + i]);
+        // === COMPREHENSIVE PACKET ANALYSIS ===
+        eprintln!("[AUTH] ========================================");
+        eprintln!("[AUTH] AUTHENTICATION PACKET SUMMARY");
+        eprintln!("[AUTH] ========================================");
+        eprintln!("[AUTH] Total PACK size: {} bytes", pack_data.len());
+        eprintln!("[AUTH] Field count: {} (0x{:02X})", auth_packet.params.len(), auth_packet.params.len());
+        eprintln!("[AUTH] ========================================");
+        eprintln!("[AUTH] Fields (alphabetically sorted):");
+        let mut sorted_fields: Vec<_> = auth_packet.params.iter().collect();
+        sorted_fields.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+        for (i, (key, value)) in sorted_fields.iter().enumerate() {
+            let value_desc = match value {
+                crate::protocol::PacketValue::Int(v) => format!("Int({})", v),
+                crate::protocol::PacketValue::Int64(v) => format!("Int64({})", v),
+                crate::protocol::PacketValue::String(s) => {
+                    if s.len() > 40 {
+                        format!("String('{}...')", &s[..40])
+                    } else {
+                        format!("String('{}')", s)
+                    }
+                },
+                crate::protocol::PacketValue::Data(d) => format!("Data({} bytes)", d.len()),
+                crate::protocol::PacketValue::Bool(b) => format!("Bool({})", b),
+            };
+            eprintln!("[AUTH]   {:2}. {:35} = {}", i + 1, key, value_desc);
+        }
+        eprintln!("[AUTH] ========================================");
+        
+        // === COMPLETE HEX DUMP WITH ASCII ===
+        eprintln!("[AUTH] === COMPLETE PACK DATA HEX DUMP ({} bytes) ===", pack_data.len());
+        for (i, chunk) in pack_data.chunks(16).enumerate() {
+            eprint!("[AUTH]   {:04x}:", i * 16);
+            // Hex bytes
+            for byte in chunk {
+                eprint!(" {:02x}", byte);
+            }
+            // Padding for alignment
+            for _ in chunk.len()..16 {
+                eprint!("   ");
+            }
+            eprint!("  ");
+            // ASCII representation
+            for byte in chunk {
+                if *byte >= 32 && *byte < 127 {
+                    eprint!("{}", *byte as char);
+                } else {
+                    eprint!(".");
                 }
             }
             eprintln!();
         }
-        eprintln!("[AUTH] === END PACK DATA HEX DUMP ===");
-        
-        // Hex dump of PACK data for debugging
-        eprintln!("[AUTH] === PACK DATA HEX DUMP (first 512 bytes) ===");
-        let dump_len = pack_data.len().min(512);
-        for (i, chunk) in pack_data[..dump_len].chunks(16).enumerate() {
-            eprint!("[AUTH]   {:04x}:", i * 16);
-            for byte in chunk {
-                eprint!(" {:02x}", byte);
-            }
-            eprintln!();
-        }
-        if pack_data.len() > 512 {
-            eprintln!("[AUTH]   ... ({} more bytes)", pack_data.len() - 512);
-        }
-        eprintln!("[AUTH] === END PACK DATA HEX DUMP ===");
+        eprintln!("[AUTH] === END COMPLETE PACK DATA HEX DUMP ===");
 
         // Wrap with watermark (like handshake)
         let mut body = Vec::with_capacity(WATERMARK.len() + pack_data.len());
@@ -1076,23 +1116,161 @@ impl Session {
         }
     }
 
-    /// Generate unique machine ID (20 bytes)
+    /// Generate unique machine ID (20 bytes) matching C Bridge algorithm
+    /// 
+    /// CRITICAL: Must match GenerateMachineUniqueHash() from Protocol.c exactly:
+    /// - Input components: hostname + IP hash + OS type + kernel info + OS details
+    /// - Hash algorithm: SHA-1 (20 bytes)
+    /// 
+    /// C Bridge algorithm (Protocol.c:1555-1595):
+    /// 1. Get IP address list hash (8 bytes)
+    /// 2. Get machine name
+    /// 3. Get OS info (type, kernel, version, product, service pack, system, vendor)
+    /// 4. Hash all components together with SHA-1
     fn generate_unique_id() -> Vec<u8> {
         use sha1::{Sha1, Digest};
         let mut hasher = Sha1::new();
         
-        // Use hostname as base
+        // 1. Machine name (matches GetMachineName())
         if let Ok(hostname) = hostname::get() {
             hasher.update(hostname.as_encoded_bytes());
+        } else {
+            hasher.update(b"unknown");
         }
         
-        // Add some system-specific data
+        // 2. IP address list hash (matches GetHostIPAddressListHash())
+        // C Bridge hashes all local IP addresses together
+        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+        {
+            // Simplified version: hash primary interface IPs
+            // TODO: Implement full GetHostIPAddressListHash() equivalent
+            use std::net::{UdpSocket, IpAddr};
+            
+            // Get local IP by connecting to 8.8.8.8:80 (doesn't actually send data)
+            if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+                if let Ok(_) = socket.connect("8.8.8.8:80") {
+                    if let Ok(local_addr) = socket.local_addr() {
+                        match local_addr.ip() {
+                            IpAddr::V4(ipv4) => {
+                                hasher.update(&ipv4.octets());
+                            }
+                            IpAddr::V6(ipv6) => {
+                                hasher.update(&ipv6.octets());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 3. OS type (matches osinfo->OsType)
         #[cfg(target_os = "macos")]
         {
+            hasher.update(&3u32.to_le_bytes());  // OSTYPE_MACOS_X = 3
+            hasher.update(b"Darwin");  // Kernel name
+            
+            // Get macOS version for kernel version
             use std::process::Command;
-            if let Ok(output) = Command::new("ioreg").args(&["-rd1", "-c", "IOPlatformExpertDevice"]).output() {
-                hasher.update(&output.stdout);
+            if let Ok(output) = Command::new("uname").arg("-r").output() {
+                if let Ok(kernel_ver) = String::from_utf8(output.stdout) {
+                    hasher.update(kernel_ver.trim().as_bytes());
+                }
+            } else {
+                hasher.update(b"unknown");
             }
+            
+            // OS product name
+            if let Ok(output) = Command::new("sw_vers").arg("-productName").output() {
+                if let Ok(product) = String::from_utf8(output.stdout) {
+                    hasher.update(product.trim().as_bytes());
+                }
+            }
+            
+            // Service pack (0 for macOS)
+            hasher.update(&0u32.to_le_bytes());
+            
+            // OS system name (same as product)
+            hasher.update(b"macOS");
+            
+            // OS vendor
+            hasher.update(b"Apple Inc.");
+            
+            // OS version
+            if let Ok(output) = Command::new("sw_vers").arg("-productVersion").output() {
+                if let Ok(version) = String::from_utf8(output.stdout) {
+                    hasher.update(version.trim().as_bytes());
+                }
+            }
+        }
+        
+        #[cfg(target_os = "linux")]
+        {
+            hasher.update(&1u32.to_le_bytes());  // OSTYPE_LINUX = 1
+            hasher.update(b"Linux");  // Kernel name
+            
+            // Get kernel version
+            use std::process::Command;
+            if let Ok(output) = Command::new("uname").arg("-r").output() {
+                if let Ok(kernel_ver) = String::from_utf8(output.stdout) {
+                    hasher.update(kernel_ver.trim().as_bytes());
+                }
+            } else {
+                hasher.update(b"unknown");
+            }
+            
+            // Try to get distro info from /etc/os-release
+            if let Ok(contents) = std::fs::read_to_string("/etc/os-release") {
+                for line in contents.lines() {
+                    if line.starts_with("NAME=") {
+                        let name = line.trim_start_matches("NAME=").trim_matches('"');
+                        hasher.update(name.as_bytes());
+                        break;
+                    }
+                }
+            } else {
+                hasher.update(b"Linux");
+            }
+            
+            hasher.update(&0u32.to_le_bytes());  // Service pack = 0
+            hasher.update(b"Linux");  // System name
+            hasher.update(b"Linux");  // Vendor
+            
+            // Version from /etc/os-release
+            if let Ok(contents) = std::fs::read_to_string("/etc/os-release") {
+                for line in contents.lines() {
+                    if line.starts_with("VERSION_ID=") {
+                        let version = line.trim_start_matches("VERSION_ID=").trim_matches('"');
+                        hasher.update(version.as_bytes());
+                        break;
+                    }
+                }
+            }
+        }
+        
+        #[cfg(target_os = "windows")]
+        {
+            hasher.update(&2u32.to_le_bytes());  // OSTYPE_WINDOWS_NT = 2
+            hasher.update(b"Windows NT");  // Kernel name
+            // TODO: Get actual Windows version info
+            hasher.update(b"10.0");  // Kernel version
+            hasher.update(b"Windows");  // Product
+            hasher.update(&0u32.to_le_bytes());  // Service pack
+            hasher.update(b"Windows");  // System
+            hasher.update(b"Microsoft Corporation");  // Vendor
+            hasher.update(b"10");  // Version
+        }
+        
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        {
+            // Fallback for unsupported OS
+            hasher.update(&0u32.to_le_bytes());  // OSTYPE_UNKNOWN = 0
+            hasher.update(b"Unknown");
+            hasher.update(b"Unknown");
+            hasher.update(b"Unknown");
+            hasher.update(&0u32.to_le_bytes());
+            hasher.update(b"Unknown");
+            hasher.update(b"Unknown");
+            hasher.update(b"Unknown");
         }
         
         hasher.finalize().to_vec()
