@@ -203,23 +203,12 @@ impl Session {
     /// Send initial handshake
     fn send_handshake(&self) -> Result<()> {
         use crate::protocol::{Packet, PROTOCOL_VERSION, CEDAR_SIGNATURE};
+        use mayaqua::HttpRequest;
 
-        eprintln!("[HANDSHAKE] Sending protocol signature: {}", CEDAR_SIGNATURE);
-        
-        // Step 1: Send protocol signature
-        let bytes_sent = self.send_raw(CEDAR_SIGNATURE.as_bytes())?;
-        eprintln!("[HANDSHAKE] Sent {} bytes", bytes_sent);
-        
-        // Flush to ensure signature is sent immediately
-        {
-            let mut connections = self.tcp_connections.lock().unwrap();
-            if !connections.is_empty() {
-                connections[0].flush()?;
-                eprintln!("[HANDSHAKE] Flushed");
-            }
-        }
-
-        eprintln!("[HANDSHAKE] Creating hello packet...");
+        // NOTE: Protocol signature is NOT sent in HTTP mode!
+        // In HTTP mode, we wrap everything in HTTP POST request.
+        // The signature is only sent in raw TCP mode.
+        eprintln!("[HANDSHAKE] Creating hello packet (HTTP mode - no signature)");
         
         // Step 2: Create hello packet with client information
         let hello_packet = Packet::new("hello")
@@ -230,25 +219,68 @@ impl Session {
             .add_bool("use_compress", self.config.use_compress)
             .add_int("max_connection", self.config.max_connection);
 
-        eprintln!("[HANDSHAKE] Sending hello packet to server...");
-        
-        // Step 3: Send hello packet
-        self.send_packet_raw(&hello_packet)?;
-        eprintln!("[HANDSHAKE] Hello packet sent");
+        // Step 3: Serialize packet to binary PACK format
+        let pack_data = hello_packet.to_bytes()?;
+        eprintln!("[HANDSHAKE] Serialized PACK data: {} bytes", pack_data.len());
 
-        eprintln!("[HANDSHAKE] Waiting for server hello response...");
+        // Step 4: Wrap PACK in HTTP POST request
+        let http_request = HttpRequest::new_vpn_post(
+            &self.config.server,
+            self.config.port,
+            pack_data
+        );
         
-        // Step 4: Receive hello response from server
-        let response = self.receive_packet_raw()?;
+        eprintln!("[HANDSHAKE] Sending HTTP POST to /vpnsvc/vpn.cgi");
+        eprintln!("[HTTP] Content-Type: application/octet-stream");
+        eprintln!("[HTTP] Content-Length: {} bytes", http_request.body.len());
+        
+        // Debug: Print actual HTTP headers being sent
+        eprintln!("[HTTP] Headers being sent:");
+        for (name, value) in &http_request.headers {
+            eprintln!("[HTTP]   {}: {}", name, value);
+        }
+        
+        // Step 5: Send HTTP request (headers + binary body)
+        let http_bytes = http_request.to_bytes();
+        self.send_raw(&http_bytes)?;
+        
+        {
+            let mut connections = self.tcp_connections.lock().unwrap();
+            if !connections.is_empty() {
+                connections[0].flush()?;
+                eprintln!("[HANDSHAKE] HTTP request sent and flushed");
+            }
+        }
 
-        eprintln!("[HANDSHAKE] Received response from server");
+        eprintln!("[HANDSHAKE] Waiting for HTTP response from server...");
         
-        // Step 5: Extract and validate server information
-        let server_str = response
+        // Step 6: Receive HTTP response
+        let response = self.receive_http_response()?;
+
+        eprintln!("[HTTP] Response: {} {}", response.status_code, 
+                 response.headers.get("content-type").unwrap_or(&"unknown".to_string()));
+        eprintln!("[HTTP] Body: {} bytes", response.body.len());
+
+        // Debug: Print error body if not 200 OK
+        if response.status_code != 200 {
+            eprintln!("[HTTP] Error response body:");
+            if let Ok(body_str) = String::from_utf8(response.body.clone()) {
+                eprintln!("{}", body_str);
+            }
+            return Err(Error::InvalidResponse);
+        }
+
+        // Step 7: Parse PACK from HTTP response body
+        let server_hello = Packet::from_bytes(&response.body)?;
+
+        eprintln!("[HANDSHAKE] Received server hello packet");
+        
+        // Step 8: Extract and validate server information
+        let server_str = server_hello
             .get_string("server_str")
             .ok_or(Error::InvalidResponse)?;
         
-        let server_version = response
+        let server_version = server_hello
             .get_int("version")
             .ok_or(Error::InvalidResponse)?;
 
@@ -359,6 +391,70 @@ impl Session {
 
         // Parse packet
         Packet::from_bytes(&packet_data)
+    }
+
+    /// Internal method: Receive HTTP response (for handshake)
+    fn receive_http_response(&self) -> Result<mayaqua::HttpResponse> {
+        use std::io::BufRead;
+        
+        let mut connections = self.tcp_connections.lock().unwrap();
+        if connections.is_empty() {
+            return Err(Error::NotConnected);
+        }
+
+        // Read HTTP response line by line
+        let mut response_data = Vec::new();
+        let mut buffer = [0u8; 1];
+        let mut line = Vec::new();
+        let mut headers_done = false;
+        let mut content_length = 0;
+
+        // Read status line and headers
+        while !headers_done {
+            let n = connections[0].recv(&mut buffer)?;
+            if n == 0 {
+                return Err(Error::DisconnectedError);
+            }
+            
+            response_data.push(buffer[0]);
+            line.push(buffer[0]);
+            
+            // Check for end of line
+            if line.len() >= 2 && line[line.len()-2] == b'\r' && line[line.len()-1] == b'\n' {
+                let line_str = String::from_utf8_lossy(&line[..line.len()-2]);
+                
+                // Check for end of headers (empty line)
+                if line_str.is_empty() {
+                    headers_done = true;
+                } else if line_str.to_lowercase().starts_with("content-length:") {
+                    // Extract content length
+                    if let Some(len_str) = line_str.split(':').nth(1) {
+                        content_length = len_str.trim().parse().unwrap_or(0);
+                    }
+                }
+                
+                line.clear();
+            }
+        }
+
+        // Read body based on content-length
+        if content_length > 0 {
+            let mut body = vec![0u8; content_length];
+            let mut total_read = 0;
+            while total_read < content_length {
+                let n = connections[0].recv(&mut body[total_read..])?;
+                if n == 0 {
+                    return Err(Error::DisconnectedError);
+                }
+                total_read += n;
+            }
+            response_data.extend_from_slice(&body);
+        }
+
+        // Parse HTTP response from the collected data
+        let mut cursor = std::io::Cursor::new(response_data);
+        mayaqua::HttpResponse::from_stream(&mut cursor)
+            .map_err(|e| Error::InvalidResponse)
     }
 
     /// Send data through session

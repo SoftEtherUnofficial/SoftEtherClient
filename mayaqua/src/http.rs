@@ -32,6 +32,41 @@ impl HttpRequest {
         }
     }
 
+    /// Create a new HTTP POST request for SoftEther VPN protocol
+    /// Wraps binary PACK data in proper HTTP headers
+    /// 
+    /// Header order matches OpenSSL's HttpClientSend() exactly:
+    /// 1. Date, 2. Host, 3. Keep-Alive, 4. Connection, 5. Content-Type, 6. Content-Length
+    pub fn new_vpn_post(hostname: &str, port: u16, pack_data: Vec<u8>) -> Self {
+        let mut request = Self::new("POST".to_string(), "/vpnsvc/vpn.cgi".to_string());
+        
+        // Add headers in exact order as OpenSSL HttpClientSend()
+        // See: SoftEtherVPN_Stable/src/Mayaqua/Network.c:22897
+        
+        // 1. Date header (RFC 2822 format)
+        request.add_header("Date".to_string(), get_http_date());
+        
+        // 2. Host header (WITHOUT port - OpenSSL doesn't include it)
+        request.add_header("Host".to_string(), hostname.to_string());
+        
+        // 3. Keep-Alive header
+        request.add_header("Keep-Alive".to_string(), "timeout=60, max=1000".to_string());
+        
+        // 4. Connection header
+        request.add_header("Connection".to_string(), "Keep-Alive".to_string());
+        
+        // 5. Content-Type header (binary PACK data)
+        request.add_header("Content-Type".to_string(), "application/octet-stream".to_string());
+        
+        // Suppress unused parameter warning
+        let _ = port;
+        
+        // Set binary PACK body (Content-Length added automatically by set_body)
+        request.set_body(pack_data);
+        
+        request
+    }
+
     /// Add a header to the request
     pub fn add_header(&mut self, name: String, value: String) {
         self.headers.push((name, value));
@@ -137,6 +172,51 @@ impl HttpResponse {
     pub fn is_success(&self) -> bool {
         self.status_code >= 200 && self.status_code < 300
     }
+}
+
+/// Get current time formatted as HTTP date string (RFC 2822)
+/// Example: "Thu, 10 Oct 2025 14:00:00 GMT"
+fn get_http_date() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    
+    let timestamp = duration.as_secs();
+    
+    // Day names
+    let days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    // Month names
+    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    
+    // Calculate date components
+    let total_days = timestamp / 86400;
+    let day_of_week = ((total_days + 4) % 7) as usize; // Unix epoch was Thursday
+    
+    let seconds_today = timestamp % 86400;
+    let hours = seconds_today / 3600;
+    let minutes = (seconds_today % 3600) / 60;
+    let seconds = seconds_today % 60;
+    
+    // Approximate year/month/day (good enough for HTTP header)
+    let years_since_epoch = total_days / 365;
+    let year = 1970 + years_since_epoch;
+    let remaining_days = total_days % 365;
+    let month = (remaining_days / 30).min(11) as usize;
+    let day = (remaining_days % 30) + 1;
+    
+    format!(
+        "{}, {:02} {} {} {:02}:{:02}:{:02} GMT",
+        days[day_of_week],
+        day,
+        months[month],
+        year,
+        hours,
+        minutes,
+        seconds
+    )
 }
 
 #[cfg(test)]

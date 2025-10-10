@@ -1,7 +1,22 @@
 const std = @import("std");
 
+/// Build the Cedar Rust library using Cargo
+fn buildCedarLibrary(b: *std.Build) void {
+    const cargo_build = b.addSystemCommand(&[_][]const u8{
+        "cargo",
+        "build",
+        "--release",
+        "--manifest-path",
+        "cedar/Cargo.toml",
+    });
+    cargo_build.cwd = b.path(".");
+
+    // Make this a build dependency
+    b.getInstallStep().dependOn(&cargo_build.step);
+}
+
 /// Build the Mayaqua Rust library using Cargo (Phase 4+)
-fn buildMayaquaLibrary(b: *std.Build) !void {
+fn buildMayaquaLibrary(b: *std.Build) void {
     const cargo_build = b.addSystemCommand(&[_][]const u8{
         "cargo",
         "build",
@@ -301,13 +316,12 @@ pub fn build(b: *std.Build) void {
 
     // Link Cedar FFI library if enabled
     if (use_cedar) {
+        // Build Cedar library automatically
+        buildCedarLibrary(b);
+
         cli.addIncludePath(b.path("include")); // Cedar FFI headers
         cli.addLibraryPath(b.path("cedar/target/release")); // Cedar static lib
         cli.linkSystemLibrary("cedar"); // libcedar.a
-
-        // Note: Cedar will be built by calling `cargo build --release` in cedar/ directory
-        // Run manually before building with -Duse-cedar=true:
-        //   cd cedar && cargo build --release
     }
 
     // Platform-specific system libraries
@@ -460,10 +474,8 @@ pub fn build(b: *std.Build) void {
     mobile_ffi_step.dependOn(&b.addInstallArtifact(mobile_ffi, .{}).step);
 
     // ===== Mayaqua Rust Integration Test (Phase 4+) =====
-    // Build Mayaqua library
-    buildMayaquaLibrary(b) catch |err| {
-        std.debug.print("Warning: Failed to build Mayaqua library: {}\n", .{err});
-    };
+    // Build Mayaqua library automatically
+    buildMayaquaLibrary(b);
 
     const test_mayaqua = b.addExecutable(.{
         .name = "test_mayaqua",
