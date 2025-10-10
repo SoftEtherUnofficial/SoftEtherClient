@@ -461,8 +461,12 @@ impl Session {
                 
                 // TEMPORARY: Use empty strings to match C client behavior
                 // C client sends empty ClientOsName/ClientOsVer on macOS
-                let os_name = "";  // was: std::env::consts::OS;
-                let os_ver = "";   // was: Self::get_os_version();
+                // let os_name = "";  // was: std::env::consts::OS;
+                // let os_ver = "";   // was: Self::get_os_version();
+
+                // Restore actual OS name and version retrieval
+                let os_name = std::env::consts::OS;
+                let os_ver = Self::get_os_version();
                 
                 let (client_ip, client_port) = {
                     let connections = self.tcp_connections.lock().unwrap();
