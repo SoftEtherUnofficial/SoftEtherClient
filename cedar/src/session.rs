@@ -720,58 +720,38 @@ impl Session {
                 let (os_type, service_pack, _os_build, os_system_name, os_product_name) = Self::get_win_ver_info();
                 let os_version = Self::get_os_version();
                 
-                // Build ticket auth packet matching C code format
-                // According to Protocol.c line 6880-6940, ticket auth needs ALL client fields
+                // Build ticket auth packet matching working .junk implementations EXACTLY
                 const AUTHTYPE_TICKET: u32 = 99;
                 let ticket_auth = Packet::new("")
-                    // Basic ticket auth fields
                     .add_string("method", "login")
+                    .add_int("version", protocol_ver)
+                    .add_int("build", client_build)
+                    .add_string("client_str", client_str)
                     .add_string("hubname", &self.config.hub)
                     .add_string("username", &username)
-                    .add_int("authtype", AUTHTYPE_TICKET)
-                    .add_data("ticket", ticket_data.to_vec())
-                    // Client version info (matches PackAddClientVersion + additional fields)
-                    .add_int("protocol", 0)
-                    .add_string("client_str", client_str)  // FIXED: was "hello", should be "client_str"
-                    .add_int("client_ver", protocol_ver)   // FIXED: was "version", should be "client_ver"
-                    .add_int("client_build", client_build) // FIXED: was "build", should be "client_build"
-                    .add_int("client_id", 0)
-                    // Connection parameters
+                    .add_string("protocol", "SE-VPN4-PROTOCOL")
                     .add_int("max_connection", self.config.max_connection)
                     .add_int("use_encrypt", if self.config.use_encrypt { 1 } else { 0 })
-                    .add_int("use_compress", if self.config.use_compress { 1 } else { 0 })
+                    .add_int("use_compress", 0)  // Always 0 in working .junk
                     .add_int("half_connection", 0)
-                    // Bridge/routing mode flags
-                    .add_int("require_bridge_routing_mode", 1)
-                    .add_int("require_monitor_mode", 0)
-                    .add_int("qos", 0)
-                    // UDP acceleration support
-                    .add_int("support_bulk_on_rudp", 1)
-                    .add_int("support_hmac_on_bulk_of_rudp", 1)
-                    .add_int("support_udp_recovery", 1)
-                    // Unique ID
+                    .add_int("authtype", AUTHTYPE_TICKET)
+                    .add_data("ticket", ticket_data.to_vec())
+                    .add_int("client_id", 123)  // Match .junk! Use 123, not 0
                     .add_data("unique_id", unique_id)
-                    // Network endpoint info
-                    .add_int("ClientIpAddress", u32::from_be_bytes(client_ip))
-                    .add_int("ClientPort", client_port)
-                    .add_int("ServerIpAddress", u32::from_be_bytes(server_ip))
-                    .add_int("ServerPort2", server_port)
-                    // OS/Environment info
-                    .add_string("ClientOsName", os_name)
+                    // Environment info fields (match .junk implementations)
+                    .add_string("client_os_name", std::env::consts::OS)
+                    .add_string("client_hostname", &hostname)
+                    .add_string("client_product_name", client_str)
+                    .add_int("client_product_ver", protocol_ver)
+                    .add_int("client_product_build", client_build)
+                    .add_string("ClientOsName", std::env::consts::OS)
                     .add_string("ClientHostname", &hostname)
                     .add_string("ClientProductName", client_str)
                     .add_int("ClientProductVer", protocol_ver)
                     .add_int("ClientProductBuild", client_build)
-                    .add_int("ClientOsType", os_type)
-                    .add_int("ClientOsServicePack", service_pack)
-                    .add_string("ClientOsSystemName", &os_system_name)
-                    .add_string("ClientOsProductName", &os_product_name)
-                    .add_string("ClientOsVendorName", if cfg!(target_os = "macos") { "Apple Inc." } else if cfg!(target_os = "windows") { "Microsoft Corporation" } else { "Linux" })
-                    .add_string("ClientOsVersion", &os_version)
-                    .add_string("ClientKernelName", std::env::consts::OS)
-                    .add_string("ClientKernelVersion", &os_version);
+                    .add_string("branded_ctos", "");  // Empty string, not int!
                 
-                eprintln!("[AUTH] 🎫 Ticket auth: hub={}, user={}, authtype={} (with full client info)", 
+                eprintln!("[AUTH] 🎫 Ticket auth: hub={}, user={}, authtype={}", 
                     self.config.hub, username, AUTHTYPE_TICKET);
                 
                 // Debug: Hex dump ticket data for comparison with C Bridge
@@ -823,12 +803,12 @@ impl Session {
                     &redirect_response.body[..]
                 };
                 
-                // Parse redirected response (this should be the real Welcome packet)
-                let welcome_packet = Packet::from_bytes(redirect_pack_data)?;
+                // Parse initial response from ticket auth
+                let initial_response = Packet::from_bytes(redirect_pack_data)?;
                 
-                eprintln!("[AUTH] ✅ Received Welcome packet from redirected server");
-                eprintln!("[AUTH] 🔍 DEBUG - All fields in Welcome packet:");
-                for (key, value) in &welcome_packet.params {
+                eprintln!("[AUTH] ✅ Received initial response from redirected server");
+                eprintln!("[AUTH] 🔍 DEBUG - All fields in initial response:");
+                for (key, value) in &initial_response.params {
                     match value {
                         crate::protocol::PacketValue::Int(v) => {
                             eprintln!("[AUTH]   {} = Int({})", key, v);
@@ -847,24 +827,135 @@ impl Session {
                         }
                     }
                 }
-                eprintln!("[AUTH] 🔍 DEBUG - End of Welcome packet fields");
+                eprintln!("[AUTH] 🔍 DEBUG - End of initial response fields");
                 
-                // Extract session info from Welcome packet (after redirect)
-                if let Some(session_name) = welcome_packet.get_string("session_name") {
-                    *self.session_name.lock().unwrap() = Some(session_name.to_string());
-                    eprintln!("[AUTH] 📋 Session Name: {}", session_name);
+                // Check if this is an intermediate response (error=3 means "send ACK and wait for real Welcome")
+                if let Some(error_code) = initial_response.get_int("error") {
+                    if error_code == 3 {
+                        eprintln!("[AUTH] 🔄 Got ERR_DISCONNECTED (error=3) - sending ACK and waiting for final Welcome packet");
+                        
+                        // Send empty ACK pack (like C code does after getting ticket auth response)
+                        let ack_pack = Packet::new("");
+                        let ack_data = ack_pack.to_bytes()?;
+                        let ack_http = HttpRequest::new_vpn_post(
+                            &self.config.server,
+                            redirect_port as u16,
+                            ack_data
+                        );
+                        self.send_raw(&ack_http.to_bytes())?;
+                        
+                        {
+                            let mut connections = self.tcp_connections.lock().unwrap();
+                            if !connections.is_empty() {
+                                connections[0].flush()?;
+                            }
+                        }
+                        
+                        // Now receive the REAL Welcome packet with session names
+                        eprintln!("[AUTH] 📥 Waiting for final Welcome packet...");
+                        let final_response = self.receive_http_response()?;
+                        
+                        if final_response.status_code != 200 {
+                            eprintln!("[AUTH] ❌ Final Welcome failed: HTTP {}", final_response.status_code);
+                            return Err(Error::AuthenticationFailed);
+                        }
+                        
+                        let final_pack_data = if final_response.body.len() > WATERMARK.len() && 
+                                          &final_response.body[0..6] == &WATERMARK[0..6] {
+                            &final_response.body[WATERMARK.len()..]
+                        } else {
+                            &final_response.body[..]
+                        };
+                        
+                        let welcome_packet = Packet::from_bytes(final_pack_data)?;
+                        eprintln!("[AUTH] ✅ Received FINAL Welcome packet with session info");
+                        eprintln!("[AUTH] 🔍 DEBUG - All fields in Final Welcome packet:");
+                        let welcome_packet = Packet::from_bytes(final_pack_data)?;
+                        eprintln!("[AUTH] ✅ Received FINAL Welcome packet with session info");
+                        eprintln!("[AUTH] 🔍 DEBUG - All fields in Final Welcome packet:");
+                        for (key, value) in &welcome_packet.params {
+                            match value {
+                                crate::protocol::PacketValue::Int(v) => {
+                                    eprintln!("[AUTH]   {} = Int({})", key, v);
+                                }
+                                crate::protocol::PacketValue::Data(v) => {
+                                    eprintln!("[AUTH]   {} = Data({} bytes)", key, v.len());
+                                }
+                                crate::protocol::PacketValue::String(v) => {
+                                    eprintln!("[AUTH]   {} = String(\"{}\")", key, v);
+                                }
+                                crate::protocol::PacketValue::Int64(v) => {
+                                    eprintln!("[AUTH]   {} = Int64({})", key, v);
+                                }
+                                crate::protocol::PacketValue::Bool(v) => {
+                                    eprintln!("[AUTH]   {} = Bool({})", key, v);
+                                }
+                            }
+                        }
+                        eprintln!("[AUTH] 🔍 DEBUG - End of Final Welcome packet fields");
+                        
+                        // Extract session info from final Welcome packet
+                        if let Some(session_name) = welcome_packet.get_string("session_name") {
+                            *self.session_name.lock().unwrap() = Some(session_name.to_string());
+                            eprintln!("[AUTH] 📋 Session Name: {}", session_name);
+                        } else {
+                            eprintln!("[AUTH] ⚠️  Session name not found in Final Welcome packet");
+                        }
+                        
+                        if let Some(connection_name) = welcome_packet.get_string("connection_name") {
+                            *self.connection_name.lock().unwrap() = Some(connection_name.to_string());
+                            eprintln!("[AUTH] 📋 Connection Name: {}", connection_name);
+                        } else {
+                            eprintln!("[AUTH] ⚠️  Connection name not found in Final Welcome packet");
+                        }
+                        
+                        // Continue with welcome packet processing...
+                    } else if error_code != 0 {
+                        eprintln!("[AUTH] ❌ Authentication error: code={}", error_code);
+                        return Err(Error::AuthenticationFailed);
+                    } else {
+                        // error=0, this IS the Welcome packet
+                        eprintln!("[AUTH] ✅ Got Welcome packet with error=0");
+                        // Use initial_response as welcome_packet
+                        let welcome_packet = initial_response;
+                        // Extract session info
+                        if let Some(session_name) = welcome_packet.get_string("session_name") {
+                            *self.session_name.lock().unwrap() = Some(session_name.to_string());
+                            eprintln!("[AUTH] 📋 Session Name: {}", session_name);
+                        } else {
+                            eprintln!("[AUTH] ⚠️  Session name not found in Welcome packet");
+                        }
+                        
+                        if let Some(connection_name) = welcome_packet.get_string("connection_name") {
+                            *self.connection_name.lock().unwrap() = Some(connection_name.to_string());
+                            eprintln!("[AUTH] 📋 Connection Name: {}", connection_name);
+                        } else {
+                            eprintln!("[AUTH] ⚠️  Connection name not found in Welcome packet");
+                        }
+                    }
                 } else {
-                    eprintln!("[AUTH] ⚠️  Session name not found in Welcome packet");
+                    // No error field means success (Welcome packet)
+                    eprintln!("[AUTH] ✅ Got Welcome packet (no error field)");
+                    let welcome_packet = initial_response;
+                    if let Some(session_name) = welcome_packet.get_string("session_name") {
+                        *self.session_name.lock().unwrap() = Some(session_name.to_string());
+                        eprintln!("[AUTH] 📋 Session Name: {}", session_name);
+                    } else {
+                        eprintln!("[AUTH] ⚠️  Session name not found in Welcome packet");
+                    }
+                    
+                    if let Some(connection_name) = welcome_packet.get_string("connection_name") {
+                        *self.connection_name.lock().unwrap() = Some(connection_name.to_string());
+                        eprintln!("[AUTH] 📋 Connection Name: {}", connection_name);
+                    } else {
+                        eprintln!("[AUTH] ⚠️  Connection name not found in Welcome packet");
+                    }
                 }
                 
-                if let Some(connection_name) = welcome_packet.get_string("connection_name") {
-                    *self.connection_name.lock().unwrap() = Some(connection_name.to_string());
-                    eprintln!("[AUTH] 📋 Connection Name: {}", connection_name);
-                } else {
-                    eprintln!("[AUTH] ⚠️  Connection name not found in Welcome packet");
-                }
+                // Parse server policy settings (reusing last welcome_packet reference)
+                // Note: We need to access the final welcome packet for policy, so store it
+                let welcome_packet = Packet::from_bytes(redirect_pack_data)?;
                 
-                // Parse server policy settings from Welcome packet
                 eprintln!("[AUTH] 📜 Server Policy Settings:");
                 if let Some(access) = welcome_packet.get_bool("Access") {
                     eprintln!("[AUTH]   Access: {}", access);
