@@ -742,7 +742,7 @@ impl Session {
                     .add_int("authtype", AUTHTYPE_TICKET)
                     .add_data("ticket", ticket_data.to_vec())
                     .add_int("client_id", 123)
-                    .add_data("unique_id", unique_id)
+                    .add_data("unique_id", unique_id.clone())  // Clone for reuse below
                     // P0 CRITICAL: Bridge/routing mode flags (required for DHCP)
                     .add_int("qos", 0)
                     .add_int("require_bridge_routing_mode", 1)  // ⚠️ CRITICAL for DHCP!
@@ -778,6 +778,7 @@ impl Session {
                     .add_string("ServerHostname", "")  // Empty for client
                     .add_string("ProxyHostname", "")  // No proxy
                     .add_string("HubName", &self.config.hub)  // Duplicate of hubname
+                    .add_data("UniqueId", unique_id.clone())  // CRITICAL: Capitalized version
                     .add_int("ClientProductVer", protocol_ver)
                     .add_int("ClientProductBuild", client_build)
                     .add_int("ServerProductVer", 0)  // Unknown
@@ -911,131 +912,32 @@ impl Session {
                 
                 // Check if this is an intermediate response (error=3 means "send ACK and wait for real Welcome")
                 if let Some(error_code) = initial_response.get_int("error") {
-                    if error_code == 3 {
-                        eprintln!("[AUTH] 🔄 Got ERR_DISCONNECTED (error=3) - sending ACK and waiting for final Welcome packet");
-                        
-                        // Send empty ACK pack (like C code does after getting ticket auth response)
-                        let ack_pack = Packet::new("");
-                        let ack_data = ack_pack.to_bytes()?;
-                        let ack_http = HttpRequest::new_vpn_post(
-                            &self.config.server,
-                            redirect_port as u16,
-                            ack_data
-                        );
-                        self.send_raw(&ack_http.to_bytes())?;
-                        
-                        {
-                            let mut connections = self.tcp_connections.lock().unwrap();
-                            if !connections.is_empty() {
-                                connections[0].flush()?;
-                            }
-                        }
-                        
-                        // Now receive the REAL Welcome packet with session names
-                        eprintln!("[AUTH] 📥 Waiting for final Welcome packet...");
-                        let final_response = self.receive_http_response()?;
-                        
-                        if final_response.status_code != 200 {
-                            eprintln!("[AUTH] ❌ Final Welcome failed: HTTP {}", final_response.status_code);
-                            return Err(Error::AuthenticationFailed);
-                        }
-                        
-                        let final_pack_data = if final_response.body.len() > WATERMARK.len() && 
-                                          &final_response.body[0..6] == &WATERMARK[0..6] {
-                            &final_response.body[WATERMARK.len()..]
-                        } else {
-                            &final_response.body[..]
-                        };
-                        
-                        let welcome_packet = Packet::from_bytes(final_pack_data)?;
-                        eprintln!("[AUTH] ✅ Received FINAL Welcome packet with session info");
-                        eprintln!("[AUTH] 🔍 DEBUG - All fields in Final Welcome packet:");
-                        let welcome_packet = Packet::from_bytes(final_pack_data)?;
-                        eprintln!("[AUTH] ✅ Received FINAL Welcome packet with session info");
-                        eprintln!("[AUTH] 🔍 DEBUG - All fields in Final Welcome packet:");
-                        for (key, value) in &welcome_packet.params {
-                            match value {
-                                crate::protocol::PacketValue::Int(v) => {
-                                    eprintln!("[AUTH]   {} = Int({})", key, v);
-                                }
-                                crate::protocol::PacketValue::Data(v) => {
-                                    eprintln!("[AUTH]   {} = Data({} bytes)", key, v.len());
-                                }
-                                crate::protocol::PacketValue::String(v) => {
-                                    eprintln!("[AUTH]   {} = String(\"{}\")", key, v);
-                                }
-                                crate::protocol::PacketValue::Int64(v) => {
-                                    eprintln!("[AUTH]   {} = Int64({})", key, v);
-                                }
-                                crate::protocol::PacketValue::Bool(v) => {
-                                    eprintln!("[AUTH]   {} = Bool({})", key, v);
-                                }
-                            }
-                        }
-                        eprintln!("[AUTH] 🔍 DEBUG - End of Final Welcome packet fields");
-                        
-                        // Extract session info from final Welcome packet
-                        if let Some(session_name) = welcome_packet.get_string("session_name") {
-                            *self.session_name.lock().unwrap() = Some(session_name.to_string());
-                            eprintln!("[AUTH] 📋 Session Name: {}", session_name);
-                        } else {
-                            eprintln!("[AUTH] ⚠️  Session name not found in Final Welcome packet");
-                        }
-                        
-                        if let Some(connection_name) = welcome_packet.get_string("connection_name") {
-                            *self.connection_name.lock().unwrap() = Some(connection_name.to_string());
-                            eprintln!("[AUTH] 📋 Connection Name: {}", connection_name);
-                        } else {
-                            eprintln!("[AUTH] ⚠️  Connection name not found in Final Welcome packet");
-                        }
-                        
-                        // Continue with welcome packet processing...
-                    } else if error_code != 0 {
+                    if error_code != 0 {
                         eprintln!("[AUTH] ❌ Authentication error: code={}", error_code);
                         return Err(Error::AuthenticationFailed);
-                    } else {
-                        // error=0, this IS the Welcome packet
-                        eprintln!("[AUTH] ✅ Got Welcome packet with error=0");
-                        // Use initial_response as welcome_packet
-                        let welcome_packet = initial_response;
-                        // Extract session info
-                        if let Some(session_name) = welcome_packet.get_string("session_name") {
-                            *self.session_name.lock().unwrap() = Some(session_name.to_string());
-                            eprintln!("[AUTH] 📋 Session Name: {}", session_name);
-                        } else {
-                            eprintln!("[AUTH] ⚠️  Session name not found in Welcome packet");
-                        }
-                        
-                        if let Some(connection_name) = welcome_packet.get_string("connection_name") {
-                            *self.connection_name.lock().unwrap() = Some(connection_name.to_string());
-                            eprintln!("[AUTH] 📋 Connection Name: {}", connection_name);
-                        } else {
-                            eprintln!("[AUTH] ⚠️  Connection name not found in Welcome packet");
-                        }
-                    }
-                } else {
-                    // No error field means success (Welcome packet)
-                    eprintln!("[AUTH] ✅ Got Welcome packet (no error field)");
-                    let welcome_packet = initial_response;
-                    if let Some(session_name) = welcome_packet.get_string("session_name") {
-                        *self.session_name.lock().unwrap() = Some(session_name.to_string());
-                        eprintln!("[AUTH] 📋 Session Name: {}", session_name);
-                    } else {
-                        eprintln!("[AUTH] ⚠️  Session name not found in Welcome packet");
-                    }
-                    
-                    if let Some(connection_name) = welcome_packet.get_string("connection_name") {
-                        *self.connection_name.lock().unwrap() = Some(connection_name.to_string());
-                        eprintln!("[AUTH] 📋 Connection Name: {}", connection_name);
-                    } else {
-                        eprintln!("[AUTH] ⚠️  Connection name not found in Welcome packet");
                     }
                 }
                 
-                // Parse server policy settings (reusing last welcome_packet reference)
-                // Note: We need to access the final welcome packet for policy, so store it
-                let welcome_packet = Packet::from_bytes(redirect_pack_data)?;
+                // error=0 or no error field, this IS the Welcome packet
+                eprintln!("[AUTH] ✅ Got Welcome packet with error=0");
+                let welcome_packet = initial_response;
                 
+                // Extract session info
+                if let Some(session_name) = welcome_packet.get_string("session_name") {
+                    *self.session_name.lock().unwrap() = Some(session_name.to_string());
+                    eprintln!("[AUTH] 📋 Session Name: {}", session_name);
+                } else {
+                    eprintln!("[AUTH] ⚠️  Session name not found in Welcome packet after redirect");
+                }
+                
+                if let Some(connection_name) = welcome_packet.get_string("connection_name") {
+                    *self.connection_name.lock().unwrap() = Some(connection_name.to_string());
+                    eprintln!("[AUTH] 📋 Connection Name: {}", connection_name);
+                } else {
+                    eprintln!("[AUTH] ⚠️  Connection name not found in Welcome packet after redirect");
+                }
+                
+                // Parse server policy settings
                 eprintln!("[AUTH] 📜 Server Policy Settings:");
                 if let Some(access) = welcome_packet.get_bool("Access") {
                     eprintln!("[AUTH]   Access: {}", access);
