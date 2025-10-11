@@ -246,6 +246,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "softether", .module = lib_module },
+                .{ .name = "taptun", .module = taptun.module("taptun") },
                 .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),

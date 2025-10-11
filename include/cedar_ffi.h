@@ -57,9 +57,9 @@
 #define DISCONNECT 64
 
 /**
- * Protocol version
+ * Protocol version - SoftEther 4.44 (same as working implementations)
  */
-#define PROTOCOL_VERSION 443
+#define PROTOCOL_VERSION 444
 
 /**
  * Maximum packet size (16MB)
@@ -360,6 +360,26 @@ enum CedarErrorCode cedar_session_send_packet(CedarSessionHandle handle, CedarPa
  * Caller must free the returned packet with cedar_packet_free()
  */
 enum CedarErrorCode cedar_session_receive_packet(CedarSessionHandle handle, CedarPacketHandle *out_packet);
+
+/**
+ * Send data packet to VPN server (for TUN device integration)
+ * data should point to raw packet bytes (e.g., IP packet from TUN device)
+ */
+enum CedarErrorCode cedar_session_send_data_packet(CedarSessionHandle handle, const uint8_t *data, uintptr_t data_len);
+
+/**
+ * Try to receive data packet from VPN server (non-blocking)
+ * Returns Success and writes packet data if available
+ * Returns TimeOut if no packet available
+ * buffer should be at least 65536 bytes for typical packets
+ */
+enum CedarErrorCode cedar_session_try_receive_data_packet(CedarSessionHandle handle, uint8_t *buffer, uintptr_t buffer_size, uintptr_t *out_size);
+
+/**
+ * Poll session for keep-alive (call periodically from forwarding loop)
+ * interval_secs: Seconds between keep-alive packets (e.g., 30)
+ */
+enum CedarErrorCode cedar_session_poll_keepalive(CedarSessionHandle handle, uint64_t interval_secs);
 
 /**
  * Authenticate with the server

@@ -205,6 +205,57 @@ pub const Session = struct {
         );
         try errorFromCode(result);
     }
+
+    /// Send data packet to VPN server (for TUN device integration)
+    /// data should contain raw packet bytes (e.g., IP packet from TUN device)
+    pub fn sendDataPacket(self: *Session, data: []const u8) !void {
+        if (data.len == 0) {
+            return error.InvalidParameter;
+        }
+
+        const result = c.cedar_session_send_data_packet(
+            self.handle,
+            data.ptr,
+            data.len,
+        );
+        try errorFromCode(result);
+    }
+
+    /// Try to receive data packet from VPN server (non-blocking)
+    /// Returns received packet data if available, or null if no packet
+    /// buffer should be at least 65536 bytes for typical packets
+    pub fn tryReceiveDataPacket(self: *Session, buffer: []u8) !?[]const u8 {
+        if (buffer.len == 0) {
+            return error.InvalidParameter;
+        }
+
+        var out_size: usize = 0;
+        const result = c.cedar_session_try_receive_data_packet(
+            self.handle,
+            buffer.ptr,
+            buffer.len,
+            &out_size,
+        );
+
+        if (result == c.TimeOut) {
+            return null; // No packet available
+        }
+
+        try errorFromCode(result);
+
+        if (out_size == 0) {
+            return null;
+        }
+
+        return buffer[0..out_size];
+    }
+
+    /// Poll session for keep-alive (call periodically from forwarding loop)
+    /// interval_secs: Seconds between keep-alive packets (e.g., 30)
+    pub fn pollKeepalive(self: *Session, interval_secs: u64) !void {
+        const result = c.cedar_session_poll_keepalive(self.handle, interval_secs);
+        try errorFromCode(result);
+    }
 };
 
 /// VPN Packet

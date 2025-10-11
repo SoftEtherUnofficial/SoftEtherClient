@@ -874,6 +874,86 @@ pub extern "C" fn cedar_session_receive_packet(
     }
 }
 
+/// Send data packet to VPN server (for TUN device integration)
+/// data should point to raw packet bytes (e.g., IP packet from TUN device)
+#[no_mangle]
+pub extern "C" fn cedar_session_send_data_packet(
+    handle: CedarSessionHandle,
+    data: *const u8,
+    data_len: usize,
+) -> CedarErrorCode {
+    if handle.is_null() || data.is_null() || data_len == 0 {
+        return CedarErrorCode::InvalidParameter;
+    }
+
+    let session = unsafe { &*(handle as *const Session) };
+    let data_slice = unsafe { std::slice::from_raw_parts(data, data_len) };
+
+    match session.send_data_packet(data_slice) {
+        Ok(_) => CedarErrorCode::Success,
+        Err(e) => CedarErrorCode::from(e),
+    }
+}
+
+/// Try to receive data packet from VPN server (non-blocking)
+/// Returns Success and writes packet data if available
+/// Returns TimeOut if no packet available
+/// buffer should be at least 65536 bytes for typical packets
+#[no_mangle]
+pub extern "C" fn cedar_session_try_receive_data_packet(
+    handle: CedarSessionHandle,
+    buffer: *mut u8,
+    buffer_size: usize,
+    out_size: *mut usize,
+) -> CedarErrorCode {
+    if handle.is_null() || buffer.is_null() || out_size.is_null() {
+        return CedarErrorCode::InvalidParameter;
+    }
+
+    let session = unsafe { &*(handle as *const Session) };
+    let buffer_slice = unsafe { std::slice::from_raw_parts_mut(buffer, buffer_size) };
+
+    match session.try_receive_data_packet() {
+        Ok(Some((packet_type, data))) => {
+            if packet_type == "data" && !data.is_empty() {
+                if data.len() > buffer_size {
+                    return CedarErrorCode::BufferTooSmall;
+                }
+                buffer_slice[..data.len()].copy_from_slice(&data);
+                unsafe { *out_size = data.len() };
+                CedarErrorCode::Success
+            } else {
+                // Keepalive or empty packet
+                unsafe { *out_size = 0 };
+                CedarErrorCode::TimeOut
+            }
+        }
+        Ok(None) => {
+            unsafe { *out_size = 0 };
+            CedarErrorCode::TimeOut
+        }
+        Err(e) => CedarErrorCode::from(e),
+    }
+}
+
+/// Poll session for keep-alive (call periodically from forwarding loop)
+/// interval_secs: Seconds between keep-alive packets (e.g., 30)
+#[no_mangle]
+pub extern "C" fn cedar_session_poll_keepalive(
+    handle: CedarSessionHandle,
+    interval_secs: u64,
+) -> CedarErrorCode {
+    if handle.is_null() {
+        return CedarErrorCode::InvalidParameter;
+    }
+
+    let session = unsafe { &*(handle as *const Session) };
+    match session.poll_keepalive(interval_secs) {
+        Ok(_) => CedarErrorCode::Success,
+        Err(e) => CedarErrorCode::from(e),
+    }
+}
+
 /// Authenticate with the server
 /// password_hash should be SHA-1 hash of password (20 bytes)
 #[no_mangle]

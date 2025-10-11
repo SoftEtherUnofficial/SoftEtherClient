@@ -328,6 +328,35 @@ impl TcpSocket {
     pub fn is_server_mode(&self) -> bool {
         self.server_mode
     }
+    
+    /// Peek at data without consuming it (for non-blocking checks)
+    pub fn peek(&self, buf: &mut [u8]) -> Result<usize> {
+        match &self.inner {
+            TcpSocketInner::Plain(stream) => {
+                stream.peek(buf)
+                    .map_err(|e| Error::Network(format!("Failed to peek socket: {}", e)))
+            }
+            TcpSocketInner::Tls(tls) => {
+                // For TLS, peek on underlying stream
+                tls.get_ref().peek(buf)
+                    .map_err(|e| Error::Network(format!("Failed to peek socket: {}", e)))
+            }
+        }
+    }
+    
+    /// Set non-blocking mode
+    pub fn set_nonblocking(&self, nonblocking: bool) -> Result<()> {
+        match &self.inner {
+            TcpSocketInner::Plain(stream) => {
+                stream.set_nonblocking(nonblocking)
+                    .map_err(|e| Error::Network(format!("Failed to set nonblocking: {}", e)))
+            }
+            TcpSocketInner::Tls(tls) => {
+                tls.get_ref().set_nonblocking(nonblocking)
+                    .map_err(|e| Error::Network(format!("Failed to set nonblocking: {}", e)))
+            }
+        }
+    }
 }
 
 /// TCP listener wrapper with SoftEther-compatible API

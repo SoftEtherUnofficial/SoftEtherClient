@@ -8,6 +8,9 @@ const types = @import("types.zig");
 // Cedar FFI imports (always available, selected at runtime)
 const cedar = @import("cedar/wrapper.zig");
 
+// TUN device library
+const taptun = @import("taptun");
+
 const VpnError = errors.VpnError;
 const ConnectionConfig = config.ConnectionConfig;
 
@@ -31,6 +34,9 @@ pub const VpnClient = struct {
 
     // Cedar FFI session (runtime selection)
     cedar_session: ?cedar.Session = null,
+    
+    // TUN device adapter (optional, created after connection)
+    tun_adapter: ?*taptun.TunAdapter = null,
 
     /// Initialize a new VPN client
     pub fn init(allocator: std.mem.Allocator, cfg: ConnectionConfig) !VpnClient {
@@ -186,7 +192,13 @@ pub const VpnClient = struct {
 
     /// Clean up resources
     pub fn deinit(self: *VpnClient) void {
-        // Clean up Cedar session if using Cedar FFI
+        // Clean up TUN device first (restores routes)
+        if (self.tun_adapter) |adapter| {
+            adapter.close();
+            self.tun_adapter = null;
+        }
+        
+        // Clean up Cedar session
         if (self.cedar_session) |*session| {
             session.deinit();
         }
@@ -278,18 +290,132 @@ pub const VpnClient = struct {
         self.cedar_session = session;
 
         std.debug.print("✅ Cedar connection complete!\n\n", .{});
-        std.debug.print("📋 Next steps to enable packet forwarding:\n", .{});
-        std.debug.print("  1. Ensure TUN/TAP device permissions (run as root/sudo)\n", .{});
-        std.debug.print("  2. Configure IP address and routing\n", .{});
-        std.debug.print("  3. Set up packet forwarding loop\n\n", .{});
-        std.debug.print("💡 TUN/TAP integration ready - see src/packet_forward.zig\n", .{});
+        
+        // Step 3: Create TUN device
+        std.debug.print("🌐 Creating TUN device...\n", .{});
+        self.tun_adapter = taptun.TunAdapter.open(self.allocator, .{
+            .device = .{ .non_blocking = true },
+            .translator = .{
+                .our_mac = [_]u8{0x00, 0xAC, 0x00, 0x00, 0x00, 0x01},
+                .learn_ip = true,
+                .learn_gateway_mac = true,
+                .handle_arp = true,
+                .verbose = false,
+            },
+            .manage_routes = false,
+        }) catch |err| blk: {
+            std.debug.print("⚠️  Failed to create TUN device: {}\n", .{err});
+            std.debug.print("💡 Note: TUN device requires root privileges\n", .{});
+            std.debug.print("📦 Continuing without TUN (logging only)\n\n", .{});
+            break :blk null;
+        };
+        
+        if (self.tun_adapter) |adapter| {
+            std.debug.print("✅ TUN device: {s}\n\n", .{adapter.device.getName()});
+        }
+        
+        std.debug.print("\n📡 Starting VPN packet forwarding loop...\n", .{});
+        
+        // Start packet forwarding with TUN device
+        const forward_thread = try std.Thread.spawn(.{}, packetForwardingLoop, .{&self.cedar_session.?, self.tun_adapter});
+        forward_thread.detach();
+        
+        std.debug.print("✅ Packet forwarding active!\n", .{});
+        std.debug.print("💡 Press Ctrl+C to disconnect\n\n", .{});
+    }
 
-        // TODO: Uncomment when running with proper permissions:
-        // const taptun = @import("taptun");
-        // const packet_forward = @import("packet_forward.zig");
-        // var tun_adapter = try taptun.TunAdapter.open(...);
-        // var forwarder = try packet_forward.PacketForwarder.init(...);
-        // try forwarder.start();
+    /// Packet forwarding loop (runs in separate thread)
+    fn packetForwardingLoop(session: *cedar.Session, tun_adapter: ?*taptun.TunAdapter) void {
+        var vpn_buffer: [65536]u8 = undefined;
+        var tun_buffer: [65536]u8 = undefined;
+        var packet_count: u64 = 0;
+        var sent_count: u64 = 0;
+
+        std.debug.print("[FORWARD] Starting packet forwarding loop\n", .{});
+        
+        if (tun_adapter) |adapter| {
+            std.debug.print("[FORWARD] 🌐 TUN device active: {s}\n", .{adapter.device.getName()});
+            std.debug.print("[FORWARD] 🔄 Bidirectional packet forwarding enabled\n", .{});
+        } else {
+            std.debug.print("[FORWARD] � Running without TUN device (logging only)\n", .{});
+        }
+        
+        std.debug.print("[FORWARD] Receiving packets from server...\n\n", .{});
+
+        while (true) {
+            // ═══════════════════════════════════════
+            // VPN → TUN: Receive from server, write to TUN
+            // ═══════════════════════════════════════
+            if (session.tryReceiveDataPacket(&vpn_buffer)) |maybe_data| {
+                if (maybe_data) |ip_packet| {
+                    if (ip_packet.len > 0) {
+                        packet_count += 1;
+                        
+                        if (tun_adapter) |adapter| {
+                            // Write IP packet directly to TUN device
+                            adapter.writeIp(ip_packet) catch |err| {
+                                std.debug.print("[FORWARD] ⚠️  TUN write error: {}\n", .{err});
+                                continue;
+                            };
+                            
+                            if (packet_count % 100 == 0) {
+                                std.debug.print("[FORWARD] 📥 Received {} packets from VPN\n", .{packet_count});
+                            }
+                        } else {
+                            // No TUN device - just log
+                            std.debug.print("[FORWARD] 📥 Received {} bytes (packet #{})\n", .{ ip_packet.len, packet_count });
+                            
+                            if (ip_packet.len >= 1) {
+                                const ip_version = (ip_packet[0] >> 4) & 0x0F;
+                                if (ip_version == 4) {
+                                    std.debug.print("[FORWARD]   IPv4 packet\n", .{});
+                                } else if (ip_version == 6) {
+                                    std.debug.print("[FORWARD]   IPv6 packet\n", .{});
+                                }
+                            }
+                        }
+                    }
+                }
+            } else |err| {
+                // TimeOut and InternalError are expected when no data available
+                // Only log other unexpected errors
+                if (err != error.TimeOut and err != error.InternalError) {
+                    std.debug.print("[FORWARD] ⚠️  VPN receive error: {}\n", .{err});
+                }
+            }
+
+            // ═══════════════════════════════════════
+            // TUN → VPN: Read from TUN, send to server
+            // ═══════════════════════════════════════
+            if (tun_adapter) |adapter| {
+                if (adapter.readIp(&tun_buffer)) |ip_packet| {
+                    // Send IP packet to VPN server
+                    session.sendDataPacket(ip_packet) catch |err| {
+                        std.debug.print("[FORWARD] ⚠️  VPN send error: {}\n", .{err});
+                        continue;
+                    };
+                    
+                    sent_count += 1;
+                    if (sent_count % 100 == 0) {
+                        std.debug.print("[FORWARD] 📤 Sent {} packets to VPN\n", .{sent_count});
+                    }
+                } else |err| {
+                    if (err != error.WouldBlock) {
+                        std.debug.print("[FORWARD] ⚠️  TUN read error: {}\n", .{err});
+                    }
+                }
+            }
+
+            // ═══════════════════════════════════════
+            // Keep-alive maintenance
+            // ═══════════════════════════════════════
+            session.pollKeepalive(30) catch |err| {
+                std.debug.print("[FORWARD] ⚠️  Keep-alive error: {}\n", .{err});
+            };
+
+            // Small delay to prevent busy-waiting
+            std.Thread.sleep(10 * std.time.ns_per_ms);
+        }
     }
 
     /// Disconnect from VPN server
@@ -304,6 +430,21 @@ pub const VpnClient = struct {
 
     /// Get current connection status
     pub fn getStatus(self: *const VpnClient) types.ConnectionStatus {
+        // For Cedar mode, check Cedar session status directly
+        if (self.cedar_session) |*session| {
+            const cedar_status = session.getStatus();
+            return switch (cedar_status) {
+                .Init => .disconnected,
+                .Connecting => .connecting,
+                .Authenticating => .connecting,
+                .Established => .connected,
+                .Reconnecting => .connecting,
+                .Closing => .disconnected,
+                .Terminated => .disconnected,
+            };
+        }
+
+        // For C Bridge mode, check C Bridge status
         const handle = self.handle orelse return .error_state;
 
         const status = c.vpn_bridge_get_status(handle);
