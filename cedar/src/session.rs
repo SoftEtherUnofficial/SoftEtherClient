@@ -816,7 +816,7 @@ impl Session {
     
     /// Send data packet to server
     pub fn send_data_packet(&self, data: &[u8]) -> Result<()> {
-        use mayaqua::HttpRequest;
+        use crate::protocol::WATERMARK;
         
         // Create data PACK packet
         let data_packet = Packet::new("data")
@@ -825,19 +825,38 @@ impl Session {
         
         let pack_data = data_packet.to_bytes()?;
         
-        // Send via HTTP POST
-        let http_request = HttpRequest::new_vpn_post(
-            &self.config.server,
-            self.config.port,
-            pack_data,
+        // Build HTTP request with watermark and PACK data
+        let mut request_data = Vec::new();
+        
+        // HTTP POST header
+        let header = format!(
+            "POST /vpnsvc/vpn.cgi HTTP/1.1\r\n\
+             Host: {}\r\n\
+             Content-Type: application/octet-stream\r\n\
+             Content-Length: {}\r\n\
+             Connection: Keep-Alive\r\n\
+             \r\n",
+            self.config.server,
+            WATERMARK.len() + pack_data.len()
         );
+        request_data.extend_from_slice(header.as_bytes());
         
-        let http_bytes = http_request.to_bytes();
-        self.send_raw(&http_bytes)?;
+        // Add watermark
+        request_data.extend_from_slice(&WATERMARK);
         
-        let mut connections = self.tcp_connections.lock().unwrap();
-        if !connections.is_empty() {
-            connections[0].flush()?;
+        // Add PACK data
+        request_data.extend_from_slice(&pack_data);
+        
+        // Send all at once
+        // NOTE: For data packets, we do NOT wait for response
+        // The response will be picked up by try_receive_data_packet() on the receive side
+        self.send_raw(&request_data)?;
+        
+        {
+            let mut connections = self.tcp_connections.lock().unwrap();
+            if !connections.is_empty() {
+                connections[0].flush()?;
+            }
         }
         
         Ok(())
