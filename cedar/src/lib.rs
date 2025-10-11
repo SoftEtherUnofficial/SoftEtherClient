@@ -34,6 +34,9 @@ pub mod compression;
 pub mod udp_accel;
 pub mod nat_traversal;
 
+// DHCP client for automatic IP configuration
+pub mod dhcp;
+
 // FFI exports for C/Zig integration
 pub mod ffi;
 
@@ -50,6 +53,7 @@ pub use encryption::{TlsConnection, TlsConfig, TlsState};
 pub use compression::{Compressor, CompressionConfig, CompressionAlgorithm};
 pub use udp_accel::{UdpAccelerator, UdpAccelConfig, UdpAccelMode};
 pub use nat_traversal::{NatTraversal, NatTraversalConfig, NatType};
+pub use dhcp::{DhcpClient, DhcpState};
 
 #[cfg(test)]
 mod tests {
