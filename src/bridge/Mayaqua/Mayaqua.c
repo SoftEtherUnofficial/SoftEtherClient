@@ -528,83 +528,83 @@ void InitMayaqua(bool memcheck, bool debug, int argc, char **argv)
 	setlocale(LC_ALL, "");
 
 	// Initialization of OS
-	printf("[InitMayaqua] 1. OSInit...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 1. OSInit...\n"); fflush(stdout);
 	OSInit();
-	printf("[InitMayaqua] 1. OSInit DONE\n"); fflush(stdout);
+	// printf("[InitMayaqua] 1. OSInit DONE\n"); fflush(stdout);
 
 	// Initialize the random number
-	printf("[InitMayaqua] 2. srand...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 2. srand...\n"); fflush(stdout);
 	srand((UINT)SystemTime64());
-	printf("[InitMayaqua] 2. srand DONE\n"); fflush(stdout);
+	// printf("[InitMayaqua] 2. srand DONE\n"); fflush(stdout);
 
-	printf("[InitMayaqua] 3. NewLock...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 3. NewLock...\n"); fflush(stdout);
 	tick_manual_lock = NewLock();
-	printf("[InitMayaqua] 3. NewLock DONE\n"); fflush(stdout);
+	// printf("[InitMayaqua] 3. NewLock DONE\n"); fflush(stdout);
 
 	// Initialization of CRC32
-	printf("[InitMayaqua] 4. InitCrc32...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 4. InitCrc32...\n"); fflush(stdout);
 	InitCrc32();
-	printf("[InitMayaqua] 4. InitCrc32 DONE\n"); fflush(stdout);
+	// printf("[InitMayaqua] 4. InitCrc32 DONE\n"); fflush(stdout);
 
 	// Initialization of the FIFO system
-	printf("[InitMayaqua] 5. InitFifo...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 5. InitFifo...\n"); fflush(stdout);
 	InitFifo();
-	printf("[InitMayaqua] 5. InitFifo DONE\n"); fflush(stdout);
+	// printf("[InitMayaqua] 5. InitFifo DONE\n"); fflush(stdout);
 
 	// Initialize the Kernel status
-	printf("[InitMayaqua] 6. InitKernelStatus...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 6. InitKernelStatus...\n"); fflush(stdout);
 	InitKernelStatus();
-	printf("[InitMayaqua] 6. InitKernelStatus DONE\n"); fflush(stdout);
+	// printf("[InitMayaqua] 6. InitKernelStatus DONE\n"); fflush(stdout);
 
 	// Initialize the tracking
-	printf("[InitMayaqua] 7. InitTracking...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 7. InitTracking...\n"); fflush(stdout);
 	InitTracking();
-	printf("[InitMayaqua] 7. InitTracking DONE\n"); fflush(stdout);
+	// printf("[InitMayaqua] 7. InitTracking DONE\n"); fflush(stdout);
 
 	// Initialization of thread pool
-	printf("[InitMayaqua] 8. InitThreading...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 8. InitThreading...\n"); fflush(stdout);
 	InitThreading();
-	printf("[InitMayaqua] 8. InitThreading DONE\n"); fflush(stdout);
+	// printf("[InitMayaqua] 8. InitThreading DONE\n"); fflush(stdout);
 
 	// Initialize the string library
-	printf("[InitMayaqua] 9. InitStringLibrary...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 9. InitStringLibrary...\n"); fflush(stdout);
 	InitStringLibrary();
-	printf("[InitMayaqua] 9. InitStringLibrary DONE\n"); fflush(stdout);
+	// printf("[InitMayaqua] 9. InitStringLibrary DONE\n"); fflush(stdout);
 
 	// Initialization of the locale information
-	printf("[InitMayaqua] 10. SetLocale...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 10. SetLocale...\n"); fflush(stdout);
 	SetLocale(NULL);
-	printf("[InitMayaqua] 10. SetLocale DONE\n"); fflush(stdout);
+	// printf("[InitMayaqua] 10. SetLocale DONE\n"); fflush(stdout);
 
 	// Initialization of the crypt library
-	printf("[InitMayaqua] 11. InitCryptLibrary...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 11. InitCryptLibrary...\n"); fflush(stdout);
 	InitCryptLibrary();
-	printf("[InitMayaqua] 11. InitCryptLibrary DONE\n"); fflush(stdout);
+	// printf("[InitMayaqua] 11. InitCryptLibrary DONE\n"); fflush(stdout);
 
 	// Initialization of the real-time clock
 	// SKIP: InitTick64() hangs because it spawns a thread that never returns
 	// We provide a custom Tick64() implementation in unix_stubs.c using mach_absolute_time
-	printf("[InitMayaqua] 12. InitTick64... SKIPPED (using custom implementation)\n"); fflush(stdout);
+	// printf("[InitMayaqua] 12. InitTick64... SKIPPED (using custom implementation)\n"); fflush(stdout);
 
 	// Initialize the network communication module
-	printf("[InitMayaqua] 13. InitNetwork...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 13. InitNetwork...\n"); fflush(stdout);
 	InitNetwork();
-	printf("[InitMayaqua] 13. InitNetwork DONE\n"); fflush(stdout);
+	// printf("[InitMayaqua] 13. InitNetwork DONE\n"); fflush(stdout);
 
 	// Initialization of the aquisition of the EXE file name
-	printf("[InitMayaqua] 14. InitGetExeName...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 14. InitGetExeName...\n"); fflush(stdout);
 	InitGetExeName(argc >= 1 ? argv[0] : NULL);
-	printf("[InitMayaqua] 14. InitGetExeName DONE\n"); fflush(stdout);
+	// printf("[InitMayaqua] 14. InitGetExeName DONE\n"); fflush(stdout);
 
 	// Initialization of the command line string
-	printf("[InitMayaqua] 15. InitCommandLineStr...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 15. InitCommandLineStr...\n"); fflush(stdout);
 	InitCommandLineStr(argc, argv);
-	printf("[InitMayaqua] 15. InitCommandLineStr DONE\n"); fflush(stdout);
+	// printf("[InitMayaqua] 15. InitCommandLineStr DONE\n"); fflush(stdout);
 
 	// Initialization of OS information
-	printf("[InitMayaqua] 16. InitOsInfo...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 16. InitOsInfo...\n"); fflush(stdout);
 	InitOsInfo();
-	printf("[InitMayaqua] 16. InitOsInfo DONE\n"); fflush(stdout);
+	// printf("[InitMayaqua] 16. InitOsInfo DONE\n"); fflush(stdout);
 
 	// Initialization of the operating system-specific module
 #ifdef	OS_WIN32
@@ -612,40 +612,40 @@ void InitMayaqua(bool memcheck, bool debug, int argc, char **argv)
 #endif	// OS_WIN32
 
 	// Initialization of the security token module
-	printf("[InitMayaqua] 17. InitSecure...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 17. InitSecure...\n"); fflush(stdout);
 	InitSecure();
-	printf("[InitMayaqua] 17. InitSecure DONE\n"); fflush(stdout);
+	// printf("[InitMayaqua] 17. InitSecure DONE\n"); fflush(stdout);
 
-	printf("[InitMayaqua] 18. OSIsSupportedOs check...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 18. OSIsSupportedOs check...\n"); fflush(stdout);
 	if (OSIsSupportedOs() == false)
 	{
 		// Abort
 		printf("[InitMayaqua] ERROR: OSIsSupportedOs returned false!\n"); fflush(stdout);
 		exit(0);
 	}
-	printf("[InitMayaqua] 18. OSIsSupportedOs PASSED\n"); fflush(stdout);
+	// printf("[InitMayaqua] 18. OSIsSupportedOs PASSED\n"); fflush(stdout);
 
 	// Initialization of HamCore file system
-	printf("[InitMayaqua] 19. InitHamcore...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 19. InitHamcore...\n"); fflush(stdout);
 	InitHamcore();
-	printf("[InitMayaqua] 19. InitHamcore DONE\n"); fflush(stdout);
+	// printf("[InitMayaqua] 19. InitHamcore DONE\n"); fflush(stdout);
 
 	// Initialization of string table routine
-	printf("[InitMayaqua] 20. InitTable...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 20. InitTable...\n"); fflush(stdout);
 	InitTable();
-	printf("[InitMayaqua] 20. InitTable DONE\n"); fflush(stdout);
+	// printf("[InitMayaqua] 20. InitTable DONE\n"); fflush(stdout);
 
-	printf("[InitMayaqua] 21. Checking exename...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 21. Checking exename...\n"); fflush(stdout);
 	if (exename == NULL)
 	{
 		// Executable file name
 		exename = CopyStr("unknown");
-		printf("[InitMayaqua] 21. exename was NULL, set to 'unknown'\n"); fflush(stdout);
+		// printf("[InitMayaqua] 21. exename was NULL, set to 'unknown'\n"); fflush(stdout);
 	}
 
 	// Check whether the executable file name of themselves is found
 	// (If not found, quit because this is started in strange path)
-	printf("[InitMayaqua] 22. Checking exe file exists...\n"); fflush(stdout);
+	// printf("[InitMayaqua] 22. Checking exe file exists...\n"); fflush(stdout);
 	GetExeNameW(tmp, sizeof(tmp));
 	
 	// TEMPORARY: Comment out this check for development
@@ -665,7 +665,7 @@ void InitMayaqua(bool memcheck, bool debug, int argc, char **argv)
 	}
 	*/
 	
-	printf("[InitMayaqua] 22. Exe check SKIPPED (development mode)\n"); fflush(stdout);
+	// printf("[InitMayaqua] 22. Exe check SKIPPED (development mode)\n"); fflush(stdout);
 
 	CheckUnixTempDir();
 

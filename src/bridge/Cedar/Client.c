@@ -10655,20 +10655,20 @@ bool CtGetClientVersion(CLIENT *c, RPC_CLIENT_VERSION *ver)
 // Creating a Client object
 CLIENT *CiNewClient()
 {
-	printf("[CiNewClient] Starting...\n"); fflush(stdout);
+	// printf("[CiNewClient] Starting...\n"); fflush(stdout);
 	
 	CLIENT *c = ZeroMalloc(sizeof(CLIENT));
-	printf("[CiNewClient] Allocated CLIENT structure\n"); fflush(stdout);
+	// printf("[CiNewClient] Allocated CLIENT structure\n"); fflush(stdout);
 
 //	StartCedarLog();
 
-	printf("[CiNewClient] Checking ci_active_sessions_lock...\n"); fflush(stdout);
+	// printf("[CiNewClient] Checking ci_active_sessions_lock...\n"); fflush(stdout);
 	if (ci_active_sessions_lock == NULL)
 	{
 		ci_active_sessions_lock = NewLock();
 		ci_num_active_sessions = 0;
 	}
-	printf("[CiNewClient] ci_active_sessions_lock OK\n"); fflush(stdout);
+	// printf("[CiNewClient] ci_active_sessions_lock OK\n"); fflush(stdout);
 
 #ifdef	OS_WIN32
 	if (MsIsWindows7())
@@ -10678,66 +10678,66 @@ CLIENT *CiNewClient()
 #endif	// OS_WIN32
 
 
-	printf("[CiNewClient] Creating CM_SETTING...\n"); fflush(stdout);
+	// printf("[CiNewClient] Creating CM_SETTING...\n"); fflush(stdout);
 	c->CmSetting = ZeroMalloc(sizeof(CM_SETTING));
 
 	// Disable logging to avoid NewLog() thread hang
 	c->NoSaveLog = true;
-	printf("[CiNewClient] Disabled logging (NoSaveLog=true)\n"); fflush(stdout);
+	// printf("[CiNewClient] Disabled logging (NoSaveLog=true)\n"); fflush(stdout);
 
-	printf("[CiNewClient] Creating SockList...\n"); fflush(stdout);
+	// printf("[CiNewClient] Creating SockList...\n"); fflush(stdout);
 	c->SockList = NewSockList();
 
-	printf("[CiNewClient] Creating locks...\n"); fflush(stdout);
+	// printf("[CiNewClient] Creating locks...\n"); fflush(stdout);
 	c->lock = NewLock();
 	c->lockForConnect = NewLock();
 	c->ref = NewRef();
 
-	printf("[CiNewClient] Calling NewCedar()...\n"); fflush(stdout);
+	// printf("[CiNewClient] Calling NewCedar()...\n"); fflush(stdout);
 	c->Cedar = NewCedar(NULL, NULL);
-	printf("[CiNewClient] NewCedar() returned\n"); fflush(stdout);
+	// printf("[CiNewClient] NewCedar() returned\n"); fflush(stdout);
 
 	c->Cedar->Client = c;
 
-	printf("[CiNewClient] Creating NotifyCancelList...\n"); fflush(stdout);
+	// printf("[CiNewClient] Creating NotifyCancelList...\n"); fflush(stdout);
 	c->NotifyCancelList = NewList(NULL);
 
-	printf("[CiNewClient] Hashing password...\n"); fflush(stdout);
+	// printf("[CiNewClient] Hashing password...\n"); fflush(stdout);
 	Hash(c->EncryptedPassword, "", 0, true);
 
 #ifdef	OS_WIN32
 	c->GlobalPulse = MsOpenOrCreateGlobalPulse(CLIENT_GLOBAL_PULSE_NAME);
 #endif	// OS_WIN32
 
-	printf("[CiNewClient] Checking GlobalPulse...\n"); fflush(stdout);
+	// printf("[CiNewClient] Checking GlobalPulse...\n"); fflush(stdout);
 	if (c->GlobalPulse != NULL)
 	{
 		c->PulseRecvThread = NewThread(CiPulseRecvThread, c);
 	}
 
-	printf("[CiNewClient] Loading ini settings...\n"); fflush(stdout);
+	// printf("[CiNewClient] Loading ini settings...\n"); fflush(stdout);
 	CiLoadIniSettings(c);
 
 	// Log Settings
-	printf("[CiNewClient] Setting up logging...\n"); fflush(stdout);
+	// printf("[CiNewClient] Setting up logging...\n"); fflush(stdout);
 	if(c->NoSaveLog == false)
 	{
-		printf("[CiNewClient] Creating log directory...\n"); fflush(stdout);
+		// printf("[CiNewClient] Creating log directory...\n"); fflush(stdout);
 		MakeDir(CLIENT_LOG_DIR_NAME);
-		printf("[CiNewClient] Calling NewLog()...\n"); fflush(stdout);
+		// printf("[CiNewClient] Calling NewLog()...\n"); fflush(stdout);
 		c->Logger = NewLog(CLIENT_LOG_DIR_NAME, CLIENT_LOG_PREFIX, LOG_SWITCH_DAY);
-		printf("[CiNewClient] NewLog() returned\n"); fflush(stdout);
+		// printf("[CiNewClient] NewLog() returned\n"); fflush(stdout);
 	}
 
-	printf("[CiNewClient] Writing log messages...\n"); fflush(stdout);
+	// printf("[CiNewClient] Writing log messages...\n"); fflush(stdout);
 	CLog(c, "L_LINE");
-	printf("[CiNewClient] CLog 1 done\n"); fflush(stdout);
+	// printf("[CiNewClient] CLog 1 done\n"); fflush(stdout);
 	CLog(c, "LC_START_2", CEDAR_CLIENT_STR, c->Cedar->VerString);
-	printf("[CiNewClient] CLog 2 done\n"); fflush(stdout);
+	// printf("[CiNewClient] CLog 2 done\n"); fflush(stdout);
 	CLog(c, "LC_START_3", c->Cedar->BuildInfo);
-	printf("[CiNewClient] CLog 3 done\n"); fflush(stdout);
+	// printf("[CiNewClient] CLog 3 done\n"); fflush(stdout);
 	CLog(c, "LC_START_1");
-	printf("[CiNewClient] All CLogs done\n"); fflush(stdout);
+	// printf("[CiNewClient] All CLogs done\n"); fflush(stdout);
 
 #ifdef	OS_WIN32
 	{
@@ -10750,14 +10750,14 @@ CLIENT *CiNewClient()
 #endif	// OS_WIN32
 
 	// Initialize the settings
-	printf("[CiNewClient] Calling CiInitConfiguration()...\n"); fflush(stdout);
+	// printf("[CiNewClient] Calling CiInitConfiguration()...\n"); fflush(stdout);
 	// SKIP: CiInitConfiguration(c);  // Causes hang, we configure programmatically
-	printf("[CiNewClient] CiInitConfiguration() SKIPPED\n"); fflush(stdout);
+	// printf("[CiNewClient] CiInitConfiguration() SKIPPED\n"); fflush(stdout);
 
 	// Raise the priority
-	printf("[CiNewClient] Calling OSSetHighPriority()...\n"); fflush(stdout);
+	// printf("[CiNewClient] Calling OSSetHighPriority()...\n"); fflush(stdout);
 	OSSetHighPriority();
-	printf("[CiNewClient] OSSetHighPriority() done\n"); fflush(stdout);
+	// printf("[CiNewClient] OSSetHighPriority() done\n"); fflush(stdout);
 
 
 
@@ -10769,20 +10769,20 @@ CLIENT *CiNewClient()
 	}
 #endif	// OS_WIN32
 
-	printf("[CiNewClient] Calling CiChangeAllVLanMacAddressIfMachineChanged()...\n"); fflush(stdout);
+	// printf("[CiNewClient] Calling CiChangeAllVLanMacAddressIfMachineChanged()...\n"); fflush(stdout);
 	CiChangeAllVLanMacAddressIfMachineChanged(c);
-	printf("[CiNewClient] Done\n"); fflush(stdout);
+	// printf("[CiNewClient] Done\n"); fflush(stdout);
 
-	printf("[CiNewClient] Calling CiChangeAllVLanMacAddressIfCleared()...\n"); fflush(stdout);
+	// printf("[CiNewClient] Calling CiChangeAllVLanMacAddressIfCleared()...\n"); fflush(stdout);
 	CiChangeAllVLanMacAddressIfCleared(c);
-	printf("[CiNewClient] Done\n"); fflush(stdout);
+	// printf("[CiNewClient] Done\n"); fflush(stdout);
 
 	// Initialize the internal VPN server
-	printf("[CiNewClient] Calling CiApplyInnerVPNServerConfig()...\n"); fflush(stdout);
+	// printf("[CiNewClient] Calling CiApplyInnerVPNServerConfig()...\n"); fflush(stdout);
 	CiApplyInnerVPNServerConfig(c);
-	printf("[CiNewClient] CiApplyInnerVPNServerConfig() done\n"); fflush(stdout);
+	// printf("[CiNewClient] CiApplyInnerVPNServerConfig() done\n"); fflush(stdout);
 
-	printf("[CiNewClient] ✅ Returning client %p\n", c); fflush(stdout);
+	// printf("[CiNewClient] ✅ Returning client %p\n", c); fflush(stdout);
 	return c;
 }
 

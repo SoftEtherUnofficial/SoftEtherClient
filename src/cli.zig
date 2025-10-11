@@ -53,7 +53,7 @@ fn printUsage() void {
         \\    --profile               Enable performance profiling
         \\    --use-zig-adapter       Use Zig packet adapter (default, 10x faster)
         \\    --use-c-adapter         Use legacy C adapter (fallback)
-        \\    --use-cedar             Use Cedar FFI (Rust TLS, no OpenSSL) [runtime choice]
+        \\    --no-openssl            Use Rust native-tls (avoids OpenSSL dependency) [runtime choice]
         \\    --log-level <LEVEL>     Set log verbosity: silent, error, warn, info, debug, trace (default: info)
         \\
         \\  Reconnection Options:
@@ -257,7 +257,7 @@ fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
             result.use_zig_adapter = true;
         } else if (std.mem.eql(u8, arg, "--use-c-adapter")) {
             result.use_zig_adapter = false;
-        } else if (std.mem.eql(u8, arg, "--use-cedar")) {
+        } else if (std.mem.eql(u8, arg, "--no-openssl")) {
             result.use_cedar = true;
         } else if (std.mem.eql(u8, arg, "--log-level")) {
             result.log_level = args.next() orelse return error.MissingLogLevel;

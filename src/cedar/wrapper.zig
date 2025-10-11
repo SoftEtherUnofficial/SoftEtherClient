@@ -263,66 +263,10 @@ pub const Session = struct {
         try errorFromCode(result);
     }
     
-    /// Queue an outbound packet to send to server (upstream: client → server)
-    /// This is the NEW queue-based API for bidirectional forwarding
-    /// data: Raw packet bytes (e.g., IP packet from TUN device)
-    pub fn queueOutboundPacket(self: *Session, data: []const u8) !void {
-        if (data.len == 0) {
-            return error.InvalidParameter;
-        }
-        
-        const result = c.cedar_session_queue_outbound_packet(
-            self.handle,
-            data.ptr,
-            data.len,
-        );
-        try errorFromCode(result);
-    }
-    
-    /// Poll received packets from background thread (downstream: server → client)
-    /// This is the NEW queue-based API for bidirectional forwarding
-    /// Returns slice of packet data. Caller must call freePolledPackets() to free memory.
-    pub fn pollReceivedPackets(self: *Session, allocator: std.mem.Allocator, max_packets: usize) ![][]u8 {
-        var packet_buffers: [32][*c]u8 = undefined;
-        var packet_lengths: [32]usize = undefined;
-        
-        const actual_max = @min(max_packets, 32);
-        
-        const num_packets = c.cedar_session_poll_packets(
-            self.handle,
-            @ptrCast(&packet_buffers),
-            @ptrCast(&packet_lengths),
-            actual_max,
-        );
-        
-        if (num_packets == 0) {
-            return &[_][]u8{};
-        }
-        
-        // Allocate array to hold packet slices
-        var packets = try allocator.alloc([]u8, num_packets);
-        
-        for (0..num_packets) |i| {
-            // Create slice pointing to C-allocated buffer
-            // Note: Memory is managed by C side, caller must call freePolledPackets()
-            const ptr: [*]u8 = @ptrCast(packet_buffers[i]);
-            packets[i] = ptr[0..packet_lengths[i]];
-        }
-        
-        return packets;
-    }
-    
-    /// Free packets returned by pollReceivedPackets()
-    pub fn freePolledPackets(packets: [][]u8) void {
-        for (packets) |packet| {
-            c.cedar_free_packet_buffer(packet.ptr, packet.len);
-        }
-    }
-    
-    /// Stop background bidirectional forwarding thread
-    pub fn stopBackgroundThread(self: *Session) void {
-        c.cedar_session_stop_background_thread(self.handle);
-    }
+    // ============================================================================
+    // DEPRECATED: Background thread API removed
+    // Use synchronous sendData() and receiveData() instead
+    // ============================================================================
 };
 
 /// VPN Packet

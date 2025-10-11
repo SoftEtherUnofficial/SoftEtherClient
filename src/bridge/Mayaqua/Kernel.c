@@ -1086,8 +1086,8 @@ void ThreadPoolProc(THREAD *t, void *param)
 		}
 
 		// Run the thread procedure - use captured param!
-		printf("[ThreadPoolProc] Running user_proc=%p with thread=%p, user_param=%p\n", user_proc, thread, user_param);
-		fflush(stdout);
+		// printf("[ThreadPoolProc] Running user_proc=%p with thread=%p, user_param=%p\n", user_proc, thread, user_param);
+		// fflush(stdout);
 		user_proc(thread, user_param);
 
 		// Set the thread name

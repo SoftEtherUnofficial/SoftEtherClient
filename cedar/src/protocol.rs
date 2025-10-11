@@ -400,7 +400,7 @@ impl Packet {
 
         // Read each key-value pair
         for i in 0..element_count {
-            eprintln!("[PACK] === Processing element {} at cursor={} ===", i, cursor);
+            // eprintln!("[PACK] === Processing element {} at cursor={} ===", i, cursor);
             
             // Read key length (4 bytes, big-endian) - ALL elements use ReadBufInt (4 bytes)
             if data.len() < cursor + 4 {
@@ -416,7 +416,7 @@ impl Packet {
             ]) as usize;
             cursor += 4;
 
-            eprintln!("[PACK] key_len={}, cursor={}, remaining={}", key_len, cursor, data.len() - cursor);
+            // eprintln!("[PACK] key_len={}, cursor={}, remaining={}", key_len, cursor, data.len() - cursor);
 
             // Read key string
             // C behavior: ReadBufStr reads length (including null), decrements by 1, reads len-1 bytes
@@ -472,10 +472,8 @@ impl Packet {
             ]) as usize;
             cursor += 4;
             
-            eprintln!("[PACK] Element {}: key='{}' type={} value_count={} cursor={} remaining={}", 
-                     i, key, value_type, value_count, cursor, data.len() - cursor);
-            
-            // Handle arrays: Read value_count values of the same type
+            // eprintln!("[PACK] Element {}: key='{}' type={} value_count={} cursor={} remaining={}", 
+            //     i, key, value_type, value_count, cursor, data.len() - cursor);            // Handle arrays: Read value_count values of the same type
             // For value_count=1, just store a single value. For value_count>1, store as array.
             let value = if value_count == 0 {
                 // No values (shouldn't happen but handle gracefully)
@@ -499,7 +497,7 @@ impl Packet {
                     ]);
                     cursor += 4;
                     
-                    eprintln!("[PACK] Element {}: key='{}' type=Int value={}", i, key, v);
+                    // eprintln!("[PACK] Element {}: key='{}' type=Int value={}", i, key, v);
                     PacketValue::Int(v)
                 }
                 1 => {
@@ -517,7 +515,7 @@ impl Packet {
                     ]) as usize;
                     cursor += 4;
                     
-                    eprintln!("[PACK]   Data size={} bytes", data_len);
+                    // eprintln!("[PACK]   Data size={} bytes", data_len);
                     
                     if data.len() < cursor + data_len {
                         eprintln!("[PACK]   ERROR: Not enough data (need {}, have {})", data_len, data.len() - cursor);
@@ -525,7 +523,7 @@ impl Packet {
                     }
                     let d = data[cursor..cursor + data_len].to_vec();
                     cursor += data_len;
-                    eprintln!("[PACK] Element {}: key='{}' type=Data length={}", i, key, data_len);
+                    // eprintln!("[PACK] Element {}: key='{}' type=Data length={}", i, key, data_len);
                     PacketValue::Data(d)
                 }
                 2 => {
@@ -545,7 +543,7 @@ impl Packet {
                     ]) as usize;
                     cursor += 4;
                     
-                    eprintln!("[PACK]   String length={} bytes (null not in stream)", str_len);
+                    // eprintln!("[PACK]   String length={} bytes (null not in stream)", str_len);
                     
                     if data.len() < cursor + str_len {
                         eprintln!("[PACK]   ERROR: Not enough data for string (need {}, have {})", str_len, data.len() - cursor);
@@ -559,7 +557,7 @@ impl Packet {
                         })?;
                     cursor += str_len;
                     
-                    eprintln!("[PACK] Element {}: key='{}' type=String value='{}' (len={})", i, key, s, str_len);
+                    // eprintln!("[PACK] Element {}: key='{}' type=String value='{}' (len={})", i, key, s, str_len);
                     PacketValue::String(s)
                 }
                 _ => {
@@ -569,7 +567,7 @@ impl Packet {
                 }
             } else {
                 // Array case: value_count > 1
-                eprintln!("[PACK] Element {}: key='{}' is an array with {} values", i, key, value_count);
+                // eprintln!("[PACK] Element {}: key='{}' is an array with {} values", i, key, value_count);
                 
                 match value_type {
                     0 => {
@@ -588,7 +586,7 @@ impl Packet {
                             cursor += 4;
                             values.push(v);
                         }
-                        eprintln!("[PACK] Element {}: key='{}' type=IntArray values={:?}", i, key, values);
+                        // eprintln!("[PACK] Element {}: key='{}' type=IntArray values={:?}", i, key, values);
                         // Store first value only (limitation of PacketValue enum)
                         PacketValue::Int(values[0])
                     }

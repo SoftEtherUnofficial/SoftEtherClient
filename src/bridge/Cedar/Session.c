@@ -286,9 +286,9 @@ void SessionMain(SESSION *s)
 
 	static UINT64 loop_count = 0;
 	if (loop_count == 0) {
-		printf("[SessionMain] *** MAIN LOOP STARTING *** pa=%p, ServerMode=%d, ClientMode=%d\n", 
-		      pa, s->ServerMode, !s->ServerMode);
-		fflush(stdout);
+		// printf("[SessionMain] *** MAIN LOOP STARTING *** pa=%p, ServerMode=%d, ClientMode=%d\n", 
+		//       pa, s->ServerMode, !s->ServerMode);
+		// fflush(stdout);
 	}
 
 	while (true)
@@ -1466,44 +1466,44 @@ void ClientThread(THREAD *t, void *param)
 	CEDAR *cedar;
 	bool num_active_sessions_incremented = false;
 	
-	printf("[ClientThread] *** THREAD STARTED *** t=%p, param=%p\n", t, param);
-	fflush(stdout);
+	// printf("[ClientThread] *** THREAD STARTED *** t=%p, param=%p\n", t, param);
+	// fflush(stdout);
 	
 	// Validate arguments
 	if (t == NULL || param == NULL)
 	{
-		printf("[ClientThread] ERROR: NULL argument! t=%p param=%p\n", t, param);
-		fflush(stdout);
+		// printf("[ClientThread] ERROR: NULL argument! t=%p param=%p\n", t, param);
+		// fflush(stdout);
 		return;
 	}
 
 	Debug("ClientThread 0x%x Started.\n", t);
 
 	s = (SESSION *)param;
-	printf("[ClientThread] t=%p, t->ref=%p\n", t, t->ref);
-	if (t->ref) {
-		printf("[ClientThread] t->ref->c=%p\n", t->ref->c);
-	}
-	fflush(stdout);
-	printf("[ClientThread] About to AddRef(s->ref)...\n"); fflush(stdout);
+	// printf("[ClientThread] t=%p, t->ref=%p\n", t, t->ref);
+	// if (t->ref) {
+	// 	printf("[ClientThread] t->ref->c=%p\n", t->ref->c);
+	// }
+	// fflush(stdout);
+	// printf("[ClientThread] About to AddRef(s->ref)...\n"); fflush(stdout);
 	AddRef(s->ref);
-	printf("[ClientThread] Setting s->Thread...\n"); fflush(stdout);
+	// printf("[ClientThread] Setting s->Thread...\n"); fflush(stdout);
 	s->Thread = t;
-	printf("[ClientThread] About to AddRef(t->ref)...\n"); fflush(stdout);
+	// printf("[ClientThread] About to AddRef(t->ref)...\n"); fflush(stdout);
 	AddRef(t->ref);
 
-	printf("[ClientThread] Checking LinkModeClient...\n"); fflush(stdout);
+	// printf("[ClientThread] Checking LinkModeClient...\n"); fflush(stdout);
 	if (s->LinkModeClient == false)
 	{
-		printf("[ClientThread] Calling CiIncrementNumActiveSessions...\n"); fflush(stdout);
+		// printf("[ClientThread] Calling CiIncrementNumActiveSessions...\n"); fflush(stdout);
 		CiIncrementNumActiveSessions();
 		num_active_sessions_incremented = true;
 	}
 
-	printf("[ClientThread] About to call NoticeThreadInit...\n"); fflush(stdout);
+	// printf("[ClientThread] About to call NoticeThreadInit...\n"); fflush(stdout);
 	NoticeThreadInit(t);
-	printf("[ClientThread] *** NoticeThreadInit CALLED! Thread initialization complete ***\n");
-	fflush(stdout);
+	// printf("[ClientThread] *** NoticeThreadInit CALLED! Thread initialization complete ***\n");
+	// fflush(stdout);
 
 	cedar = s->Cedar;
 

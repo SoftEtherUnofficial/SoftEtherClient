@@ -15,10 +15,10 @@ pub struct TlsStream {
 impl TlsStream {
     /// Connect with TLS using native-tls (OpenSSL on macOS/Linux)
     pub fn connect(stream: TcpStream, hostname: &str) -> Result<Self> {
-        eprintln!("[TLS-CEDAR] ========================================");
-        eprintln!("[TLS-CEDAR] Creating TLS connection using native-tls (OpenSSL)");
-        eprintln!("[TLS-CEDAR] Target hostname: {}", hostname);
-        eprintln!("[TLS-CEDAR] ========================================");
+        // eprintln!("[TLS-CEDAR] ========================================");
+        // eprintln!("[TLS-CEDAR] Creating TLS connection using native-tls (OpenSSL)");
+        // eprintln!("[TLS-CEDAR] Target hostname: {}", hostname);
+        // eprintln!("[TLS-CEDAR] ========================================");
         
         // Build TLS connector with insecure cert verification for testing
         // TODO: Add proper certificate validation for production
@@ -30,22 +30,22 @@ impl TlsStream {
             .map_err(|e| Error::TlsError(format!("Failed to build TLS connector: {}", e)))?;
 
         // Perform TLS handshake
-        eprintln!("[TLS-CEDAR] Performing TLS handshake...");
+        // eprintln!("[TLS-CEDAR] Performing TLS handshake...");
         let tls_stream = connector
             .connect(hostname, stream)
             .map_err(|e| Error::TlsError(format!("TLS handshake failed: {}", e)))?;
 
-        eprintln!("[TLS-CEDAR] ✅ TLS handshake completed successfully");
-        eprintln!("[TLS-CEDAR] Using native-tls (OpenSSL backend)");
+        // eprintln!("[TLS-CEDAR] ✅ TLS handshake completed successfully");
+        // eprintln!("[TLS-CEDAR] Using native-tls (OpenSSL backend)");
         
         // Log certificate info if available
         if let Ok(Some(cert)) = tls_stream.peer_certificate() {
             if let Ok(der) = cert.to_der() {
-                eprintln!("[TLS-CEDAR] Server certificate received ({} bytes)", der.len());
+                // eprintln!("[TLS-CEDAR] Server certificate received ({} bytes)", der.len());
             }
         }
         
-        eprintln!("[TLS-CEDAR] ========================================");
+        // eprintln!("[TLS-CEDAR] ========================================");
 
         Ok(Self { inner: tls_stream })
     }

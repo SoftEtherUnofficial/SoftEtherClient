@@ -4718,54 +4718,54 @@ void CreateNodeInfo(NODE_INFO *info, CONNECTION *c)
 	IP ip;
 	bool is_vgc = false;
 	
-	printf("[CreateNodeInfo] === ENTER === info=%p, c=%p\n", info, c);
-	fflush(stdout);
+	// printf("[CreateNodeInfo] === ENTER === info=%p, c=%p\n", info, c);
+	// fflush(stdout);
 	
 	// Validate arguments
 	if (c == NULL)
 	{
-		printf("[CreateNodeInfo] ERROR: c is NULL\n");
-		fflush(stdout);
+		// printf("[CreateNodeInfo] ERROR: c is NULL\n");
+		// fflush(stdout);
 		return;
 	}
 
-	printf("[CreateNodeInfo] Getting session...\n");
-	fflush(stdout);
+	// printf("[CreateNodeInfo] Getting session...\n");
+	// fflush(stdout);
 	
 	s = c->Session;
 	
-	printf("[CreateNodeInfo] Calling GetOsInfo()...\n");
-	fflush(stdout);
+	// printf("[CreateNodeInfo] Calling GetOsInfo()...\n");
+	// fflush(stdout);
 	
 	os = GetOsInfo();
 	
-	printf("[CreateNodeInfo] GetOsInfo() returned: %p\n", os);
-	fflush(stdout);
+	// printf("[CreateNodeInfo] GetOsInfo() returned: %p\n", os);
+	// fflush(stdout);
 
-	printf("[CreateNodeInfo] Zeroing info structure...\n");
-	fflush(stdout);
+	// printf("[CreateNodeInfo] Zeroing info structure...\n");
+	// fflush(stdout);
 	
 	Zero(info, sizeof(NODE_INFO));
 	
-	printf("[CreateNodeInfo] Info structure zeroed\n");
-	fflush(stdout);
+	// printf("[CreateNodeInfo] Info structure zeroed\n");
+	// fflush(stdout);
 
-	printf("[CreateNodeInfo] Copying client product name: %s\n", c->ClientStr);
-	fflush(stdout);
+	// printf("[CreateNodeInfo] Copying client product name: %s\n", c->ClientStr);
+	// fflush(stdout);
 	
 	// Client product name
 	StrCpy(info->ClientProductName, sizeof(info->ClientProductName), c->ClientStr);
 	
-	printf("[CreateNodeInfo] Setting client version fields...\n");
-	fflush(stdout);
+	// printf("[CreateNodeInfo] Setting client version fields...\n");
+	// fflush(stdout);
 	
 	// Client version
 	info->ClientProductVer = Endian32(c->ClientVer);
 	// Client build number
 	info->ClientProductBuild = Endian32(c->ClientBuild);
 
-	printf("[CreateNodeInfo] Copying server product name: %s\n", c->ServerStr);
-	fflush(stdout);
+	// printf("[CreateNodeInfo] Copying server product name: %s\n", c->ServerStr);
+	// fflush(stdout);
 	
 	// Server product name
 	StrCpy(info->ServerProductName, sizeof(info->ServerProductName), c->ServerStr);
@@ -4774,27 +4774,27 @@ void CreateNodeInfo(NODE_INFO *info, CONNECTION *c)
 	// Server build number
 	info->ServerProductBuild = Endian32(c->ServerBuild);
 
-	printf("[CreateNodeInfo] Copying OS info...\n");
-	fflush(stdout);
+	// printf("[CreateNodeInfo] Copying OS info...\n");
+	// fflush(stdout);
 	
 	// Client OS name
 	StrCpy(info->ClientOsName, sizeof(info->ClientOsName), os->OsProductName);
 	// Client OS version
 	StrCpy(info->ClientOsVer, sizeof(info->ClientOsVer), os->OsVersion);
 	
-	printf("[CreateNodeInfo] Getting product ID...\n");
-	fflush(stdout);
+	// printf("[CreateNodeInfo] Getting product ID...\n");
+	// fflush(stdout);
 	
 	// Client OS Product ID
 	product_id = OSGetProductId();
 	
-	printf("[CreateNodeInfo] OSGetProductId returned: %p\n", product_id);
-	fflush(stdout);
+	// printf("[CreateNodeInfo] OSGetProductId returned: %p\n", product_id);
+	// fflush(stdout);
 	
 	if (product_id != NULL)
 	{
-		printf("[CreateNodeInfo] product_id is NOT NULL, copying...\n");
-		fflush(stdout);
+		// printf("[CreateNodeInfo] product_id is NOT NULL, copying...\n");
+		// fflush(stdout);
 		
 		StrCpy(info->ClientOsProductId, sizeof(info->ClientOsProductId), product_id);
 		
@@ -4803,16 +4803,16 @@ void CreateNodeInfo(NODE_INFO *info, CONNECTION *c)
 		uintptr_t ptr_val = (uintptr_t)product_id;
 		if (ptr_val > 0x200000000ULL)  // macOS heap addresses are typically > 2GB
 		{
-			printf("[CreateNodeInfo] Freeing product_id=%p (looks like heap)...\n", product_id);
-			fflush(stdout);
+			// printf("[CreateNodeInfo] Freeing product_id=%p (looks like heap)...\n", product_id);
+			// fflush(stdout);
 			Free(product_id);
-			printf("[CreateNodeInfo] Product ID freed\n");
-			fflush(stdout);
+			// printf("[CreateNodeInfo] Product ID freed\n");
+			// fflush(stdout);
 		}
 		else
 		{
-			printf("[CreateNodeInfo] Skipping Free of product_id=%p (looks like code/rodata)\n", product_id);
-			fflush(stdout);
+			// printf("[CreateNodeInfo] Skipping Free of product_id=%p (looks like code/rodata)\n", product_id);
+			// fflush(stdout);
 		}
 	}
 	else
@@ -5841,20 +5841,20 @@ REDIRECTED:
 		c->ServerVer, c->ServerStr, c->ServerBuild,
 		c->ClientVer, c->ClientStr, c->ClientBuild);
 
-	printf("[Protocol] Setting ClientStatus to CLIENT_STATUS_AUTH...\n");
-	fflush(stdout);
+	// printf("[Protocol] Setting ClientStatus to CLIENT_STATUS_AUTH...\n");
+	// fflush(stdout);
 
 	// During user authentication
 	c->Session->ClientStatus = CLIENT_STATUS_AUTH;
 
-	printf("[Protocol] About to call ClientCheckServerCert...\n");
-	fflush(stdout);
+	// printf("[Protocol] About to call ClientCheckServerCert...\n");
+	// fflush(stdout);
 
 	// Verify the server certificate by the client
 	if (ClientCheckServerCert(c, &expired) == false)
 	{
-		printf("[Protocol] ClientCheckServerCert FAILED, expired=%d\n", expired);
-		fflush(stdout);
+		// printf("[Protocol] ClientCheckServerCert FAILED, expired=%d\n", expired);
+		// fflush(stdout);
 		if (expired == false)
 		{
 			c->Err = ERR_CERT_NOT_TRUSTED;
@@ -5872,52 +5872,52 @@ REDIRECTED:
 		goto CLEANUP;
 	}
 
-	printf("[Protocol] ClientCheckServerCert PASSED\n");
-	fflush(stdout);
+	// printf("[Protocol] ClientCheckServerCert PASSED\n");
+	// fflush(stdout);
 
-	printf("[Protocol] About to call PrintStatus...\n");
-	fflush(stdout);
+	// printf("[Protocol] About to call PrintStatus...\n");
+	// fflush(stdout);
 
 	PrintStatus(sess, _UU("STATUS_6"));
 
-	printf("[Protocol] About to call ClientUploadAuth...\n");
-	fflush(stdout);
+	// printf("[Protocol] About to call ClientUploadAuth...\n");
+	// fflush(stdout);
 
 	// Send the authentication data
 	if (ClientUploadAuth(c) == false)
 	{
-		printf("[Protocol] ClientUploadAuth FAILED\n");
-		fflush(stdout);
+		// printf("[Protocol] ClientUploadAuth FAILED\n");
+		// fflush(stdout);
 		goto CLEANUP;
 	}
 
-	printf("[Protocol] ClientUploadAuth PASSED\n");
-	fflush(stdout);
+	// printf("[Protocol] ClientUploadAuth PASSED\n");
+	// fflush(stdout);
 
 	if (c->Halt)
 	{
 		// Stop
-		printf("[Protocol] Halt detected\n");
-		fflush(stdout);
+		// printf("[Protocol] Halt detected\n");
+		// fflush(stdout);
 		c->Err = ERR_USER_CANCEL;
 		goto CLEANUP;
 	}
 
-	printf("[Protocol] About to receive Welcome packet...\n");
-	fflush(stdout);
+	// printf("[Protocol] About to receive Welcome packet...\n");
+	// fflush(stdout);
 
 	// Receive a Welcome packet
 	p = HttpClientRecv(s);
 	if (p == NULL)
 	{
-		printf("[Protocol] HttpClientRecv returned NULL\n");
-		fflush(stdout);
+		// printf("[Protocol] HttpClientRecv returned NULL\n");
+		// fflush(stdout);
 		c->Err = ERR_DISCONNECTED;
 		goto CLEANUP;
 	}
 
-	printf("[Protocol] Welcome packet received\n");
-	fflush(stdout);
+	// printf("[Protocol] Welcome packet received\n");
+	// fflush(stdout);
 
 	// Error checking
 	err = GetErrorFromPack(p);
@@ -6956,52 +6956,52 @@ bool ClientUploadAuth(CONNECTION *c)
 	UCHAR unique[SHA1_SIZE];
 	RPC_WINVER v;
 	
-	printf("[ClientUploadAuth] === ENTER ===\\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] === ENTER ===\\n");
+	// fflush(stdout);
 	
 	// Validate arguments
 	if (c == NULL)
 	{
-		printf("[ClientUploadAuth] ERROR: c is NULL\\n");
-		fflush(stdout);
+		// printf("[ClientUploadAuth] ERROR: c is NULL\\n");
+		// fflush(stdout);
 		return false;
 	}
 
-	printf("[ClientUploadAuth] c=%p, c->Session=%p\\n", c, c->Session);
-	fflush(stdout);
+	// printf("[ClientUploadAuth] c=%p, c->Session=%p\\n", c, c->Session);
+	// fflush(stdout);
 
 	Zero(sign, sizeof(sign));
 
 	a = c->Session->ClientAuth;
 	o = c->Session->ClientOption;
 	
-	printf("[ClientUploadAuth] a=%p (AuthType=%u), o=%p\\n", a, a->AuthType, o);
-	fflush(stdout);
+	// printf("[ClientUploadAuth] a=%p (AuthType=%u), o=%p\\n", a, a->AuthType, o);
+	// fflush(stdout);
 
 	if (c->UseTicket == false)
 	{
-		printf("[ClientUploadAuth] Not using ticket, checking AuthType=%u\\n", a->AuthType);
-		fflush(stdout);
+		// printf("[ClientUploadAuth] Not using ticket, checking AuthType=%u\\n", a->AuthType);
+		// fflush(stdout);
 		
 		switch (a->AuthType)
 		{
 		case CLIENT_AUTHTYPE_ANONYMOUS:
-			printf("[ClientUploadAuth] Anonymous auth\\n");
-			fflush(stdout);
+			// printf("[ClientUploadAuth] Anonymous auth\\n");
+			// fflush(stdout);
 			// Anonymous authentication
 			p = PackLoginWithAnonymous(o->HubName, a->Username);
 			break;
 
 		case CLIENT_AUTHTYPE_PASSWORD:
-			printf("[ClientUploadAuth] Password auth, calling SecurePassword...\\n");
-			fflush(stdout);
+			// printf("[ClientUploadAuth] Password auth, calling SecurePassword...\\n");
+			// fflush(stdout);
 			// Password authentication
 			SecurePassword(secure_password, a->HashedPassword, c->Random);
-			printf("[ClientUploadAuth] SecurePassword done, calling PackLoginWithPassword...\\n");
-			fflush(stdout);
+			// printf("[ClientUploadAuth] SecurePassword done, calling PackLoginWithPassword...\\n");
+			// fflush(stdout);
 			p = PackLoginWithPassword(o->HubName, a->Username, secure_password);
-			printf("[ClientUploadAuth] PackLoginWithPassword done, p=%p\\n", p);
-			fflush(stdout);
+			// printf("[ClientUploadAuth] PackLoginWithPassword done, p=%p\\n", p);
+			// fflush(stdout);
 			break;
 
 		case CLIENT_AUTHTYPE_PLAIN_PASSWORD:
@@ -7051,8 +7051,8 @@ bool ClientUploadAuth(CONNECTION *c)
 
 	if (p == NULL)
 	{
-		printf("[ClientUploadAuth] ERROR: p is NULL after switch\n");
-		fflush(stdout);
+		// printf("[ClientUploadAuth] ERROR: p is NULL after switch\n");
+		// fflush(stdout);
 		// Error
 		if (c->Err != ERR_SECURE_DEVICE_OPEN_FAILED)
 		{
@@ -7061,47 +7061,47 @@ bool ClientUploadAuth(CONNECTION *c)
 		return false;
 	}
 
-	printf("[ClientUploadAuth] About to call PackAddClientVersion...\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] About to call PackAddClientVersion...\n");
+	// fflush(stdout);
 
 	PackAddClientVersion(p, c);
 	
-	printf("[ClientUploadAuth] PackAddClientVersion done\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] PackAddClientVersion done\n");
+	// fflush(stdout);
 	
 	// Validate p before continuing
 	if (p == NULL || (uintptr_t)p < 0x1000)
 	{
-		printf("[ClientUploadAuth] ERROR: p became invalid after PackAddClientVersion: %p\n", p);
-		fflush(stdout);
+		// printf("[ClientUploadAuth] ERROR: p became invalid after PackAddClientVersion: %p\n", p);
+		// fflush(stdout);
 		c->Err = ERR_PROTOCOL_ERROR;
 		return false;
 	}
 	
-	printf("[ClientUploadAuth] About to add protocol field, c->Protocol=%u...\n", c->Protocol);
-	fflush(stdout);
+	// printf("[ClientUploadAuth] About to add protocol field, c->Protocol=%u...\n", c->Protocol);
+	// fflush(stdout);
 
 	// Protocol
 	PackAddInt(p, "protocol", c->Protocol);
 	
-	printf("[ClientUploadAuth] Added protocol field\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] Added protocol field\n");
+	// fflush(stdout);
 
-	printf("[ClientUploadAuth] Adding hello field...\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] Adding hello field...\n");
+	// fflush(stdout);
 	
 	// Version, etc.
 	PackAddStr(p, "hello", c->ClientStr);
 	
-	printf("[ClientUploadAuth] Added hello, adding version...\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] Added hello, adding version...\n");
+	// fflush(stdout);
 	
 	PackAddInt(p, "version", c->ClientVer);
 	PackAddInt(p, "build", c->ClientBuild);
 	PackAddInt(p, "client_id", c->Cedar->ClientId);
 	
-	printf("[ClientUploadAuth] Added version fields\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] Added version fields\n");
+	// fflush(stdout);
 
 	// The maximum number of connections
 	PackAddInt(p, "max_connection", o->MaxConnection);
@@ -7130,31 +7130,31 @@ bool ClientUploadAuth(CONNECTION *c)
 	// UDP recovery support
 	PackAddBool(p, "support_udp_recovery", true);
 
-	printf("[ClientUploadAuth] About to call GenerateMachineUniqueHash...\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] About to call GenerateMachineUniqueHash...\n");
+	// fflush(stdout);
 
 	// Unique ID
 	GenerateMachineUniqueHash(unique);
 	
-	printf("[ClientUploadAuth] GenerateMachineUniqueHash done\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] GenerateMachineUniqueHash done\n");
+	// fflush(stdout);
 	
 	PackAddData(p, "unique_id", unique, SHA1_SIZE);
 	
-	printf("[ClientUploadAuth] Added unique_id\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] Added unique_id\n");
+	// fflush(stdout);
 
-	printf("[ClientUploadAuth] Checking UDP acceleration: NoUdpAccel=%d, UdpAccel=%p\n", 
-	       o->NoUdpAcceleration, c->Session->UdpAccel);
-	fflush(stdout);
+	// printf("[ClientUploadAuth] Checking UDP acceleration: NoUdpAccel=%d, UdpAccel=%p\n", 
+	//        o->NoUdpAcceleration, c->Session->UdpAccel);
+	// fflush(stdout);
 
 	// UDP acceleration function using flag
 	if (o->NoUdpAcceleration == false && c->Session->UdpAccel != NULL)
 	{
 		IP my_ip;
 
-		printf("[ClientUploadAuth] Adding UDP acceleration fields...\n");
-		fflush(stdout);
+		// printf("[ClientUploadAuth] Adding UDP acceleration fields...\n");
+		// fflush(stdout);
 
 		Zero(&my_ip, sizeof(my_ip));
 
@@ -7183,20 +7183,20 @@ bool ClientUploadAuth(CONNECTION *c)
 		PackAddBool(p, "support_udp_accel_fast_disconnect_detect", true);
 		PackAddInt(p, "udp_acceleration_max_version", 2);
 		
-		printf("[ClientUploadAuth] UDP acceleration fields added\n");
-		fflush(stdout);
+		// printf("[ClientUploadAuth] UDP acceleration fields added\n");
+		// fflush(stdout);
 	}
 
-	printf("[ClientUploadAuth] Adding rudp_bulk_max_version...\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] Adding rudp_bulk_max_version...\n");
+	// fflush(stdout);
 	
 	PackAddInt(p, "rudp_bulk_max_version", 2);
 	
-	printf("[ClientUploadAuth] Added rudp_bulk_max_version\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] Added rudp_bulk_max_version\n");
+	// fflush(stdout);
 
-	printf("[ClientUploadAuth] Adding brand string...\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] Adding brand string...\n");
+	// fflush(stdout);
 
 	// Brand string for the connection limit
 	{
@@ -7207,28 +7207,28 @@ bool ClientUploadAuth(CONNECTION *c)
 		}
 	}
 
-	printf("[ClientUploadAuth] Brand string added, creating node info...\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] Brand string added, creating node info...\n");
+	// fflush(stdout);
 
-	printf("[ClientUploadAuth] Brand string added, creating node info...\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] Brand string added, creating node info...\n");
+	// fflush(stdout);
 
 	// Node information
 	CreateNodeInfo(&info, c);
 	
-	printf("[ClientUploadAuth] Calling OutRpcNodeInfo...\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] Calling OutRpcNodeInfo...\n");
+	// fflush(stdout);
 	
 	OutRpcNodeInfo(p, &info);
 	
-	printf("[ClientUploadAuth] Node info added\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] Node info added\n");
+	// fflush(stdout);
 
-	printf("[ClientUploadAuth] Node info added\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] Node info added\n");
+	// fflush(stdout);
 
-	printf("[ClientUploadAuth] Getting OS version...\n");
-	fflush(stdout);
+	// printf("[ClientUploadAuth] Getting OS version...\n");
+	// fflush(stdout);
 
 	// OS information
 	GetWinVer(&v);

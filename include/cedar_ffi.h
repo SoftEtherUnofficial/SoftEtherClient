@@ -461,30 +461,6 @@ enum CedarErrorCode cedar_session_poll_keepalive(CedarSessionHandle handle, uint
  */
 enum CedarErrorCode cedar_session_authenticate(CedarSessionHandle handle, const char *username, const uint8_t *password_hash, uintptr_t hash_len);
 
-/**
- * Poll received packets from background receive thread
- * Returns number of packets retrieved (0 if none available)
- * Each packet is written to buffers[i] with length in lengths[i]
- * max_packets specifies array size
- */
-uintptr_t cedar_session_poll_packets(CedarSessionHandle handle, uint8_t **buffers, uintptr_t *lengths, uintptr_t max_packets);
-
-/**
- * Free packet buffer allocated by cedar_session_poll_packets
- */
-void cedar_free_packet_buffer(uint8_t *buffer, uintptr_t length);
-
-/**
- * Queue an outbound packet to send to server (upstream: client → server)
- * This is called by Zig when it reads a packet from TUN that needs to be sent to VPN server
- */
-enum CedarErrorCode cedar_session_queue_outbound_packet(CedarSessionHandle handle, const uint8_t *data, uintptr_t length);
-
-/**
- * Stop background receive thread (called during disconnect)
- */
-void cedar_session_stop_background_thread(CedarSessionHandle handle);
-
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

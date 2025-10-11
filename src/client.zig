@@ -340,33 +340,23 @@ pub const VpnClient = struct {
             std.debug.print("[FORWARD] ⚠️  Running without TUN device (logging only)\n", .{});
         }
 
-        // Use a simple allocator for packet polling
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const allocator = arena.allocator();
-
-        std.debug.print("[FORWARD] 📡 Background thread is handling send/receive\n\n", .{});
+        std.debug.print("[FORWARD] 📡 Synchronous event loop (non-blocking I/O)\n\n", .{});
 
         while (true) {
-            // Reset arena periodically to prevent unbounded growth
-            if (packet_count % 1000 == 0 and packet_count > 0) {
-                _ = arena.reset(.retain_capacity);
-            }
-
             // ═══════════════════════════════════════
-            // UPSTREAM: TUN → Server (queue for background thread to send)
+            // UPSTREAM: TUN → Server (synchronous send)
             // ═══════════════════════════════════════
             if (tun_adapter) |adapter| {
                 if (adapter.readIp(&tun_buffer)) |ip_packet| {
-                    // Queue packet for background thread to send
-                    session.queueOutboundPacket(ip_packet) catch |err| {
-                        std.debug.print("[FORWARD] ⚠️  Queue outbound error: {}\n", .{err});
+                    // Send packet synchronously (non-blocking)
+                    session.sendDataPacket(ip_packet) catch |err| {
+                        std.debug.print("[FORWARD] ⚠️  Send error: {}\n", .{err});
                         continue;
                     };
 
                     sent_count += 1;
                     if (sent_count % 100 == 0) {
-                        std.debug.print("[FORWARD] � Queued {} packets upstream\n", .{sent_count});
+                        std.debug.print("[FORWARD] 📤 Sent {} packets upstream\n", .{sent_count});
                     }
                 } else |err| {
                     if (err != error.WouldBlock) {
@@ -376,49 +366,47 @@ pub const VpnClient = struct {
             }
 
             // ═══════════════════════════════════════
-            // DOWNSTREAM: Server → TUN (poll from background thread)
+            // DOWNSTREAM: Server → TUN (synchronous receive)
             // ═══════════════════════════════════════
-            const packets = session.pollReceivedPackets(allocator, 32) catch |err| {
-                std.debug.print("[FORWARD] ⚠️  Poll packets error: {}\n", .{err});
-                std.Thread.sleep(10 * std.time.ns_per_ms);
-                continue;
-            };
+            var recv_buffer: [65536]u8 = undefined;
+            while (true) {
+                // Receive packet synchronously (non-blocking, returns null if none available)
+                const maybe_packet = session.tryReceiveDataPacket(&recv_buffer) catch |err| {
+                    std.debug.print("[FORWARD] ⚠️  Receive error: {}\n", .{err});
+                    break; // Break inner loop on error
+                };
 
-            if (packets.len > 0) {
-                for (packets) |ip_packet| {
-                    packet_count += 1;
+                const ip_packet = maybe_packet orelse break; // No more packets available
 
-                    if (tun_adapter) |adapter| {
-                        // Write IP packet to TUN device
-                        adapter.writeIp(ip_packet) catch |err| {
-                            std.debug.print("[FORWARD] ⚠️  TUN write error: {}\n", .{err});
-                            continue;
-                        };
+                packet_count += 1;
 
-                        if (packet_count % 100 == 0) {
-                            std.debug.print("[FORWARD] 📥 Received {} packets downstream\n", .{packet_count});
-                        }
-                    } else {
-                        // No TUN device - just log
-                        std.debug.print("[FORWARD] 📥 Received {} bytes (packet #{})\n", .{ ip_packet.len, packet_count });
+                if (tun_adapter) |adapter| {
+                    // Write IP packet to TUN device
+                    adapter.writeIp(ip_packet) catch |err| {
+                        std.debug.print("[FORWARD] ⚠️  TUN write error: {}\n", .{err});
+                        continue;
+                    };
 
-                        if (ip_packet.len >= 1) {
-                            const ip_version = (ip_packet[0] >> 4) & 0x0F;
-                            if (ip_version == 4) {
-                                std.debug.print("[FORWARD]   IPv4 packet\n", .{});
-                            } else if (ip_version == 6) {
-                                std.debug.print("[FORWARD]   IPv6 packet\n", .{});
-                            }
+                    if (packet_count % 100 == 0) {
+                        std.debug.print("[FORWARD] 📥 Received {} packets downstream\n", .{packet_count});
+                    }
+                } else {
+                    // No TUN device - just log
+                    std.debug.print("[FORWARD] 📥 Received {} bytes (packet #{})\n", .{ ip_packet.len, packet_count });
+
+                    if (ip_packet.len >= 1) {
+                        const ip_version = (ip_packet[0] >> 4) & 0x0F;
+                        if (ip_version == 4) {
+                            std.debug.print("[FORWARD]   IPv4 packet\n", .{});
+                        } else if (ip_version == 6) {
+                            std.debug.print("[FORWARD]   IPv6 packet\n", .{});
                         }
                     }
                 }
-
-                // Free packet buffers allocated by C side
-                cedar.Session.freePolledPackets(packets);
             }
 
             // ═══════════════════════════════════════
-            // Keep-alive maintenance
+            // Keep-alive maintenance  
             // ═══════════════════════════════════════
             // Send keep-alive every 5 seconds to prevent timeout
             session.pollKeepalive(5) catch |err| {
