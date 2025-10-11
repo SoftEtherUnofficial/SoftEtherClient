@@ -1,79 +1,51 @@
-//! TLS support using rustls
+//! TLS support using native-tls
 //!
-//! Provides TLS/SSL encryption for TCP connections using the rustls library.
+//! Provides TLS/SSL encryption for TCP connections using the native-tls library (OpenSSL on macOS/Linux).
 
 use crate::error::{Error, Result};
-use crate::tls_verifier::DangerAcceptAnyCertVerifier;
-use rustls::{ClientConfig, ClientConnection, RootCertStore, ServerName, StreamOwned};
+use native_tls::{TlsConnector, TlsStream as NativeTlsStream};
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::sync::Arc;
 
 /// TLS-wrapped TCP stream
 pub struct TlsStream {
-    inner: StreamOwned<ClientConnection, TcpStream>,
+    inner: NativeTlsStream<TcpStream>,
 }
 
 impl TlsStream {
-    /// Connect with TLS using system root certificates
+    /// Connect with TLS using native-tls (OpenSSL on macOS/Linux)
     pub fn connect(stream: TcpStream, hostname: &str) -> Result<Self> {
-        // Load system root certificates
-        let mut root_store = RootCertStore::empty();
+        eprintln!("[TLS-CEDAR] ========================================");
+        eprintln!("[TLS-CEDAR] Creating TLS connection using native-tls (OpenSSL)");
+        eprintln!("[TLS-CEDAR] Target hostname: {}", hostname);
+        eprintln!("[TLS-CEDAR] ========================================");
         
-        match rustls_native_certs::load_native_certs() {
-            Ok(certs) => {
-                let mut cert_count = 0;
-                for cert in certs {
-                    if root_store.add(&rustls::Certificate(cert.0)).is_ok() {
-                        cert_count += 1;
-                    }
-                }
-                if cert_count == 0 {
-                    eprintln!("Warning: No valid native certificates found, using webpki-roots");
-                    root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-                        rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
-                            ta.subject,
-                            ta.spki,
-                            ta.name_constraints,
-                        )
-                    }));
-                }
-            }
-            Err(e) => {
-                // Fallback to webpki-roots if system certs fail
-                eprintln!("Warning: Failed to load native certs: {}, using webpki-roots", e);
-                root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-                    rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
-                        ta.subject,
-                        ta.spki,
-                        ta.name_constraints,
-                    )
-                }));
-            }
-        }
-
-        // Ensure we have at least some root certificates
-        if root_store.is_empty() {
-            return Err(Error::TlsError("No root certificates available".to_string()));
-        }
-
-        // Create TLS config with safe defaults but INSECURE cert verification
+        // Build TLS connector with insecure cert verification for testing
         // TODO: Add proper certificate validation for production
         eprintln!("⚠️  Using insecure certificate verification for testing");
-        let config = ClientConfig::builder()
-            .with_safe_defaults()
-            .with_custom_certificate_verifier(Arc::new(DangerAcceptAnyCertVerifier))
-            .with_no_client_auth();
+        let connector = TlsConnector::builder()
+            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_hostnames(true)
+            .build()
+            .map_err(|e| Error::TlsError(format!("Failed to build TLS connector: {}", e)))?;
 
-        // Create server name
-        let server_name = ServerName::try_from(hostname)
-            .map_err(|e| Error::TlsError(format!("Invalid hostname '{}': {}", hostname, e)))?;
+        // Perform TLS handshake
+        eprintln!("[TLS-CEDAR] Performing TLS handshake...");
+        let tls_stream = connector
+            .connect(hostname, stream)
+            .map_err(|e| Error::TlsError(format!("TLS handshake failed: {}", e)))?;
 
-        // Create TLS connection
-        let conn = ClientConnection::new(Arc::new(config), server_name)
-            .map_err(|e| Error::TlsError(format!("Failed to create TLS connection: {}", e)))?;
-
-        let tls_stream = StreamOwned::new(conn, stream);
+        eprintln!("[TLS-CEDAR] ✅ TLS handshake completed successfully");
+        eprintln!("[TLS-CEDAR] Using native-tls (OpenSSL backend)");
+        
+        // Log certificate info if available
+        if let Ok(Some(cert)) = tls_stream.peer_certificate() {
+            if let Ok(der) = cert.to_der() {
+                eprintln!("[TLS-CEDAR] Server certificate received ({} bytes)", der.len());
+            }
+        }
+        
+        eprintln!("[TLS-CEDAR] ========================================");
 
         Ok(Self { inner: tls_stream })
     }

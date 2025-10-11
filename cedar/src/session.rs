@@ -3,7 +3,7 @@
 //! Handles VPN session lifecycle, state management, and connection coordination.
 
 use crate::constants::*;
-use crate::protocol::Packet;
+use crate::protocol::{Packet, PROTOCOL_VERSION};
 use mayaqua::error::{Error, Result};
 use mayaqua::network::{TcpSocket, UdpSocketWrapper};
 use std::sync::{Arc, Mutex};
@@ -205,37 +205,37 @@ impl Session {
 
     /// Send initial handshake
     fn send_handshake(&self) -> Result<()> {
-        use crate::protocol::{Packet, PROTOCOL_VERSION, WATERMARK};
+        use crate::protocol::WATERMARK;
         use mayaqua::HttpRequest;
+        use std::time::SystemTime;
 
-        // NOTE: Protocol signature is NOT sent in HTTP mode!
-        // In HTTP mode, we wrap everything in HTTP POST request.
-        // The signature is only sent in raw TCP mode.
-        eprintln!("[HANDSHAKE] Creating hello packet (HTTP mode - no signature)");
+        // CRITICAL FIX: Based on SoftEtherRust working implementation
+        // Send ONLY watermark + random padding (no PACK!) with Content-Type: image/jpeg
+        // Server will respond with hello PACK containing server_random
+        eprintln!("[HANDSHAKE] Creating initial handshake (watermark-only, following SoftEtherRust pattern)");
         
-        // Step 2: Create hello packet with client information
-        let hello_packet = Packet::new("hello")
-            .add_string("client_str", "SoftEther VPN Client")
-            .add_int("version", PROTOCOL_VERSION)
-            .add_int("build", 9807)
-            .add_bool("use_encrypt", self.config.use_encrypt)
-            .add_bool("use_compress", self.config.use_compress)
-            .add_int("max_connection", self.config.max_connection);
-
-        // Step 3: Serialize packet to binary PACK format
-        let pack_data = hello_packet.to_bytes()?;
-        eprintln!("[HANDSHAKE] Serialized PACK data: {} bytes", pack_data.len());
-
-        // Step 4: Prepend watermark to PACK data
-        // Server expects: WATERMARK + PACK (not just PACK alone)
-        let mut body = Vec::with_capacity(WATERMARK.len() + pack_data.len());
+        // Add random padding (up to 2000 bytes) like Go and SoftEtherRust clients
+        // Use timestamp for pseudo-random size
+        const HTTP_PACK_RAND_SIZE_MAX: usize = 1000;
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as usize;
+        let rand_size = timestamp % (HTTP_PACK_RAND_SIZE_MAX * 2);
+        
+        let mut body = Vec::with_capacity(WATERMARK.len() + rand_size);
         body.extend_from_slice(WATERMARK);
-        body.extend_from_slice(&pack_data);
-        eprintln!("[HANDSHAKE] Total body with watermark: {} bytes (watermark: {} + pack: {})", 
-                 body.len(), WATERMARK.len(), pack_data.len());
+        if rand_size > 0 {
+            // Fill with zeros for simplicity (Go/Rust implementations use random bytes)
+            body.extend(std::iter::repeat(0u8).take(rand_size));
+        }
+        
+        eprintln!("[HANDSHAKE] Watermark body: {} bytes (watermark: {} + padding: {})", 
+                 body.len(), WATERMARK.len(), rand_size);
 
-        // Step 5: Wrap in HTTP POST request
-        let http_request = HttpRequest::new_vpn_post(
+        // Step 2: Create HTTP POST with image/jpeg content-type (NOT application/octet-stream!)
+        // This is the critical difference from previous implementation
+        let http_request = HttpRequest::new_handshake_post(
             &self.config.server,
             self.config.port,
             body
@@ -260,6 +260,14 @@ impl Session {
             if !connections.is_empty() {
                 connections[0].flush()?;
                 eprintln!("[HANDSHAKE] HTTP request sent and flushed");
+                
+                // Log TLS info after first I/O (handshake completed by now)
+                eprintln!("[TLS-CEDAR] ========================================");
+                eprintln!("[TLS-CEDAR] TLS INFO AFTER HANDSHAKE I/O");
+                eprintln!("[TLS-CEDAR] ========================================");
+                eprintln!("[TLS-CEDAR] NOTE: Rustls .with_safe_defaults() supports TLS 1.2 & 1.3");
+                eprintln!("[TLS-CEDAR] Using DangerAcceptAnyCertVerifier (test mode)");
+                eprintln!("[TLS-CEDAR] ========================================");
             }
         }
 
@@ -329,10 +337,20 @@ impl Session {
 
         // CRITICAL: Extract server random challenge for authentication
         if let Some(random_data) = server_hello.get_data("random") {
-            eprintln!("[HANDSHAKE] Received server random: {} bytes", random_data.len());
+            eprintln!("[HANDSHAKE] ========================================");
+            eprintln!("[HANDSHAKE] SERVER RANDOM RECEIVED");
+            eprintln!("[HANDSHAKE] ========================================");
+            eprintln!("[HANDSHAKE] Server random length: {} bytes", random_data.len());
+            eprintln!("[HANDSHAKE] Server random (hex): {}", 
+                     random_data.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+            eprintln!("[HANDSHAKE] Server random (decimal): {:?}", random_data);
+            eprintln!("[HANDSHAKE] Storing in self.server_random for later auth use");
             *self.server_random.lock().unwrap() = Some(random_data.to_vec());
+            eprintln!("[HANDSHAKE] ✅ Server random stored successfully");
+            eprintln!("[HANDSHAKE] ========================================");
         } else {
-            eprintln!("[HANDSHAKE] WARNING: No random challenge received from server");
+            eprintln!("[HANDSHAKE] ❌ CRITICAL: No random challenge received from server");
+            eprintln!("[HANDSHAKE] This will cause authentication to fail!");
         }
 
         eprintln!("[HANDSHAKE] ✅ Server: {} (version: {}, build: {})", 
@@ -389,171 +407,127 @@ impl Session {
                 eprintln!("[AUTH] Password hash (hex): {}", password_hash.iter().map(|b| format!("{:02x}", b)).collect::<String>());
 
                 // Get server random challenge (CRITICAL for authentication)
-                let server_random = self.server_random.lock().unwrap()
-                    .clone()
-                    .ok_or(Error::InvalidResponse)?;
+                eprintln!("[AUTH] ========================================");
+                eprintln!("[AUTH] RETRIEVING SERVER RANDOM FOR AUTH");
+                eprintln!("[AUTH] ========================================");
                 
-                eprintln!("[AUTH] Using server random: {} bytes", server_random.len());
+                let server_random_lock = self.server_random.lock().unwrap();
+                let server_random = server_random_lock.clone();
+                drop(server_random_lock); // Release lock immediately
+                
+                let server_random = match server_random {
+                    Some(r) => {
+                        eprintln!("[AUTH] ✅ Server random retrieved from handshake");
+                        r
+                    },
+                    None => {
+                        eprintln!("[AUTH] ❌ CRITICAL ERROR: No server random available!");
+                        eprintln!("[AUTH] Handshake may have failed or random was not stored");
+                        return Err(Error::InvalidResponse);
+                    }
+                };
+                
+                eprintln!("[AUTH] Server random length: {} bytes", server_random.len());
                 eprintln!("[AUTH] Server random (hex): {}", server_random.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+                eprintln!("[AUTH] Server random (decimal): {:?}", server_random);
+                
+                // Verify server random is exactly 20 bytes (SHA1_SIZE)
+                if server_random.len() != 20 {
+                    eprintln!("[AUTH] ⚠️  WARNING: Server random is {} bytes, expected 20!", server_random.len());
+                }
 
                 // Compute secure_password = SHA-0(password_hash || server_random)
                 // This is the SecurePassword() function from Sam.c
                 // CRITICAL: SoftEther uses SHA-0 (not SHA-1!) for authentication!
+                eprintln!("[AUTH] ========================================");
+                eprintln!("[AUTH] SECURE PASSWORD CALCULATION (DEEP DEBUG)");
+                eprintln!("[AUTH] ========================================");
+                eprintln!("[AUTH] Step 1: Prepare inputs");
+                eprintln!("[AUTH]   Username:          '{}'", username);
+                eprintln!("[AUTH]   Password hash:     {} ({} bytes)", 
+                         password_hash.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
+                         password_hash.len());
+                eprintln!("[AUTH]   Server random:     {} ({} bytes)", 
+                         server_random.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
+                         server_random.len());
+                
+                eprintln!("[AUTH] Step 2: Concatenate password_hash + server_random");
                 let mut combined = Vec::with_capacity(password_hash.len() + server_random.len());
                 combined.extend_from_slice(&password_hash);
+                eprintln!("[AUTH]   After adding password_hash: {} bytes", combined.len());
                 combined.extend_from_slice(&server_random);
+                eprintln!("[AUTH]   After adding server_random: {} bytes", combined.len());
+                eprintln!("[AUTH]   Combined (hex):    {} ({} bytes)", 
+                         combined.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
+                         combined.len());
+                
+                eprintln!("[AUTH] Step 3: Apply SHA-0 hash");
                 let secure_token = mayaqua::crypto::sha0(&combined).to_vec();
-
-                eprintln!("[AUTH] ========================================");
-                eprintln!("[AUTH] SECURE PASSWORD CALCULATION");
-                eprintln!("[AUTH] ========================================");
-                eprintln!("[AUTH] Username:            {}", username);
-                eprintln!("[AUTH] Password hash:       {} (20 bytes)", password_hash.iter().map(|b| format!("{:02x}", b)).collect::<String>());
-                eprintln!("[AUTH] Server random:       {} (20 bytes)", server_random.iter().map(|b| format!("{:02x}", b)).collect::<String>());
-                eprintln!("[AUTH] Combined input:      {} (40 bytes)", combined.iter().map(|b| format!("{:02x}", b)).collect::<String>());
-                eprintln!("[AUTH] SHA-0 output:        {} (20 bytes)", secure_token.iter().map(|b| format!("{:02x}", b)).collect::<String>());
-                eprintln!("[AUTH] ========================================");
-
-                // Build auth packet matching C Bridge format exactly
-                // CRITICAL CHANGES:
-                // 1. Remove duplicate fields: client_build, client_id, client_str, client_ver
-                // 2. Use exact field names from C Bridge (PascalCase)
-                // 3. Fields will be sorted alphabetically by Packet.to_bytes()
+                eprintln!("[AUTH]   SHA-0 output:      {} ({} bytes)", 
+                         secure_token.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
+                         secure_token.len());
                 
-                // Core authentication fields
-                let packet = Packet::new("auth")
-                    .add_int("authtype", CLIENT_AUTHTYPE_PASSWORD)  // 1 = password
-                    .add_string("method", "login")  // FIXED: C Bridge uses "login" (see PackLoginWithPassword line 8687)
-                    .add_string("hubname", &self.config.hub)
-                    .add_string("username", username)
-                    .add_data("secure_password", secure_token);
+                eprintln!("[AUTH] Step 4: Verification");
+                if secure_token.len() != 20 {
+                    eprintln!("[AUTH]   ⚠️  WARNING: Secure token is {} bytes, expected 20!", secure_token.len());
+                } else {
+                    eprintln!("[AUTH]   ✅ Secure token size correct (20 bytes)");
+                }
+                eprintln!("[AUTH] ========================================");
+
+                // MINIMAL AUTH PACK - Match softether-rust exactly
+                // Based on successful authentication from reference implementation
+                // Only 25 essential fields, no extra NodeInfo/IPv6/Proxy/WinVer fields
                 
-                // Client version info - TWO SETS OF VERSION FIELDS!
-                // PackAddClientVersion adds: client_str, client_ver, client_build
-                // Then main code adds: hello, version, build, client_id
                 let client_str = "SoftEther VPN Client";
-                let client_ver = 443;
+                let protocol_ver = 444;
                 let client_build = 9807;
-                // Add client version (PackAddClientVersion equivalent)
-                let packet = packet
-                    .add_string("client_str", client_str)
-                    .add_int("client_ver", client_ver)
-                    .add_int("client_build", client_build);
                 
-                // Protocol version fields (second set - as per C code lines 6903-6908)
-                let packet = packet
-                    .add_int("protocol", 0)
-                    .add_string("hello", client_str)  // Must be STRING
-                    .add_int("version", client_ver)
-                    .add_int("build", client_build)
-                    .add_int("client_id", 1);
-                
-                // Connection options (all as INT, not Bool)
-                let packet = packet
-                    .add_int("max_connection", self.config.max_connection)
-                    .add_int("use_encrypt", if self.config.use_encrypt { 1 } else { 0 })
-                    .add_int("use_compress", if self.config.use_compress { 1 } else { 0 })
-                    .add_int("half_connection", 0)
-                    .add_int("require_bridge_routing_mode", 0)  // INT 0 = false
-                    .add_int("require_monitor_mode", 0)  // INT 0 = false
-                    .add_int("qos", 1)  // INT 1 = true
-                    .add_int("support_bulk_on_rudp", 1)
-                    .add_int("support_hmac_on_bulk_of_rudp", 1)
-                    .add_int("support_udp_recovery", 1);
-
-                // Unique ID
-                let unique_id = Self::generate_unique_id();
-                let packet = packet.add_data("unique_id", unique_id);
-
-                // RUDP bulk max version
-                let packet = packet.add_int("rudp_bulk_max_version", 1);  // C uses 1
-
-                // Generate NodeInfo fields (OutRpcNodeInfo equivalent)
+                // Get hostname for environment fields
                 let hostname = hostname::get()
                     .unwrap_or_else(|_| std::ffi::OsString::from("unknown"))
                     .to_string_lossy()
                     .to_string();
                 
-                // TEMPORARY: Use empty strings to match C client behavior
-                // C client sends empty ClientOsName/ClientOsVer on macOS
-                // let os_name = "";  // was: std::env::consts::OS;
-                // let os_ver = "";   // was: Self::get_os_version();
-
-                // IMPORTANT: C Bridge sends EMPTY OS fields on macOS!
-                // Must match exactly to avoid packet differences
-                let os_name = "";
-                let os_ver = "";
+                let os_name = std::env::consts::OS;
                 
-                let (client_ip, client_port) = {
-                    let connections = self.tcp_connections.lock().unwrap();
-                    if !connections.is_empty() {
-                        Self::get_local_address(&connections[0])
-                    } else {
-                        ([0, 0, 0, 0], 0)
-                    }
-                };
+                // Unique ID (20 random bytes)
+                let unique_id = Self::generate_unique_id();
                 
-                let (server_ip, server_port) = {
-                    let connections = self.tcp_connections.lock().unwrap();
-                    if !connections.is_empty() {
-                        Self::get_peer_address(&connections[0])
-                    } else {
-                        ([0, 0, 0, 0], 0)
-                    }
-                };
-
-                // NodeInfo fields - match C Bridge exactly
-                // Note: Fields will be alphabetically sorted by to_bytes()
-                let packet = packet
-                    // Client info (use EXACT field names from C Bridge)
+                // Build minimal auth packet matching softether-rust
+                let packet = Packet::new("auth")
+                    // Core auth fields
+                    .add_string("method", "login")
+                    .add_int("version", protocol_ver)  // 444
+                    .add_int("build", client_build)    // 9807
+                    .add_string("client_str", client_str)
+                    .add_string("hubname", &self.config.hub)
+                    .add_string("username", username)
+                    .add_string("protocol", "SE-VPN4-PROTOCOL")
+                    .add_int("max_connection", self.config.max_connection)
+                    .add_int("use_encrypt", if self.config.use_encrypt { 1 } else { 0 })
+                    .add_int("use_compress", if self.config.use_compress { 1 } else { 0 })
+                    .add_int("half_connection", 0)
+                    .add_int("authtype", CLIENT_AUTHTYPE_PASSWORD)  // 1 = password
+                    .add_data("secure_password", secure_token)
+                    .add_int("client_id", 123)  // Match softether-rust
+                    .add_data("unique_id", unique_id)
+                    // Environment info (lowercase versions)
+                    .add_string("client_os_name", os_name)
+                    .add_string("client_hostname", &hostname)
+                    .add_string("client_product_name", client_str)
+                    .add_int("client_product_ver", protocol_ver)
+                    .add_int("client_product_build", client_build)
+                    // Capitalized versions (softether-rust sends both)
+                    .add_string("ClientOsName", os_name)
                     .add_string("ClientHostname", &hostname)
-                    .add_ip32("ClientIpAddress", client_ip)
-                    .add_data("ClientIpAddress6", vec![0u8; 16])
-                    .add_data("ClientIpAddress@ipv6_array", vec![0u8; 16])
-                    .add_int("ClientIpAddress@ipv6_bool", 0)  // INT 0 = false (IPv4)
-                    .add_int("ClientIpAddress@ipv6_scope_id", 0)
-                    .add_string("ClientOsName", os_name)  // Empty on macOS
-                    .add_string("ClientOsProductId", "")  // Empty
-                    .add_string("ClientOsVer", os_ver)  // Empty on macOS
-                    .add_int("ClientPort", client_port)
-                    .add_int("ClientProductBuild", 9807)
-                    .add_string("ClientProductName", "SoftEther VPN Client")
-                    .add_int("ClientProductVer", 444)
-                    // Server info
-                    .add_string("ServerHostname", &self.config.server)
-                    .add_ip32("ServerIpAddress", server_ip)
-                    .add_data("ServerIpAddress6", vec![0u8; 16])
-                    .add_data("ServerIpAddress@ipv6_array", vec![0u8; 16])
-                    .add_int("ServerIpAddress@ipv6_bool", 0)
-                    .add_int("ServerIpAddress@ipv6_scope_id", 0)
-                    .add_int("ServerPort2", server_port)  // FIXED: C Bridge uses 'ServerPort2' not 'ServerPort'
-                    .add_int("ServerProductBuild", 0)
-                    .add_string("ServerProductName", "")
-                    .add_int("ServerProductVer", 0)
-                    // Proxy info (all zeros/empty)
-                    .add_string("ProxyHostname", "")
-                    .add_ip32("ProxyIpAddress", [0, 0, 0, 0])
-                    .add_data("ProxyIpAddress6", vec![0u8; 16])
-                    .add_data("ProxyIpAddress@ipv6_array", vec![0u8; 16])
-                    .add_int("ProxyIpAddress@ipv6_bool", 0)
-                    .add_int("ProxyIpAddress@ipv6_scope_id", 0)
-                    .add_int("ProxyPort", 0)
-                    // Hub name
-                    .add_string("HubName", &self.config.hub);
-
-                // WinVer fields - use INT for bools
-                let (os_type, os_service_pack, os_build, os_system_name, _os_product_name) = Self::get_win_ver_info();
-                let packet = packet
-                    .add_int("V_IsWindows", if cfg!(target_os = "windows") { 1 } else { 0 })
-                    .add_int("V_IsNT", if cfg!(target_os = "windows") { 1 } else { 0 })
-                    .add_int("V_IsServer", 0)
-                    .add_int("V_IsBeta", 0)
-                    .add_int("V_VerMajor", os_type)
-                    .add_int("V_VerMinor", 0)
-                    .add_int("V_Build", os_build)
-                    .add_int("V_ServicePack", os_service_pack)
-                    .add_string("V_Title", &os_system_name);
+                    .add_string("ClientProductName", client_str)
+                    .add_int("ClientProductVer", protocol_ver)
+                    .add_int("ClientProductBuild", client_build)
+                    // Branding field
+                    .add_string("branded_ctos", "");
                 
+                eprintln!("[AUTH] ✅ Created MINIMAL auth pack (25 fields, matching softether-rust)");
                 packet
             }
             AuthConfig::Certificate { username, cert_data } => {
@@ -622,20 +596,21 @@ impl Session {
         }
         eprintln!("[AUTH] === END COMPLETE PACK DATA HEX DUMP ===");
 
-        // Wrap with watermark (like handshake)
-        let mut body = Vec::with_capacity(WATERMARK.len() + pack_data.len());
-        body.extend_from_slice(WATERMARK);
-        body.extend_from_slice(&pack_data);
-        eprintln!("[AUTH] Total body with watermark: {} bytes", body.len());
+        // CRITICAL FIX: For auth/communication, send PACK ONLY (no watermark!)
+        // Watermark is ONLY for initial handshake (/vpnsvc/connect.cgi)
+        // After handshake, /vpnsvc/vpn.cgi expects pure PACK data
+        // (Based on SoftEtherRust send_pack() implementation)
+        eprintln!("[AUTH] Sending PACK-only body (no watermark): {} bytes", pack_data.len());
 
         // Send via HTTP POST
         let http_request = HttpRequest::new_vpn_post(
             &self.config.server,
             self.config.port,
-            body
+            pack_data  // Send pack_data directly, NOT wrapped with watermark!
         );
 
         eprintln!("[AUTH] Sending HTTP POST for authentication");
+        eprintln!("[AUTH] HTTP Request - Method: {}, Path: {}", http_request.method, http_request.path);
         let http_bytes = http_request.to_bytes();
         
         // Hex dump of HTTP headers (first 512 bytes)

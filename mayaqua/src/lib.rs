@@ -30,8 +30,7 @@ pub mod tables;  // Data structures (LIST, QUEUE, TABLE from SoftEther C)
 pub mod network; // Network I/O (blocking TCP/UDP sockets, DNS resolution)
 
 // Phase 4: Crypto and TLS
-pub mod tls;
-pub mod tls_verifier; // TLS support using rustls
+pub mod tls; // TLS support using native-tls (OpenSSL)
 
 // FFI exports for C compatibility
 pub mod ffi;

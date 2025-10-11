@@ -14,9 +14,7 @@ flate2 = { version = "1.0", optional = true }
 dirs = "5.0"  # Platform-specific directory paths
 serde = { version = "1.0", features = ["derive"] }  # Serialization framework
 serde_json = "1.0"  # JSON serialization/deserialization
-rustls = { version = "0.21", features = ["dangerous_configuration"] }  # TLS implementation with insecure mode for testing
-rustls-native-certs = "0.6"  # System certificate loading
-webpki-roots = "0.25"  # Root certificates
+native-tls = "0.2"  # TLS implementation using platform's native SSL/TLS (OpenSSL on macOS/Linux)
 
 [features]
 default = []

@@ -36,11 +36,32 @@ impl HttpRequest {
     /// Wraps binary PACK data in proper HTTP headers
     /// 
     /// Header order matches OpenSSL's HttpClientSend() exactly:
+    /// Create HTTP POST for initial handshake with watermark (image/jpeg)
+    /// This is sent BEFORE authentication and gets server hello in response
+    pub fn new_handshake_post(hostname: &str, port: u16, watermark_data: Vec<u8>) -> Self {
+        let mut request = Self::new(
+            "POST".to_string(),
+            "/vpnsvc/connect.cgi".to_string()
+        );
+        
+        // Critical: Use image/jpeg for watermark upload (not octet-stream!)
+        request.add_header("Content-Type".to_string(), "image/jpeg".to_string());
+        request.add_header("Content-Length".to_string(), watermark_data.len().to_string());
+        request.add_header("Host".to_string(), format!("{}:{}", hostname, port));
+        request.add_header("Connection".to_string(), "keep-alive".to_string());
+        
+        request.body = watermark_data;
+        request
+    }
+
+    /// Create HTTP POST for VPN authentication/communication (application/octet-stream)
+    /// Used for auth and subsequent PACK communication
+    /// CRITICAL: Uses /vpnsvc/vpn.cgi (NOT /vpnsvc/connect.cgi which is handshake-only!)
     /// 1. Date, 2. Host, 3. Keep-Alive, 4. Connection, 5. Content-Type, 6. Content-Length
     pub fn new_vpn_post(hostname: &str, port: u16, pack_data: Vec<u8>) -> Self {
-        // Use correct SoftEther endpoint: /vpnsvc/connect.cgi (HTTP_VPN_TARGET2)
-        // NOT /vpnsvc/vpn.cgi (HTTP_VPN_TARGET) - that's for a different protocol mode
-        let mut request = Self::new("POST".to_string(), "/vpnsvc/connect.cgi".to_string());
+        // CRITICAL FIX: Use /vpnsvc/vpn.cgi for auth/data (SoftEtherRust pattern)
+        // /vpnsvc/connect.cgi is ONLY for initial watermark handshake!
+        let mut request = Self::new("POST".to_string(), "/vpnsvc/vpn.cgi".to_string());
         
         // Add headers in exact order as OpenSSL HttpClientSend()
         // See: SoftEtherVPN_Stable/src/Mayaqua/Network.c:22897
