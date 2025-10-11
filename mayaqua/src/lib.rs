@@ -54,7 +54,7 @@ pub use http::{HttpRequest, HttpResponse};
 
 // Re-export Phase 3.1 (Crypto)
 // Re-export commonly used crypto functions
-pub use crypto::{rc4_apply, rc4_apply_inplace, sha1, softether_password_hash};
+pub use crypto::{rc4_apply, rc4_apply_inplace, sha1, softether_password_hash, Rc4};
 // Note: SHA1_SIZE and Sha1Sum already re-exported from sha0 module
 
 // Re-export Phase 3.1 (Filesystem)

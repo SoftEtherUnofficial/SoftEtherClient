@@ -123,7 +123,7 @@ pub extern "C" fn cedar_session_new(
     cedar_session_new_with_auth(server, port, hub, ptr::null(), ptr::null())
 }
 
-/// Create new session with authentication
+/// Create new session with authentication (wrapper for backward compatibility)
 #[no_mangle]
 pub extern "C" fn cedar_session_new_with_auth(
     server: *const c_char,
@@ -131,6 +131,20 @@ pub extern "C" fn cedar_session_new_with_auth(
     hub: *const c_char,
     username: *const c_char,
     password: *const c_char,
+) -> CedarSessionHandle {
+    cedar_session_new_with_auth_ex(server, port, hub, username, password, 1)
+}
+
+/// Create new session with authentication and encryption control
+/// use_encrypt: 0 = no encryption, 1 = use RC4 encryption (default)
+#[no_mangle]
+pub extern "C" fn cedar_session_new_with_auth_ex(
+    server: *const c_char,
+    port: u16,
+    hub: *const c_char,
+    username: *const c_char,
+    password: *const c_char,
+    use_encrypt: u8,
 ) -> CedarSessionHandle {
     if server.is_null() || hub.is_null() {
         return ptr::null_mut();
@@ -183,7 +197,7 @@ pub extern "C" fn cedar_session_new_with_auth(
         port,
         hub: hub_str.to_string(),
         auth,
-        use_encrypt: true,  // FIXED: Default to true (secure by default)
+        use_encrypt: use_encrypt != 0,  // 0 = disabled, non-zero = enabled
         use_compress: false, // CRITICAL: Must match C Bridge (sends 0, not 1)
         max_connection: 1,
         keep_alive_interval: Duration::from_secs(30),
@@ -984,6 +998,96 @@ pub extern "C" fn cedar_session_authenticate(
         Ok(_) => CedarErrorCode::Success,
         Err(e) => CedarErrorCode::from(e),
     }
+}
+
+/// Poll received packets from background receive thread
+/// Returns number of packets retrieved (0 if none available)
+/// Each packet is written to buffers[i] with length in lengths[i]
+/// max_packets specifies array size
+#[no_mangle]
+pub extern "C" fn cedar_session_poll_packets(
+    handle: CedarSessionHandle,
+    buffers: *mut *mut u8,      // Array of buffer pointers (caller allocates)
+    lengths: *mut usize,         // Array to store packet lengths
+    max_packets: usize,
+) -> usize {
+    if handle.is_null() || buffers.is_null() || lengths.is_null() || max_packets == 0 {
+        return 0;
+    }
+
+    let session = unsafe { &*(handle as *const Session) };
+    let packets = session.poll_received_packets();
+    
+    let buffers_slice = unsafe { std::slice::from_raw_parts_mut(buffers, max_packets) };
+    let lengths_slice = unsafe { std::slice::from_raw_parts_mut(lengths, max_packets) };
+    
+    let num_packets = packets.len().min(max_packets);
+    
+    for (i, packet_data) in packets.iter().take(num_packets).enumerate() {
+        // Allocate buffer for packet (caller must free with cedar_free_packet_buffer)
+        let packet_len = packet_data.len();
+        let packet_buf = unsafe {
+            let layout = std::alloc::Layout::from_size_align_unchecked(packet_len, 1);
+            std::alloc::alloc(layout)
+        };
+        
+        if packet_buf.is_null() {
+            // Allocation failed, return packets retrieved so far
+            return i;
+        }
+        
+        // Copy packet data to allocated buffer
+        unsafe {
+            std::ptr::copy_nonoverlapping(packet_data.as_ptr(), packet_buf, packet_len);
+        }
+        
+        buffers_slice[i] = packet_buf;
+        lengths_slice[i] = packet_len;
+    }
+    
+    num_packets
+}
+
+/// Free packet buffer allocated by cedar_session_poll_packets
+#[no_mangle]
+pub extern "C" fn cedar_free_packet_buffer(buffer: *mut u8, length: usize) {
+    if !buffer.is_null() && length > 0 {
+        unsafe {
+            let layout = std::alloc::Layout::from_size_align_unchecked(length, 1);
+            std::alloc::dealloc(buffer, layout);
+        }
+    }
+}
+
+/// Queue an outbound packet to send to server (upstream: client → server)
+/// This is called by Zig when it reads a packet from TUN that needs to be sent to VPN server
+#[no_mangle]
+pub extern "C" fn cedar_session_queue_outbound_packet(
+    handle: CedarSessionHandle,
+    data: *const u8,
+    length: usize,
+) -> CedarErrorCode {
+    if handle.is_null() || data.is_null() || length == 0 {
+        return CedarErrorCode::InvalidParameter;
+    }
+    
+    let session = unsafe { &*(handle as *const Session) };
+    let packet_data = unsafe { std::slice::from_raw_parts(data, length) }.to_vec();
+    
+    session.queue_outbound_packet(packet_data);
+    
+    CedarErrorCode::Success
+}
+
+/// Stop background receive thread (called during disconnect)
+#[no_mangle]
+pub extern "C" fn cedar_session_stop_background_thread(handle: CedarSessionHandle) {
+    if handle.is_null() {
+        return;
+    }
+
+    let session = unsafe { &*(handle as *const Session) };
+    session.stop_background_thread();
 }
 
 #[cfg(test)]

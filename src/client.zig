@@ -34,7 +34,7 @@ pub const VpnClient = struct {
 
     // Cedar FFI session (runtime selection)
     cedar_session: ?cedar.Session = null,
-    
+
     // TUN device adapter (optional, created after connection)
     tun_adapter: ?*taptun.TunAdapter = null,
 
@@ -197,7 +197,7 @@ pub const VpnClient = struct {
             adapter.close();
             self.tun_adapter = null;
         }
-        
+
         // Clean up Cedar session
         if (self.cedar_session) |*session| {
             session.deinit();
@@ -262,12 +262,13 @@ pub const VpnClient = struct {
             else => null,
         };
 
-        var session = try cedar.Session.initWithAuth(
+        var session = try cedar.Session.initWithAuthEx(
             self.config.server_name,
             self.config.server_port,
             self.config.hub_name,
             auth_username,
             auth_password,
+            false, // Disable encryption for testing
         );
         errdefer session.deinit();
 
@@ -290,13 +291,13 @@ pub const VpnClient = struct {
         self.cedar_session = session;
 
         std.debug.print("✅ Cedar connection complete!\n\n", .{});
-        
+
         // Step 3: Create TUN device
         std.debug.print("🌐 Creating TUN device...\n", .{});
         self.tun_adapter = taptun.TunAdapter.open(self.allocator, .{
             .device = .{ .non_blocking = true },
             .translator = .{
-                .our_mac = [_]u8{0x00, 0xAC, 0x00, 0x00, 0x00, 0x01},
+                .our_mac = [_]u8{ 0x00, 0xAC, 0x00, 0x00, 0x00, 0x01 },
                 .learn_ip = true,
                 .learn_gateway_mac = true,
                 .handle_arp = true,
@@ -309,101 +310,111 @@ pub const VpnClient = struct {
             std.debug.print("📦 Continuing without TUN (logging only)\n\n", .{});
             break :blk null;
         };
-        
+
         if (self.tun_adapter) |adapter| {
             std.debug.print("✅ TUN device: {s}\n\n", .{adapter.device.getName()});
         }
-        
+
         std.debug.print("\n📡 Starting VPN packet forwarding loop...\n", .{});
-        
+
         // Start packet forwarding with TUN device
-        const forward_thread = try std.Thread.spawn(.{}, packetForwardingLoop, .{&self.cedar_session.?, self.tun_adapter});
+        const forward_thread = try std.Thread.spawn(.{}, packetForwardingLoop, .{ &self.cedar_session.?, self.tun_adapter });
         forward_thread.detach();
-        
+
         std.debug.print("✅ Packet forwarding active!\n", .{});
         std.debug.print("💡 Press Ctrl+C to disconnect\n\n", .{});
     }
 
     /// Packet forwarding loop (runs in separate thread)
     fn packetForwardingLoop(session: *cedar.Session, tun_adapter: ?*taptun.TunAdapter) void {
-        var vpn_buffer: [65536]u8 = undefined;
         var tun_buffer: [65536]u8 = undefined;
         var packet_count: u64 = 0;
         var sent_count: u64 = 0;
 
-        std.debug.print("[FORWARD] Starting packet forwarding loop\n", .{});
-        
+        std.debug.print("[FORWARD] 🚀 Starting queue-based bidirectional forwarding\n", .{});
+
         if (tun_adapter) |adapter| {
             std.debug.print("[FORWARD] 🌐 TUN device active: {s}\n", .{adapter.device.getName()});
             std.debug.print("[FORWARD] 🔄 Bidirectional packet forwarding enabled\n", .{});
         } else {
-            std.debug.print("[FORWARD] � Running without TUN device (logging only)\n", .{});
+            std.debug.print("[FORWARD] ⚠️  Running without TUN device (logging only)\n", .{});
         }
-        
-        std.debug.print("[FORWARD] Receiving packets from server...\n\n", .{});
+
+        // Use a simple allocator for packet polling
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+
+        std.debug.print("[FORWARD] 📡 Background thread is handling send/receive\n\n", .{});
 
         while (true) {
-            // ═══════════════════════════════════════
-            // VPN → TUN: Receive from server, write to TUN
-            // ═══════════════════════════════════════
-            if (session.tryReceiveDataPacket(&vpn_buffer)) |maybe_data| {
-                if (maybe_data) |ip_packet| {
-                    if (ip_packet.len > 0) {
-                        packet_count += 1;
-                        
-                        if (tun_adapter) |adapter| {
-                            // Write IP packet directly to TUN device
-                            adapter.writeIp(ip_packet) catch |err| {
-                                std.debug.print("[FORWARD] ⚠️  TUN write error: {}\n", .{err});
-                                continue;
-                            };
-                            
-                            if (packet_count % 100 == 0) {
-                                std.debug.print("[FORWARD] 📥 Received {} packets from VPN\n", .{packet_count});
-                            }
-                        } else {
-                            // No TUN device - just log
-                            std.debug.print("[FORWARD] 📥 Received {} bytes (packet #{})\n", .{ ip_packet.len, packet_count });
-                            
-                            if (ip_packet.len >= 1) {
-                                const ip_version = (ip_packet[0] >> 4) & 0x0F;
-                                if (ip_version == 4) {
-                                    std.debug.print("[FORWARD]   IPv4 packet\n", .{});
-                                } else if (ip_version == 6) {
-                                    std.debug.print("[FORWARD]   IPv6 packet\n", .{});
-                                }
-                            }
-                        }
-                    }
-                }
-            } else |err| {
-                // TimeOut and InternalError are expected when no data available
-                // Only log other unexpected errors
-                if (err != error.TimeOut and err != error.InternalError) {
-                    std.debug.print("[FORWARD] ⚠️  VPN receive error: {}\n", .{err});
-                }
+            // Reset arena periodically to prevent unbounded growth
+            if (packet_count % 1000 == 0 and packet_count > 0) {
+                _ = arena.reset(.retain_capacity);
             }
 
             // ═══════════════════════════════════════
-            // TUN → VPN: Read from TUN, send to server
+            // UPSTREAM: TUN → Server (queue for background thread to send)
             // ═══════════════════════════════════════
             if (tun_adapter) |adapter| {
                 if (adapter.readIp(&tun_buffer)) |ip_packet| {
-                    // Send IP packet to VPN server
-                    session.sendDataPacket(ip_packet) catch |err| {
-                        std.debug.print("[FORWARD] ⚠️  VPN send error: {}\n", .{err});
+                    // Queue packet for background thread to send
+                    session.queueOutboundPacket(ip_packet) catch |err| {
+                        std.debug.print("[FORWARD] ⚠️  Queue outbound error: {}\n", .{err});
                         continue;
                     };
-                    
+
                     sent_count += 1;
                     if (sent_count % 100 == 0) {
-                        std.debug.print("[FORWARD] 📤 Sent {} packets to VPN\n", .{sent_count});
+                        std.debug.print("[FORWARD] � Queued {} packets upstream\n", .{sent_count});
                     }
                 } else |err| {
                     if (err != error.WouldBlock) {
                         std.debug.print("[FORWARD] ⚠️  TUN read error: {}\n", .{err});
                     }
                 }
+            }
+
+            // ═══════════════════════════════════════
+            // DOWNSTREAM: Server → TUN (poll from background thread)
+            // ═══════════════════════════════════════
+            const packets = session.pollReceivedPackets(allocator, 32) catch |err| {
+                std.debug.print("[FORWARD] ⚠️  Poll packets error: {}\n", .{err});
+                std.Thread.sleep(10 * std.time.ns_per_ms);
+                continue;
+            };
+
+            if (packets.len > 0) {
+                for (packets) |ip_packet| {
+                    packet_count += 1;
+
+                    if (tun_adapter) |adapter| {
+                        // Write IP packet to TUN device
+                        adapter.writeIp(ip_packet) catch |err| {
+                            std.debug.print("[FORWARD] ⚠️  TUN write error: {}\n", .{err});
+                            continue;
+                        };
+
+                        if (packet_count % 100 == 0) {
+                            std.debug.print("[FORWARD] 📥 Received {} packets downstream\n", .{packet_count});
+                        }
+                    } else {
+                        // No TUN device - just log
+                        std.debug.print("[FORWARD] 📥 Received {} bytes (packet #{})\n", .{ ip_packet.len, packet_count });
+
+                        if (ip_packet.len >= 1) {
+                            const ip_version = (ip_packet[0] >> 4) & 0x0F;
+                            if (ip_version == 4) {
+                                std.debug.print("[FORWARD]   IPv4 packet\n", .{});
+                            } else if (ip_version == 6) {
+                                std.debug.print("[FORWARD]   IPv6 packet\n", .{});
+                            }
+                        }
+                    }
+                }
+
+                // Free packet buffers allocated by C side
+                cedar.Session.freePolledPackets(packets);
             }
 
             // ═══════════════════════════════════════

@@ -55,7 +55,54 @@ pub fn rc4_apply(key: &[u8], data: &[u8]) -> Vec<u8> {
     out
 }
 
-/// RC4 in-place on mutable buffer
+/// Stateful RC4 cipher for stream encryption/decryption
+/// Maintains internal state across multiple encrypt/decrypt operations
+pub struct Rc4 {
+    s: [u8; 256],
+    i: u8,
+    j: u8,
+}
+
+impl Rc4 {
+    /// Create a new RC4 cipher with the given key
+    pub fn new(key: &[u8]) -> Self {
+        let mut s = [0u8; 256];
+        for (i, v) in s.iter_mut().enumerate() {
+            *v = i as u8;
+        }
+        
+        // KSA (Key Scheduling Algorithm)
+        let mut j: u8 = 0;
+        for i in 0..256 {
+            let ki = key[i % key.len()];
+            j = j.wrapping_add(s[i]).wrapping_add(ki);
+            s.swap(i, j as usize);
+        }
+        
+        Self { s, i: 0, j: 0 }
+    }
+    
+    /// Encrypt/decrypt data in-place (RC4 is symmetric)
+    pub fn process_inplace(&mut self, buf: &mut [u8]) {
+        for b in buf.iter_mut() {
+            self.i = self.i.wrapping_add(1);
+            self.j = self.j.wrapping_add(self.s[self.i as usize]);
+            self.s.swap(self.i as usize, self.j as usize);
+            let t = self.s[self.i as usize].wrapping_add(self.s[self.j as usize]);
+            let k = self.s[t as usize];
+            *b ^= k;
+        }
+    }
+    
+    /// Encrypt/decrypt data, returning a new Vec (RC4 is symmetric)
+    pub fn process(&mut self, data: &[u8]) -> Vec<u8> {
+        let mut out = data.to_vec();
+        self.process_inplace(&mut out);
+        out
+    }
+}
+
+/// RC4 in-place on mutable buffer (stateless - reinitializes for each call)
 pub fn rc4_apply_inplace(key: &[u8], buf: &mut [u8]) {
     let keystream = rc4_keystream(key, buf.len());
     for (b, k) in buf.iter_mut().zip(keystream) {

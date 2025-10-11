@@ -66,6 +66,74 @@
  */
 #define MAX_PACKET_SIZE ((16 * 1024) * 1024)
 
+#define DHCP_DISCOVER 1
+
+#define DHCP_OFFER 2
+
+#define DHCP_REQUEST 3
+
+#define DHCP_DECLINE 4
+
+#define DHCP_ACK 5
+
+#define DHCP_NAK 6
+
+#define DHCP_RELEASE 7
+
+#define DHCP_INFORM 8
+
+#define DHCP_OPT_PAD 0
+
+#define DHCP_OPT_SUBNET_MASK 1
+
+#define DHCP_OPT_ROUTER 3
+
+#define DHCP_OPT_DNS 6
+
+#define DHCP_OPT_REQUESTED_IP 50
+
+#define DHCP_OPT_LEASE_TIME 51
+
+#define DHCP_OPT_MSG_TYPE 53
+
+#define DHCP_OPT_SERVER_ID 54
+
+#define DHCP_OPT_PARAM_REQUEST 55
+
+#define DHCP_OPT_RENEWAL_TIME 58
+
+#define DHCP_OPT_REBINDING_TIME 59
+
+#define DHCP_OPT_CLIENT_ID 61
+
+#define DHCP_OPT_END 255
+
+#define ETH_TYPE_IPV4 2048
+
+#define ETH_TYPE_ARP 2054
+
+#define IP_PROTO_UDP 17
+
+#define DHCP_CLIENT_PORT 68
+
+#define DHCP_SERVER_PORT 67
+
+#define ARP_REQUEST 1
+
+#define ARP_REPLY 2
+
+#define DHCP_MAGIC_COOKIE 1669485411
+
+#define DHCP_INITIAL_DELAY_MS 2000
+
+#define DHCP_RETRY_INTERVAL_MS 3000
+
+#define DHCP_REQUEST_DELAY_MS 500
+
+#define DHCP_MAX_RETRIES 5
+
+#define KEEPALIVE_INTERVAL_MS 10000
+
 /**
  * Compression algorithm for FFI
  */
@@ -189,9 +257,15 @@ extern "C" {
 CedarSessionHandle cedar_session_new(const char *server, uint16_t port, const char *hub);
 
 /**
- * Create new session with authentication
+ * Create new session with authentication (wrapper for backward compatibility)
  */
 CedarSessionHandle cedar_session_new_with_auth(const char *server, uint16_t port, const char *hub, const char *username, const char *password);
+
+/**
+ * Create new session with authentication and encryption control
+ * use_encrypt: 0 = no encryption, 1 = use RC4 encryption (default)
+ */
+CedarSessionHandle cedar_session_new_with_auth_ex(const char *server, uint16_t port, const char *hub, const char *username, const char *password, uint8_t use_encrypt);
 
 /**
  * Free session
@@ -386,6 +460,30 @@ enum CedarErrorCode cedar_session_poll_keepalive(CedarSessionHandle handle, uint
  * password_hash should be SHA-1 hash of password (20 bytes)
  */
 enum CedarErrorCode cedar_session_authenticate(CedarSessionHandle handle, const char *username, const uint8_t *password_hash, uintptr_t hash_len);
+
+/**
+ * Poll received packets from background receive thread
+ * Returns number of packets retrieved (0 if none available)
+ * Each packet is written to buffers[i] with length in lengths[i]
+ * max_packets specifies array size
+ */
+uintptr_t cedar_session_poll_packets(CedarSessionHandle handle, uint8_t **buffers, uintptr_t *lengths, uintptr_t max_packets);
+
+/**
+ * Free packet buffer allocated by cedar_session_poll_packets
+ */
+void cedar_free_packet_buffer(uint8_t *buffer, uintptr_t length);
+
+/**
+ * Queue an outbound packet to send to server (upstream: client → server)
+ * This is called by Zig when it reads a packet from TUN that needs to be sent to VPN server
+ */
+enum CedarErrorCode cedar_session_queue_outbound_packet(CedarSessionHandle handle, const uint8_t *data, uintptr_t length);
+
+/**
+ * Stop background receive thread (called during disconnect)
+ */
+void cedar_session_stop_background_thread(CedarSessionHandle handle);
 
 #ifdef __cplusplus
 }  // extern "C"

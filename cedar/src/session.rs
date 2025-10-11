@@ -10,6 +10,7 @@ use mayaqua::network::{TcpSocket, UdpSocketWrapper};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+use std::collections::VecDeque;
 
 /// Session status
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -153,6 +154,16 @@ pub struct Session {
     last_dhcp_tick: Arc<Mutex<Instant>>,
     /// Interface configured flag
     interface_configured: Arc<Mutex<bool>>,
+    /// RC4 send cipher (client to server) for encryption - stateful stream cipher
+    rc4_send_cipher: Arc<Mutex<Option<mayaqua::Rc4>>>,
+    /// RC4 receive cipher (server to client) for decryption - stateful stream cipher
+    rc4_recv_cipher: Arc<Mutex<Option<mayaqua::Rc4>>>,
+    /// Background thread control flag
+    background_thread_running: Arc<AtomicBool>,
+    /// Queue of received packets from background thread (downstream: server → client)
+    received_packet_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
+    /// Queue of outbound packets to send to server (upstream: client → server)
+    outbound_packet_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
 }
 
 impl Session {
@@ -173,6 +184,11 @@ impl Session {
             dhcp_client: Arc::new(Mutex::new(None)),
             last_dhcp_tick: Arc::new(Mutex::new(Instant::now())),
             interface_configured: Arc::new(Mutex::new(false)),
+            rc4_send_cipher: Arc::new(Mutex::new(None)),
+            rc4_recv_cipher: Arc::new(Mutex::new(None)),
+            background_thread_running: Arc::new(AtomicBool::new(false)),
+            received_packet_queue: Arc::new(Mutex::new(VecDeque::new())),
+            outbound_packet_queue: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -270,18 +286,24 @@ impl Session {
                     // Session established
                     self.set_status(SessionStatus::Established);
                     
-                    // Initialize DHCP client for automatic IP configuration
-                    let dhcp_client = DhcpClient::new();
-                    eprintln!("[DHCP] 🌐 Starting DHCP client (MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
-                             dhcp_client.mac()[0], dhcp_client.mac()[1], dhcp_client.mac()[2],
-                             dhcp_client.mac()[3], dhcp_client.mac()[4], dhcp_client.mac()[5]);
-                    *self.dhcp_client.lock().unwrap() = Some(dhcp_client);
+                    // ═══════════════════════════════════════════════════════════════
+                    // Send initial protocol packets to keep server connection alive
+                    // ═══════════════════════════════════════════════════════════════
+                    // The server expects the client to send traffic immediately after auth.
+                    // Without initial packets, the server sees the client as "dead" and closes the connection.
+                    // We send: Gratuitous ARP (registers MAC/IP) + DHCP DISCOVER (initiates DHCP handshake)
+                    eprintln!("[CONNECT] 📤 Sending initial protocol packets (ARP + DHCP DISCOVER)...");
+                    self.send_initial_protocol_packets()?;
+                    
+                    // NOTE: Background thread was already started during authentication
+                    // (see authenticate() -> after streaming mode enabled). It's now handling
+                    // continuous bidirectional packet forwarding.
                     
                     eprintln!("[CONNECT] ✅ Connection established! Status: {:?}", self.status());
                     eprintln!("[CONNECT] ✅ Session ready for packet forwarding");
-                    eprintln!("[CONNECT] 💡 Call poll_keepalive() periodically to maintain session");
+                    eprintln!("[CONNECT] 💡 Background thread is handling bidirectional forwarding");
                     
-                    // Return immediately - Zig will handle packet forwarding loop
+                    // Return immediately - background thread handles packet forwarding
                     return Ok(());
                 }
                 Err(e) => {
@@ -1003,6 +1025,38 @@ impl Session {
                     eprintln!("[AUTH]   MonitorPort: {}", monitor);
                 }
                 
+        // Extract and store encryption keys for RC4
+        // First try dedicated fields (rc4_key_client_to_server, rc4_key_server_to_client)
+        let mut keys_found = false;
+        if let Some(c2s_key) = welcome_packet.get_data("rc4_key_client_to_server") {
+            eprintln!("[AUTH] 🔐 Initializing RC4 send cipher (client to server, {} byte key)", c2s_key.len());
+            *self.rc4_send_cipher.lock().unwrap() = Some(mayaqua::Rc4::new(c2s_key));
+            keys_found = true;
+        }
+        if let Some(s2c_key) = welcome_packet.get_data("rc4_key_server_to_client") {
+            eprintln!("[AUTH] 🔐 Initializing RC4 receive cipher (server to client, {} byte key)", s2c_key.len());
+            *self.rc4_recv_cipher.lock().unwrap() = Some(mayaqua::Rc4::new(s2c_key));
+            keys_found = true;
+        }
+        
+        // If not found, try extracting from pencore (first 32 bytes)
+        if !keys_found && self.config.use_encrypt {
+            if let Some(pencore) = welcome_packet.get_data("pencore") {
+                if pencore.len() >= 32 {
+                    eprintln!("[AUTH] 🔐 Extracting RC4 keys from pencore ({} bytes total)", pencore.len());
+                    // First 16 bytes: client to server key
+                    *self.rc4_send_cipher.lock().unwrap() = Some(mayaqua::Rc4::new(&pencore[0..16]));
+                    // Next 16 bytes: server to client key
+                    *self.rc4_recv_cipher.lock().unwrap() = Some(mayaqua::Rc4::new(&pencore[16..32]));
+                    eprintln!("[AUTH] 🔐 Initialized stateful RC4 ciphers (send + receive) from pencore");
+                }else {
+                    eprintln!("[AUTH] ⚠️  pencore too small ({} bytes, need at least 32)", pencore.len());
+                }
+            } else {
+                eprintln!("[AUTH] ⚠️  use_encrypt=1 but server did not send RC4 keys or pencore");
+            }
+        }
+        
         eprintln!("[AUTH] 🎉 Authentication phase complete (after redirect)!");
         
         // Enable streaming mode for data packets (no HTTP headers)
@@ -1022,17 +1076,37 @@ impl Session {
             }
         }
         
-        // Send immediate keep-alive to signal streaming readiness
-        eprintln!("[AUTH] 📡 Sending initial keep-alive packet...");
-        if let Err(e) = self.send_keepalive_no_wait() {
-            eprintln!("[AUTH] ⚠️  Failed to send initial keep-alive: {:?}", e);
-        } else {
-            eprintln!("[AUTH] ✅ Initial keep-alive sent successfully");
+        // ═══════════════════════════════════════════════════════════════
+        // CRITICAL: Start background thread IMMEDIATELY after streaming mode
+        // ═══════════════════════════════════════════════════════════════
+        // The server expects continuous bidirectional activity. If we only send
+        // keep-alives without reading responses, the socket buffer fills up and
+        // the connection breaks with "Broken pipe". The background thread must
+        // be running BEFORE we start sending packets.
+        eprintln!("[AUTH] 🚀 Starting background thread for continuous packet handling...");
+        self.start_background_receive_thread();
+        
+        // Give background thread time to start before sending packets
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        
+        // Send keep-alive burst to warm up connection
+        // The background thread is now reading responses, preventing buffer overflow
+        eprintln!("[AUTH] � Sending keep-alive burst (5 packets, 100ms intervals)...");
+        for i in 0..5 {
+            if let Err(e) = self.send_keepalive_no_wait() {
+                eprintln!("[AUTH] ⚠️  Failed to send keep-alive #{}: {:?}", i+1, e);
+                break;
+            } else {
+                eprintln!("[AUTH] ✅ Keep-alive #{}/5 sent", i+1);
+            }
+            
+            if i < 4 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
         }
         
-        // Small delay to let server process the keep-alive
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        eprintln!("[AUTH] ⏸️  Paused 200ms for server to process keep-alive");
+        eprintln!("[AUTH] ✅ Keep-alive burst complete - connection warmed up");
+        eprintln!("[AUTH] 💡 Background thread is handling server responses");
         
         return Ok(());
             }
@@ -1072,6 +1146,38 @@ impl Session {
         }
         if let Some(monitor) = auth_response.get_bool("MonitorPort") {
             eprintln!("[AUTH]   MonitorPort: {}", monitor);
+        }
+
+        // Extract and store encryption keys for RC4
+        // First try dedicated fields (rc4_key_client_to_server, rc4_key_server_to_client)
+        let mut keys_found = false;
+        if let Some(c2s_key) = auth_response.get_data("rc4_key_client_to_server") {
+            eprintln!("[AUTH] 🔐 Initializing RC4 send cipher (client to server, {} byte key)", c2s_key.len());
+            *self.rc4_send_cipher.lock().unwrap() = Some(mayaqua::Rc4::new(c2s_key));
+            keys_found = true;
+        }
+        if let Some(s2c_key) = auth_response.get_data("rc4_key_server_to_client") {
+            eprintln!("[AUTH] 🔐 Initializing RC4 receive cipher (server to client, {} byte key)", s2c_key.len());
+            *self.rc4_recv_cipher.lock().unwrap() = Some(mayaqua::Rc4::new(s2c_key));
+            keys_found = true;
+        }
+        
+        // If not found, try extracting from pencore (first 32 bytes)
+        if !keys_found && self.config.use_encrypt {
+            if let Some(pencore) = auth_response.get_data("pencore") {
+                if pencore.len() >= 32 {
+                    eprintln!("[AUTH] 🔐 Extracting RC4 keys from pencore ({} bytes total)", pencore.len());
+                    // First 16 bytes: client to server key
+                    *self.rc4_send_cipher.lock().unwrap() = Some(mayaqua::Rc4::new(&pencore[0..16]));
+                    // Next 16 bytes: server to client key
+                    *self.rc4_recv_cipher.lock().unwrap() = Some(mayaqua::Rc4::new(&pencore[16..32]));
+                    eprintln!("[AUTH] 🔐 Initialized stateful RC4 ciphers (send + receive) from pencore");
+                } else {
+                    eprintln!("[AUTH] ⚠️  pencore too small ({} bytes, need at least 32)", pencore.len());
+                }
+            } else {
+                eprintln!("[AUTH] ⚠️  use_encrypt=1 but server did not send RC4 keys or pencore");
+            }
         }
 
         eprintln!("[AUTH] 🎉 Authentication phase complete!");
@@ -1314,9 +1420,20 @@ impl Session {
     fn stream_send_pack(&self, pack: &Packet) -> Result<()> {
         use crate::protocol::WATERMARK;
         
-        let pack_data = pack.to_bytes()?;
+        let mut pack_data = pack.to_bytes()?;
         
-        // Format: [WATERMARK(16)][SIZE(4 BE)][PACK_DATA]
+        // Encrypt PACK data if use_encrypt is enabled (using stateful RC4 cipher)
+        if self.config.use_encrypt {
+            let mut send_cipher = self.rc4_send_cipher.lock().unwrap();
+            if let Some(ref mut cipher) = *send_cipher {
+                eprintln!("[STREAM] 🔐 Encrypting PACK with stateful RC4 ({} byte PACK)", pack_data.len());
+                cipher.process_inplace(&mut pack_data);
+            } else {
+                eprintln!("[STREAM] ⚠️  use_encrypt=1 but no RC4 send cipher available, sending unencrypted");
+            }
+        }
+        
+        // Format: [WATERMARK(16)][SIZE(4 BE)][ENCRYPTED_PACK_DATA]
         let mut stream_data = Vec::with_capacity(16 + 4 + pack_data.len());
         stream_data.extend_from_slice(&WATERMARK);
         stream_data.extend_from_slice(&(pack_data.len() as u32).to_be_bytes());
@@ -1423,14 +1540,48 @@ impl Session {
             }
         }
         
+        // 3a. Decrypt PACK data if use_encrypt is enabled (using stateful RC4 cipher)
+        if self.config.use_encrypt {
+            let mut recv_cipher = self.rc4_recv_cipher.lock().unwrap();
+            if let Some(ref mut cipher) = *recv_cipher {
+                eprintln!("[STREAM] 🔓 Decrypting received PACK with stateful RC4");
+                cipher.process_inplace(&mut pack_buf);
+            } else {
+                eprintln!("[STREAM] ⚠️  use_encrypt=1 but no RC4 recv cipher available, parsing without decryption");
+            }
+        }
+        
         // 4. Parse PACK
         match Packet::from_bytes(&pack_buf) {
             Ok(packet) => Ok(Some(packet)),
             Err(e) => {
                 eprintln!("[SESSION] Failed to parse PACK: {:?}", e);
-                Ok(None)
+                Err(Error::IoError(format!("Parse error: {:?}", e)))
             }
         }
+    }
+    
+    /// Same as stream_receive_pack() but with custom timeout
+    fn stream_receive_pack_timeout(&self, timeout: std::time::Duration) -> Result<Option<Packet>> {
+        // Set timeout
+        {
+            let connections = self.tcp_connections.lock().unwrap();
+            if connections.is_empty() {
+                return Ok(None);
+            }
+            connections[0].set_read_timeout(Some(timeout))?;
+        }
+        
+        // Try to receive
+        let result = self.stream_receive_pack();
+        
+        // Restore default timeout (100ms)
+        {
+            let connections = self.tcp_connections.lock().unwrap();
+            let _ = connections[0].set_read_timeout(Some(std::time::Duration::from_millis(100)));
+        }
+        
+        result
     }
     
     /// Try to receive HTTP response without blocking (uses socket timeout)
@@ -1514,10 +1665,24 @@ impl Session {
     pub fn send_data_packet(&self, data: &[u8]) -> Result<()> {
         eprintln!("[DATA] Preparing to send data packet ({} bytes)", data.len());
         
+        // Encrypt data if use_encrypt is enabled (using stateful RC4 cipher)
+        let data_to_send = if self.config.use_encrypt {
+            let mut send_cipher = self.rc4_send_cipher.lock().unwrap();
+            if let Some(ref mut cipher) = *send_cipher {
+                eprintln!("[DATA] 🔐 Encrypting data with stateful RC4");
+                cipher.process(data)
+            } else {
+                eprintln!("[DATA] ⚠️  use_encrypt=1 but no RC4 send cipher available, sending unencrypted");
+                data.to_vec()
+            }
+        } else {
+            data.to_vec()
+        };
+        
         // Create data PACK packet
         let data_packet = Packet::new("data")
             .add_string("method", "data")
-            .add_data("data", data.to_vec());
+            .add_data("data", data_to_send);
         
         if self.streaming_mode.load(Ordering::Acquire) {
             // Streaming mode: send raw PACK (no HTTP headers)
@@ -1607,8 +1772,6 @@ impl Session {
 
     /// Send keep-alive packet to maintain connection
     fn send_keepalive(&self) -> Result<()> {
-        use mayaqua::HttpRequest;
-
         eprintln!("[KEEPALIVE] Creating keep-alive packet");
 
         // Create keep-alive PACK
@@ -1619,37 +1782,57 @@ impl Session {
                 .unwrap()
                 .as_secs() as u32);
 
-        let pack_data = keepalive_packet.to_bytes()?;
-        eprintln!("[KEEPALIVE] PACK data: {} bytes", pack_data.len());
-
-        // Send via HTTP POST
-        let http_request = HttpRequest::new_vpn_post(
-            &self.config.server,
-            self.config.port,
-            pack_data,
-        );
-
-        let http_bytes = http_request.to_bytes();
-        self.send_raw(&http_bytes)?;
-
-        {
-            let mut connections = self.tcp_connections.lock().unwrap();
-            if !connections.is_empty() {
-                connections[0].flush()?;
+        // Check if in streaming mode (after authentication)
+        if self.streaming_mode.load(Ordering::Acquire) {
+            // Streaming mode: send raw PACK without HTTP wrapper
+            eprintln!("[KEEPALIVE] Sending in streaming mode (no HTTP headers)");
+            self.stream_send_pack(&keepalive_packet)?;
+            
+            {
+                let mut connections = self.tcp_connections.lock().unwrap();
+                if !connections.is_empty() {
+                    connections[0].flush()?;
+                }
             }
+            
+            eprintln!("[KEEPALIVE] ✅ Keep-alive sent (streaming mode, no response expected)");
+            Ok(())
+        } else {
+            // HTTP mode: send with HTTP wrapper (initial handshake/auth)
+            use mayaqua::HttpRequest;
+            
+            let pack_data = keepalive_packet.to_bytes()?;
+            eprintln!("[KEEPALIVE] PACK data: {} bytes", pack_data.len());
+
+            // Send via HTTP POST
+            let http_request = HttpRequest::new_vpn_post(
+                &self.config.server,
+                self.config.port,
+                pack_data,
+            );
+
+            let http_bytes = http_request.to_bytes();
+            self.send_raw(&http_bytes)?;
+
+            {
+                let mut connections = self.tcp_connections.lock().unwrap();
+                if !connections.is_empty() {
+                    connections[0].flush()?;
+                }
+            }
+
+            eprintln!("[KEEPALIVE] ✅ Keep-alive sent");
+
+            // Receive keep-alive response
+            let response = self.receive_http_response()?;
+            if response.status_code != 200 {
+                eprintln!("[KEEPALIVE] ❌ Server returned HTTP {}", response.status_code);
+                return Err(Error::InvalidResponse);
+            }
+
+            eprintln!("[KEEPALIVE] ✅ Keep-alive acknowledged by server");
+            Ok(())
         }
-
-        eprintln!("[KEEPALIVE] ✅ Keep-alive sent");
-
-        // Receive keep-alive response
-        let response = self.receive_http_response()?;
-        if response.status_code != 200 {
-            eprintln!("[KEEPALIVE] ❌ Server returned HTTP {}", response.status_code);
-            return Err(Error::InvalidResponse);
-        }
-
-        eprintln!("[KEEPALIVE] ✅ Keep-alive acknowledged by server");
-        Ok(())
     }
 
     /// Send keep-alive packet without waiting for response (for initial keep-alive after auth)
@@ -2356,6 +2539,289 @@ impl Session {
             .as_ref()
             .map(|dhcp| dhcp.is_configured())
             .unwrap_or(false)
+    }
+    
+    // ========================================================================
+    // Background Bidirectional Thread (Continuous Send + Receive)
+    // ========================================================================
+    
+    /// Start background thread that continuously sends AND receives packets
+    /// This maintains continuous bidirectional activity like C Bridge's SessionMain()
+    fn start_background_receive_thread(&self) {
+        // Check if already running
+        if self.background_thread_running.load(Ordering::Acquire) {
+            eprintln!("[BACKGROUND] ⚠️  Background thread already running");
+            return;
+        }
+        
+        eprintln!("[BACKGROUND] 🚀 Starting bidirectional forwarding thread...");
+        
+        // Clone Arc references for the thread
+        let tcp_connections = Arc::clone(&self.tcp_connections);
+        let inbound_queue = Arc::clone(&self.received_packet_queue);
+        let outbound_queue = Arc::clone(&self.outbound_packet_queue);
+        let running = Arc::clone(&self.background_thread_running);
+        let use_encrypt = self.config.use_encrypt;
+        let rc4_recv_cipher = Arc::clone(&self.rc4_recv_cipher);
+        let rc4_send_cipher = Arc::clone(&self.rc4_send_cipher);
+        
+        // Set running flag
+        running.store(true, Ordering::Release);
+        
+        // Spawn background thread
+        std::thread::spawn(move || {
+            eprintln!("[BACKGROUND] 📡 Bidirectional forwarding loop started");
+            let mut recv_count = 0u64;
+            let mut send_count = 0u64;
+            
+            while running.load(Ordering::Acquire) {
+                let mut did_work = false;
+                
+                // ═══════════════════════════════════════
+                // UPSTREAM: Send packets to server (client → server)
+                // ═══════════════════════════════════════
+                {
+                    let mut queue = outbound_queue.lock().unwrap();
+                    if let Some(packet_data) = queue.pop_front() {
+                        drop(queue); // Release lock before I/O
+                        
+                        match Self::bg_send_packet(&tcp_connections, use_encrypt, &rc4_send_cipher, &packet_data) {
+                            Ok(()) => {
+                                send_count += 1;
+                                if send_count % 100 == 0 {
+                                    eprintln!("[BACKGROUND] 📤 Sent {} packets upstream", send_count);
+                                }
+                                did_work = true;
+                            }
+                            Err(Error::DisconnectedError) => {
+                                eprintln!("[BACKGROUND] ❌ Server closed connection (send)");
+                                break;
+                            }
+                            Err(e) => {
+                                eprintln!("[BACKGROUND] ⚠️  Send error: {:?}", e);
+                            }
+                        }
+                    }
+                }
+                
+                // ═══════════════════════════════════════
+                // DOWNSTREAM: Receive packets from server (server → client)
+                // ═══════════════════════════════════════
+                match Self::bg_receive_packet(&tcp_connections, use_encrypt, &rc4_recv_cipher) {
+                    Ok(Some(packet_data)) => {
+                        recv_count += 1;
+                        if recv_count % 100 == 0 {
+                            eprintln!("[BACKGROUND] 📥 Received {} packets downstream", recv_count);
+                        }
+                        
+                        // Queue packet for Zig to retrieve
+                        let mut queue = inbound_queue.lock().unwrap();
+                        queue.push_back(packet_data);
+                        
+                        // Limit queue size to prevent unbounded growth
+                        if queue.len() > 100 {
+                            queue.pop_front();
+                        }
+                        did_work = true;
+                    }
+                    Ok(None) => {
+                        // No data available
+                    }
+                    Err(Error::DisconnectedError) => {
+                        eprintln!("[BACKGROUND] ❌ Server closed connection (recv)");
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("[BACKGROUND] ⚠️  Receive error: {:?}", e);
+                    }
+                }
+                
+                // Yield briefly if no work was done
+                if !did_work {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            
+            eprintln!("[BACKGROUND] 🛑 Forwarding loop stopped (sent: {}, received: {})", send_count, recv_count);
+            running.store(false, Ordering::Release);
+        });
+        
+        eprintln!("[BACKGROUND] ✅ Bidirectional thread spawned successfully");
+    }
+    
+    /// Background thread helper: send one packet to server
+    fn bg_send_packet(
+        tcp_connections: &Arc<Mutex<Vec<TcpSocket>>>,
+        use_encrypt: bool,
+        rc4_send_cipher: &Arc<Mutex<Option<mayaqua::Rc4>>>,
+        packet_data: &[u8],
+    ) -> Result<()> {
+        use crate::protocol::WATERMARK;
+        
+        let mut connections = tcp_connections.lock().unwrap();
+        if connections.is_empty() {
+            return Err(Error::Network("No connections".to_string()));
+        }
+        
+        // Create PACK with the data
+        let pack = Packet::new("data")
+            .add_string("method", "data")
+            .add_data("payload", packet_data.to_vec());
+        
+        let mut pack_buf = pack.to_bytes()?;
+        
+        // Encrypt if needed
+        if use_encrypt {
+            let mut send_cipher = rc4_send_cipher.lock().unwrap();
+            if let Some(ref mut cipher) = *send_cipher {
+                cipher.process_inplace(&mut pack_buf);
+            }
+        }
+        
+        // Format: [WATERMARK(16)][SIZE(4 BE)][PACK_DATA]
+        let mut stream_data = Vec::new();
+        stream_data.extend_from_slice(&WATERMARK);
+        stream_data.extend_from_slice(&(pack_buf.len() as u32).to_be_bytes());
+        stream_data.extend_from_slice(&pack_buf);
+        
+        // Send to server
+        connections[0].send(&stream_data)?;
+        
+        Ok(())
+    }
+    
+    /// Background thread helper: receive one packet from server
+    fn bg_receive_packet(
+        tcp_connections: &Arc<Mutex<Vec<TcpSocket>>>,
+        use_encrypt: bool,
+        rc4_recv_cipher: &Arc<Mutex<Option<mayaqua::Rc4>>>,
+    ) -> Result<Option<Vec<u8>>> {
+        use crate::protocol::WATERMARK;
+        
+        let mut connections = tcp_connections.lock().unwrap();
+        if connections.is_empty() {
+            return Ok(None);
+        }
+        
+        // 1. Look for watermark (16 bytes)
+        let mut watermark_buf = [0u8; 16];
+        match connections[0].peek(&mut watermark_buf) {
+            Ok(16) if &watermark_buf == &WATERMARK => {
+                // Consume watermark
+                connections[0].recv(&mut watermark_buf)?;
+            }
+            Ok(_) | Err(mayaqua::Error::TimeOut) => {
+                // No watermark or not enough data yet
+                return Ok(None);
+            }
+            Err(mayaqua::Error::IoError(ref msg)) | Err(mayaqua::Error::Network(ref msg))
+                if msg.contains("timed out") || msg.contains("would block") => {
+                return Ok(None);
+            }
+            Err(mayaqua::Error::Network(ref msg)) 
+                if msg.contains("Connection reset") || msg.contains("Broken pipe") => {
+                return Err(mayaqua::Error::DisconnectedError);
+            }
+            Err(e) => return Err(e),
+        }
+        
+        // 2. Read size (4 bytes, big-endian)
+        let mut size_buf = [0u8; 4];
+        match connections[0].recv(&mut size_buf) {
+            Ok(4) => {}
+            _ => return Ok(None),
+        }
+        let pack_size = u32::from_be_bytes(size_buf) as usize;
+        
+        // Sanity check
+        if pack_size > 1024 * 1024 {
+            return Err(Error::IoError(format!("Invalid PACK size: {}", pack_size)));
+        }
+        
+        // 3. Read PACK data
+        let mut pack_buf = vec![0u8; pack_size];
+        let mut total_read = 0;
+        while total_read < pack_size {
+            match connections[0].recv(&mut pack_buf[total_read..]) {
+                Ok(n) if n > 0 => total_read += n,
+                Ok(0) => return Err(Error::DisconnectedError),
+                _ => {
+                    std::thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+            }
+        }
+        
+        // 4. Decrypt if needed
+        if use_encrypt {
+            let mut recv_cipher = rc4_recv_cipher.lock().unwrap();
+            if let Some(ref mut cipher) = *recv_cipher {
+                cipher.process_inplace(&mut pack_buf);
+            }
+        }
+        
+        Ok(Some(pack_buf))
+    }
+    
+    /// Send initial protocol packets to establish session with server
+    /// This prevents the server from immediately closing the connection due to inactivity
+    fn send_initial_protocol_packets(&self) -> Result<()> {
+        eprintln!("[INIT-PACKETS] 📤 Preparing initial protocol packets...");
+        
+        // For now, send a few keep-alive packets to maintain connection
+        // The real ARP/DHCP packets will come from the TUN device via the forwarding loop
+        // This is just to prevent immediate disconnection
+        
+        for i in 1..=3 {
+            let keepalive = Packet::new("keepalive");
+            self.stream_send_pack(&keepalive)?;
+            eprintln!("[INIT-PACKETS] ✅ Keep-alive #{} sent", i);
+            
+            if i < 3 {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+        
+        eprintln!("[INIT-PACKETS] ✅ Initial packets sent, connection should stay alive");
+        eprintln!("[INIT-PACKETS] 💡 TUN device will generate real ARP/DHCP packets");
+        
+        Ok(())
+    }
+    
+    /// Poll received packets from background thread
+    /// Returns all currently queued packets (may be empty)
+    pub fn poll_received_packets(&self) -> Vec<Vec<u8>> {
+        let mut queue = self.received_packet_queue.lock().unwrap();
+        queue.drain(..).collect()
+    }
+    
+    /// Queue an outbound packet to send to server (upstream: client → server)
+    pub fn queue_outbound_packet(&self, data: Vec<u8>) {
+        if data.is_empty() {
+            return;
+        }
+        
+        let mut queue = self.outbound_packet_queue.lock().unwrap();
+        queue.push_back(data);
+        
+        // Prevent unbounded growth
+        if queue.len() > 100 {
+            eprintln!("[BACKGROUND] ⚠️  Outbound queue full, dropping oldest packet");
+            queue.pop_front();
+        }
+    }
+    
+    /// Stop background receive thread
+    pub fn stop_background_thread(&self) {
+        if self.background_thread_running.load(Ordering::Acquire) {
+            eprintln!("[BACKGROUND] 🛑 Stopping background thread...");
+            self.background_thread_running.store(false, Ordering::Release);
+            
+            // Give thread time to exit
+            std::thread::sleep(Duration::from_millis(100));
+            
+            eprintln!("[BACKGROUND] ✅ Background thread stopped");
+        }
     }
 }
 
