@@ -937,11 +937,26 @@ impl Session {
                 }
                 eprintln!("[AUTH] 🔍 DEBUG - End of initial response fields");
                 
-                // IMPORTANT: .junk code does NOT check error field - it extracts session_name directly!
-                // error=3 (ERR_DISCONNECTED) is server metadata, NOT a fatal error
+                // IMPORTANT: After redirect with ticket auth, error=3 (ERR_DISCONNECTED) is NORMAL!
+                // It just acknowledges that the previous connection was disconnected (as we intended).
+                // The presence of 'pencore' data indicates this is actually a Welcome packet.
+                // We should NOT treat this as a fatal error - the .junk code ignores it completely.
                 if let Some(error_code) = initial_response.get_int("error") {
-                    if error_code != 0 {
-                        eprintln!("[AUTH] ⚠️  Server sent error code={}, but continuing (following .junk behavior)", error_code);
+                    match error_code {
+                        0 => {
+                            eprintln!("[AUTH] ✅ No error in response");
+                        }
+                        3 => {
+                            // ERR_DISCONNECTED (3) is expected after redirect - it's just metadata
+                            eprintln!("[AUTH] 📝 Server sent error=3 (ERR_DISCONNECTED) - this is normal after redirect");
+                            eprintln!("[AUTH]    (Previous connection was disconnected as expected)");
+                        }
+                        _ => {
+                            // Any other error code is a real failure
+                            eprintln!("[AUTH] ❌ Server sent error code={}", error_code);
+                            eprintln!("[AUTH] ❌ Ticket authentication failed!");
+                            return Err(Error::AuthenticationFailed);
+                        }
                     }
                 }
                 
@@ -988,17 +1003,40 @@ impl Session {
                     eprintln!("[AUTH]   MonitorPort: {}", monitor);
                 }
                 
-                eprintln!("[AUTH] 🎉 Authentication phase complete (after redirect)!");
-                
-                // Enable streaming mode for data packets (no HTTP headers)
-                self.streaming_mode.store(true, Ordering::Release);
-                eprintln!("[AUTH] 🔄 Switched to streaming mode for data packets");
-                
-                return Ok(());
+        eprintln!("[AUTH] 🎉 Authentication phase complete (after redirect)!");
+        
+        // Enable streaming mode for data packets (no HTTP headers)
+        self.streaming_mode.store(true, Ordering::Release);
+        eprintln!("[AUTH] 🔄 Switched to streaming mode for data packets");
+        
+        // Set socket read timeout to prevent indefinite blocking
+        {
+            let mut connections = self.tcp_connections.lock().unwrap();
+            if !connections.is_empty() {
+                let timeout = std::time::Duration::from_millis(100);
+                if let Err(e) = connections[0].set_read_timeout(Some(timeout)) {
+                    eprintln!("[AUTH] ⚠️  Failed to set read timeout after redirect: {:?}", e);
+                } else {
+                    eprintln!("[AUTH] ✅ Redirect socket read timeout set to 100ms for streaming");
+                }
             }
         }
-
-        // No redirect - process as normal Welcome packet
+        
+        // Send immediate keep-alive to signal streaming readiness
+        eprintln!("[AUTH] 📡 Sending initial keep-alive packet...");
+        if let Err(e) = self.send_keepalive_no_wait() {
+            eprintln!("[AUTH] ⚠️  Failed to send initial keep-alive: {:?}", e);
+        } else {
+            eprintln!("[AUTH] ✅ Initial keep-alive sent successfully");
+        }
+        
+        // Small delay to let server process the keep-alive
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        eprintln!("[AUTH] ⏸️  Paused 200ms for server to process keep-alive");
+        
+        return Ok(());
+            }
+        }        // No redirect - process as normal Welcome packet
         // P1: Parse session tracking information from Welcome packet
         // These are STRINGS not data blobs!
         if let Some(session_name) = auth_response.get_string("session_name") {
@@ -1041,6 +1079,31 @@ impl Session {
         // Enable streaming mode for data packets (no HTTP headers)
         self.streaming_mode.store(true, Ordering::Release);
         eprintln!("[AUTH] 🔄 Switched to streaming mode for data packets");
+        
+        // Set socket read timeout to prevent indefinite blocking
+        {
+            let mut connections = self.tcp_connections.lock().unwrap();
+            if !connections.is_empty() {
+                let timeout = std::time::Duration::from_millis(100);
+                if let Err(e) = connections[0].set_read_timeout(Some(timeout)) {
+                    eprintln!("[AUTH] ⚠️  Failed to set read timeout: {:?}", e);
+                } else {
+                    eprintln!("[AUTH] ✅ Socket read timeout set to 100ms for streaming");
+                }
+            }
+        }
+        
+        // Send immediate keep-alive to signal streaming readiness
+        eprintln!("[AUTH] 📡 Sending initial keep-alive packet...");
+        if let Err(e) = self.send_keepalive_no_wait() {
+            eprintln!("[AUTH] ⚠️  Failed to send initial keep-alive: {:?}", e);
+        } else {
+            eprintln!("[AUTH] ✅ Initial keep-alive sent successfully");
+        }
+        
+        // Small delay to let server process the keep-alive
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        eprintln!("[AUTH] ⏸️  Paused 200ms for server to process keep-alive");
 
         Ok(())
     }
@@ -1282,15 +1345,48 @@ impl Session {
             return Ok(None);
         }
         
-        // 1. Look for watermark (16 bytes)
+        // 1. Look for watermark (16 bytes) - will timeout after 100ms if no data
         let mut watermark_buf = [0u8; 16];
         match connections[0].peek(&mut watermark_buf) {
             Ok(16) if &watermark_buf == &WATERMARK => {
                 // Consume watermark
+                eprintln!("[STREAM] Found watermark, consuming it");
                 connections[0].recv(&mut watermark_buf)?;
             }
-            Ok(n) if n < 16 => return Ok(None),  // Not enough data yet
-            _ => return Ok(None),  // No watermark or error
+            Ok(n) if n < 16 => {
+                // Not enough data yet - normal, return None
+                return Ok(None);
+            }
+            Ok(_) => {
+                // Data available but no watermark - normal for no data
+                return Ok(None);
+            }
+            Err(mayaqua::Error::TimeOut) => {
+                // Timeout - normal, just return None
+                return Ok(None);
+            }
+            Err(mayaqua::Error::IoError(ref msg)) if msg.contains("timed out") 
+                || msg.contains("would block")
+                || msg.contains("temporarily unavailable") => {
+                // Timeout or would block - normal, just return None
+                return Ok(None);
+            }
+            Err(mayaqua::Error::Network(ref msg)) if msg.contains("timed out")
+                || msg.contains("would block")
+                || msg.contains("temporarily unavailable") => {
+                // Timeout or would block - normal, just return None
+                return Ok(None);
+            }
+            Err(mayaqua::Error::Network(ref msg)) if msg.contains("Connection reset") || msg.contains("Broken pipe") => {
+                // Connection closed by server - this is a real error
+                eprintln!("[STREAM] ❌ Connection closed by server: {}", msg);
+                return Err(mayaqua::Error::DisconnectedError);
+            }
+            Err(e) => {
+                // Real error
+                eprintln!("[STREAM] ⚠️  Error peeking for watermark: {:?}", e);
+                return Err(e);
+            }
         }
         
         // 2. Read size (4 bytes, big-endian)
@@ -1416,6 +1512,8 @@ impl Session {
     
     /// Send data packet to server
     pub fn send_data_packet(&self, data: &[u8]) -> Result<()> {
+        eprintln!("[DATA] Preparing to send data packet ({} bytes)", data.len());
+        
         // Create data PACK packet
         let data_packet = Packet::new("data")
             .add_string("method", "data")
@@ -1423,7 +1521,9 @@ impl Session {
         
         if self.streaming_mode.load(Ordering::Acquire) {
             // Streaming mode: send raw PACK (no HTTP headers)
+            eprintln!("[DATA] Sending in streaming mode (no HTTP headers)");
             self.stream_send_pack(&data_packet)?;
+            eprintln!("[DATA] ✅ Data packet sent successfully via streaming");
         } else {
             // HTTP mode: send HTTP POST (for initial handshake/auth only)
             use crate::protocol::WATERMARK;
@@ -1549,6 +1649,46 @@ impl Session {
         }
 
         eprintln!("[KEEPALIVE] ✅ Keep-alive acknowledged by server");
+        Ok(())
+    }
+
+    /// Send keep-alive packet without waiting for response (for initial keep-alive after auth)
+    fn send_keepalive_no_wait(&self) -> Result<()> {
+        eprintln!("[KEEPALIVE] Creating keep-alive packet (no-wait mode)");
+
+        // Create keep-alive packet
+        let keepalive_packet = Packet::new("keep_alive")
+            .add_string("method", "keepalive")
+            .add_int("timestamp", std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as u32);
+
+        // In streaming mode, send directly without HTTP headers
+        if self.streaming_mode.load(Ordering::Acquire) {
+            eprintln!("[KEEPALIVE] Sending in streaming mode (no HTTP headers)");
+            self.stream_send_pack(&keepalive_packet)?;
+        } else {
+            // Fallback: send with HTTP (shouldn't happen after auth)
+            eprintln!("[KEEPALIVE] Sending in HTTP mode");
+            let pack_data = keepalive_packet.to_bytes()?;
+            let http_request = mayaqua::HttpRequest::new_vpn_post(
+                &self.config.server,
+                self.config.port,
+                pack_data,
+            );
+            let http_bytes = http_request.to_bytes();
+            self.send_raw(&http_bytes)?;
+        }
+
+        {
+            let mut connections = self.tcp_connections.lock().unwrap();
+            if !connections.is_empty() {
+                connections[0].flush()?;
+            }
+        }
+
+        eprintln!("[KEEPALIVE] ✅ Keep-alive sent (no response expected)");
         Ok(())
     }
 

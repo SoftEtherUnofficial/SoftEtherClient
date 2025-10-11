@@ -409,7 +409,8 @@ pub const VpnClient = struct {
             // ═══════════════════════════════════════
             // Keep-alive maintenance
             // ═══════════════════════════════════════
-            session.pollKeepalive(30) catch |err| {
+            // Send keep-alive every 5 seconds to prevent timeout
+            session.pollKeepalive(5) catch |err| {
                 std.debug.print("[FORWARD] ⚠️  Keep-alive error: {}\n", .{err});
             };
 
