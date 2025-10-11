@@ -502,11 +502,10 @@ impl Session {
                     .add_string("ClientOsVendorName", if cfg!(target_os = "macos") { "Apple Inc." } else if cfg!(target_os = "windows") { "Microsoft Corporation" } else { "Linux" })
                     .add_string("ClientOsVersion", &os_version)
                     .add_string("ClientKernelName", std::env::consts::OS)
-                    .add_string("ClientKernelVersion", &os_version)
-                    // Branding field
-                    .add_string("branded_ctos", "");
+                    .add_string("ClientKernelVersion", &os_version);
+                    // Note: branded_ctos NOT added when empty (C Bridge skips it)
                 
-                eprintln!("[AUTH] ✅ Created auth pack (FULL C Bridge alignment: 44+ fields with P0+P1)");
+                eprintln!("[AUTH] ✅ Created auth pack (FULL C Bridge alignment: 43+ fields with P0+P1)");
                 packet
             }
             AuthConfig::Certificate { username, cert_data } => {
@@ -659,15 +658,13 @@ impl Session {
                 
                 eprintln!("[AUTH] 🔌 Reconnecting to redirected server...");
                 
-                // Important: Use the original hostname for TLS SNI, but connect to the redirected IP
-                // For simplicity, we'll use the hostname from config since the server likely
-                // has the same certificate for the same hostname regardless of IP
-                eprintln!("[AUTH] 🔌 Using hostname {} for TLS SNI", self.config.server);
+                // Important: The redirect IP might not be directly accessible (private IP/NAT)
+                // Connect to the ORIGINAL hostname - the ticket will route us to the right backend
+                eprintln!("[AUTH] 🔌 Using hostname {} for TLS SNI (ticket will route to redirect IP {})", 
+                    self.config.server, redirect_host);
                 
-                // Reconnect to redirected server using TcpSocket
-                // Note: TcpSocket::connect_tls will use DNS, but we want to connect to the redirect IP
-                // For now, we'll connect to the hostname (which may resolve to a different IP)
-                // This is acceptable since the server is part of the same cluster
+                // Reconnect using the original hostname (DNS may load-balance to different frontend)
+                // The ticket ensures we get routed to the correct backend server
                 let redirect_socket = TcpSocket::connect_tls(&self.config.server, redirect_port as u16)?;
                 
                 {
@@ -720,39 +717,102 @@ impl Session {
                 let (os_type, service_pack, _os_build, os_system_name, os_product_name) = Self::get_win_ver_info();
                 let os_version = Self::get_os_version();
                 
-                // Build ticket auth packet matching working .junk implementations EXACTLY
+                // Build ticket auth packet matching password auth EXACTLY
+                // Ticket auth needs ALL the same fields as password auth!
                 const AUTHTYPE_TICKET: u32 = 99;
                 let ticket_auth = Packet::new("")
+                    // Core auth fields
                     .add_string("method", "login")
+                    // CRITICAL: C Bridge adds BOTH sets of version fields!
+                    // PackAddClientVersion adds: client_str, client_ver, client_build
+                    // Then main code adds: hello, version, build
+                    .add_string("client_str", client_str)
+                    .add_int("client_ver", protocol_ver)
+                    .add_int("client_build", client_build)
+                    .add_string("hello", client_str)
                     .add_int("version", protocol_ver)
                     .add_int("build", client_build)
-                    .add_string("client_str", client_str)
                     .add_string("hubname", &self.config.hub)
                     .add_string("username", &username)
-                    .add_string("protocol", "SE-VPN4-PROTOCOL")
+                    .add_int("protocol", 0)  // ⚠️ CRITICAL: Must be int 0, not string!
                     .add_int("max_connection", self.config.max_connection)
                     .add_int("use_encrypt", if self.config.use_encrypt { 1 } else { 0 })
-                    .add_int("use_compress", 0)  // Always 0 in working .junk
+                    .add_int("use_compress", 0)  // Always 0
                     .add_int("half_connection", 0)
                     .add_int("authtype", AUTHTYPE_TICKET)
                     .add_data("ticket", ticket_data.to_vec())
-                    .add_int("client_id", 123)  // Match .junk! Use 123, not 0
+                    .add_int("client_id", 123)
                     .add_data("unique_id", unique_id)
-                    // Environment info fields (match .junk implementations)
-                    .add_string("client_os_name", std::env::consts::OS)
+                    // P0 CRITICAL: Bridge/routing mode flags (required for DHCP)
+                    .add_int("qos", 0)
+                    .add_int("require_bridge_routing_mode", 1)  // ⚠️ CRITICAL for DHCP!
+                    .add_int("require_monitor_mode", 0)
+                    // P1: UDP acceleration negotiation fields
+                    .add_int("support_bulk_on_rudp", 1)
+                    .add_int("support_hmac_on_bulk_of_rudp", 1)
+                    .add_int("support_udp_recovery", 1)
+                    .add_int("rudp_bulk_max_version", 2)
+                    // P1: Client/Server network endpoint information
+                    .add_int("ClientIpAddress", u32::from_be_bytes(client_ip))
+                    .add_data("ClientIpAddress6", vec![0u8; 16])  // IPv6 placeholder
+                    .add_int("ClientPort", client_port)
+                    .add_int("ServerIpAddress", u32::from_be_bytes(server_ip))
+                    .add_data("ServerIpAddress6", vec![0u8; 16])  // IPv6 placeholder
+                    .add_int("ServerPort2", server_port)
+                    .add_int("ProxyIpAddress", 0u32)  // No proxy
+                    .add_data("ProxyIpAddress6", vec![0u8; 16])  // No proxy IPv6
+                    .add_int("ProxyPort", 0u32)  // No proxy
+                    // Environment info (lowercase versions)
+                    .add_string("client_os_name", os_name)
                     .add_string("client_hostname", &hostname)
                     .add_string("client_product_name", client_str)
                     .add_int("client_product_ver", protocol_ver)
                     .add_int("client_product_build", client_build)
-                    .add_string("ClientOsName", std::env::consts::OS)
-                    .add_string("ClientHostname", &hostname)
+                    // OutRpcNodeInfo fields (Capitalized - CRITICAL for server validation!)
                     .add_string("ClientProductName", client_str)
+                    .add_string("ServerProductName", "")  // Empty for client
+                    .add_string("ClientOsName", os_name)
+                    .add_string("ClientOsVer", &os_version)
+                    .add_string("ClientOsProductId", "")  // Empty
+                    .add_string("ClientHostname", &hostname)
+                    .add_string("ServerHostname", "")  // Empty for client
+                    .add_string("ProxyHostname", "")  // No proxy
+                    .add_string("HubName", &self.config.hub)  // Duplicate of hubname
                     .add_int("ClientProductVer", protocol_ver)
                     .add_int("ClientProductBuild", client_build)
-                    .add_string("branded_ctos", "");  // Empty string, not int!
+                    .add_int("ServerProductVer", 0)  // Unknown
+                    .add_int("ServerProductBuild", 0)  // Unknown
+                    // P1: Node Info - Comprehensive OS information
+                    .add_int("ClientOsType", os_type)
+                    .add_int("ClientOsServicePack", service_pack)
+                    .add_string("ClientOsSystemName", &os_system_name)
+                    .add_string("ClientOsProductName", &os_product_name)
+                    .add_string("ClientOsVendorName", if cfg!(target_os = "macos") { "Apple Inc." } else if cfg!(target_os = "windows") { "Microsoft Corporation" } else { "Linux" })
+                    .add_string("ClientOsVersion", &os_version)
+                    .add_string("ClientKernelName", std::env::consts::OS)
+                    .add_string("ClientKernelVersion", &os_version);
+                    // Note: branded_ctos NOT added when empty (C Bridge skips it)
                 
                 eprintln!("[AUTH] 🎫 Ticket auth: hub={}, user={}, authtype={}", 
                     self.config.hub, username, AUTHTYPE_TICKET);
+                eprintln!("[AUTH] 🔍 Field values:");
+                eprintln!("[AUTH]   - method: login");
+                eprintln!("[AUTH]   - version: {}", protocol_ver);
+                eprintln!("[AUTH]   - build: {}", client_build);
+                eprintln!("[AUTH]   - client_str: {}", client_str);
+                eprintln!("[AUTH]   - hubname: {}", self.config.hub);
+                eprintln!("[AUTH]   - username: {}", username);
+                eprintln!("[AUTH]   - protocol: SE-VPN4-PROTOCOL");
+                eprintln!("[AUTH]   - max_connection: {}", self.config.max_connection);
+                eprintln!("[AUTH]   - use_encrypt: {}", if self.config.use_encrypt { 1 } else { 0 });
+                eprintln!("[AUTH]   - use_compress: 0");
+                eprintln!("[AUTH]   - half_connection: 0");
+                eprintln!("[AUTH]   - authtype: 99");
+                eprintln!("[AUTH]   - client_id: 123");
+                eprintln!("[AUTH]   - client_os_name: {}", std::env::consts::OS);
+                eprintln!("[AUTH]   - client_hostname: {}", hostname);
+                eprintln!("[AUTH]   - client_product_name: {}", client_str);
+                eprintln!("[AUTH]   - branded_ctos: (empty string)");
                 
                 // Debug: Hex dump ticket data for comparison with C Bridge
                 eprintln!("[AUTH] 🔍 Ticket hex dump (20 bytes):");
@@ -768,6 +828,26 @@ impl Session {
                 
                 let pack_data = ticket_auth.to_bytes()?;
                 eprintln!("[AUTH] 🔍 Ticket auth packet size: {} bytes", pack_data.len());
+                
+                // DETAILED BYTE DUMP FOR COMPARISON
+                eprintln!("[AUTH] 🔬 FULL PACKET HEX DUMP (first 1024 bytes):");
+                let dump_len = std::cmp::min(pack_data.len(), 1024);
+                for (i, chunk) in pack_data[..dump_len].chunks(16).enumerate() {
+                    eprint!("[AUTH]   {:04x}: ", i * 16);
+                    for byte in chunk {
+                        eprint!("{:02x} ", byte);
+                    }
+                    eprint!(" | ");
+                    for byte in chunk {
+                        let c = if *byte >= 0x20 && *byte <= 0x7e { *byte as char } else { '.' };
+                        eprint!("{}", c);
+                    }
+                    eprintln!();
+                }
+                
+                // Save to file for comparison
+                std::fs::write("/tmp/cedar_ticket_packet.bin", &pack_data)
+                    .unwrap_or_else(|e| eprintln!("[AUTH] ⚠️  Failed to write packet dump: {}", e));
                 
                 // CRITICAL: Use original hostname in HTTP Host header, not the redirect IP!
                 // The ticket is validated against the original hostname
