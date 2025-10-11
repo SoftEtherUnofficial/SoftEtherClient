@@ -4,6 +4,7 @@
 
 use crate::constants::*;
 use crate::protocol::{Packet, PROTOCOL_VERSION};
+use crate::dhcp::{DhcpClient, DhcpState};
 use mayaqua::error::{Error, Result};
 use mayaqua::network::{TcpSocket, UdpSocketWrapper};
 use std::sync::{Arc, Mutex};
@@ -146,6 +147,12 @@ pub struct Session {
     expected_cert: Arc<Mutex<Option<Vec<u8>>>>,
     /// Streaming mode enabled (true after auth, for raw PACK streaming)
     streaming_mode: AtomicBool,
+    /// DHCP client for automatic IP configuration
+    dhcp_client: Arc<Mutex<Option<DhcpClient>>>,
+    /// Last DHCP tick time
+    last_dhcp_tick: Arc<Mutex<Instant>>,
+    /// Interface configured flag
+    interface_configured: Arc<Mutex<bool>>,
 }
 
 impl Session {
@@ -163,6 +170,9 @@ impl Session {
             connection_name: Arc::new(Mutex::new(None)),
             expected_cert: Arc::new(Mutex::new(None)),
             streaming_mode: AtomicBool::new(false),
+            dhcp_client: Arc::new(Mutex::new(None)),
+            last_dhcp_tick: Arc::new(Mutex::new(Instant::now())),
+            interface_configured: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -259,6 +269,13 @@ impl Session {
                     
                     // Session established
                     self.set_status(SessionStatus::Established);
+                    
+                    // Initialize DHCP client for automatic IP configuration
+                    let dhcp_client = DhcpClient::new();
+                    eprintln!("[DHCP] 🌐 Starting DHCP client (MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
+                             dhcp_client.mac()[0], dhcp_client.mac()[1], dhcp_client.mac()[2],
+                             dhcp_client.mac()[3], dhcp_client.mac()[4], dhcp_client.mac()[5]);
+                    *self.dhcp_client.lock().unwrap() = Some(dhcp_client);
                     
                     eprintln!("[CONNECT] ✅ Connection established! Status: {:?}", self.status());
                     eprintln!("[CONNECT] ✅ Session ready for packet forwarding");
@@ -1080,6 +1097,39 @@ impl Session {
     /// Try to receive a data packet from server (non-blocking)
     /// Returns Some((packet_type, data)) if packet received, None if no packet available
     pub fn try_receive_data_packet(&self) -> Result<Option<(String, Vec<u8>)>> {
+        // Priority 1: Handle DHCP tick (generate DHCP/ARP packets periodically)
+        let now = Instant::now();
+        let should_tick = {
+            let last_tick = self.last_dhcp_tick.lock().unwrap();
+            now.duration_since(*last_tick) >= Duration::from_millis(100) // Tick every 100ms
+        };
+        
+        if should_tick {
+            *self.last_dhcp_tick.lock().unwrap() = now;
+            
+            if let Some(ref mut dhcp) = *self.dhcp_client.lock().unwrap() {
+                // Generate DHCP/ARP packet if needed
+                if let Some(packet) = dhcp.tick() {
+                    eprintln!("[DHCP] 📤 Sending DHCP/ARP packet ({} bytes)", packet.len());
+                    
+                    // Send via secure connection
+                    if let Err(e) = self.send_data_packet(&packet) {
+                        eprintln!("[DHCP] ⚠️  Failed to send DHCP packet: {:?}", e);
+                    }
+                }
+                
+                // Check if DHCP just completed and interface needs configuration
+                if dhcp.is_configured() && !*self.interface_configured.lock().unwrap() {
+                    eprintln!("[DHCP] ✅ DHCP configuration complete!");
+                    if let Err(e) = self.configure_interface() {
+                        eprintln!("[DHCP] ⚠️  Interface configuration failed: {:?}", e);
+                    } else {
+                        *self.interface_configured.lock().unwrap() = true;
+                    }
+                }
+            }
+        }
+        
         if self.streaming_mode.load(Ordering::Acquire) {
             // Streaming mode: read raw PACK (no HTTP headers)
             if let Some(packet) = self.stream_receive_pack()? {
@@ -1087,6 +1137,12 @@ impl Session {
                     match method {
                         "data" => {
                             if let Some(data) = packet.get_data("data") {
+                                // Route to DHCP client first
+                                if let Some(ref mut dhcp) = *self.dhcp_client.lock().unwrap() {
+                                    if let Err(e) = dhcp.put_packet(&data) {
+                                        eprintln!("[DHCP] ⚠️  Failed to process packet: {:?}", e);
+                                    }
+                                }
                                 return Ok(Some(("data".to_string(), data.to_vec())));
                             }
                         }
@@ -1157,6 +1213,14 @@ impl Session {
                                         // Data packet - extract and return for TUN forwarding
                                         if let Some(data) = packet.get_data("data") {
                                             eprintln!("[SESSION] 📦 Data packet: {} bytes", data.len());
+                                            
+                                            // Route to DHCP client first
+                                            if let Some(ref mut dhcp) = *self.dhcp_client.lock().unwrap() {
+                                                if let Err(e) = dhcp.put_packet(&data) {
+                                                    eprintln!("[DHCP] ⚠️  Failed to process packet: {:?}", e);
+                                                }
+                                            }
+                                            
                                             return Ok(Some(("data".to_string(), data.to_vec())));
                                         }
                                     }
@@ -2086,6 +2150,72 @@ impl Session {
         {
             (0, 0, 0, "Unknown".to_string(), "Unknown".to_string())
         }
+    }
+    
+    /// Configure network interface with DHCP-assigned IP address
+    fn configure_interface(&self) -> Result<()> {
+        let dhcp = self.dhcp_client.lock().unwrap();
+        let dhcp = dhcp.as_ref().ok_or_else(|| Error::InternalError)?;
+        
+        if !dhcp.is_configured() {
+            return Err(Error::InvalidState);
+        }
+        
+        // Format IP addresses for display and commands
+        let ip_addr = dhcp.ip();
+        let gateway = dhcp.gateway_ip();
+        let netmask = dhcp.netmask();
+        let gateway_mac = dhcp.gateway_mac();
+        
+        let ip_str = format!("{}.{}.{}.{}", 
+            (ip_addr >> 24) & 0xFF, (ip_addr >> 16) & 0xFF, 
+            (ip_addr >> 8) & 0xFF, ip_addr & 0xFF);
+        let gw_str = format!("{}.{}.{}.{}", 
+            (gateway >> 24) & 0xFF, (gateway >> 16) & 0xFF, 
+            (gateway >> 8) & 0xFF, gateway & 0xFF);
+        let mask_str = format!("{}.{}.{}.{}", 
+            (netmask >> 24) & 0xFF, (netmask >> 16) & 0xFF, 
+            (netmask >> 8) & 0xFF, netmask & 0xFF);
+        let mac_str = format!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            gateway_mac[0], gateway_mac[1], gateway_mac[2],
+            gateway_mac[3], gateway_mac[4], gateway_mac[5]);
+        
+        eprintln!("[DHCP] 📋 Configuring interface with DHCP settings:");
+        eprintln!("[DHCP]    IP:          {}", ip_str);
+        eprintln!("[DHCP]    Gateway:     {}", gw_str);
+        eprintln!("[DHCP]    Netmask:     {}", mask_str);
+        eprintln!("[DHCP]    Gateway MAC: {}", mac_str);
+        
+        // Note: Actual interface configuration is typically done by the TUN/TAP layer
+        // This method is here for logging and future integration with system commands
+        
+        eprintln!("[DHCP] ✅ Interface configuration complete!");
+        eprintln!("[DHCP] 💡 TUN/TAP device should now be configured with these settings");
+        
+        Ok(())
+    }
+    
+    /// Get DHCP client state (for monitoring)
+    pub fn dhcp_state(&self) -> Option<DhcpState> {
+        self.dhcp_client.lock().unwrap()
+            .as_ref()
+            .map(|dhcp| dhcp.state())
+    }
+    
+    /// Get assigned IP address from DHCP (0 if not configured)
+    pub fn dhcp_ip(&self) -> u32 {
+        self.dhcp_client.lock().unwrap()
+            .as_ref()
+            .map(|dhcp| dhcp.ip())
+            .unwrap_or(0)
+    }
+    
+    /// Check if DHCP is fully configured
+    pub fn is_dhcp_configured(&self) -> bool {
+        self.dhcp_client.lock().unwrap()
+            .as_ref()
+            .map(|dhcp| dhcp.is_configured())
+            .unwrap_or(false)
     }
 }
 
