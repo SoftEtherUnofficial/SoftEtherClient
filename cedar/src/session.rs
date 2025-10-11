@@ -791,7 +791,17 @@ impl Session {
                     .add_string("ClientOsVendorName", if cfg!(target_os = "macos") { "Apple Inc." } else if cfg!(target_os = "windows") { "Microsoft Corporation" } else { "Linux" })
                     .add_string("ClientOsVersion", &os_version)
                     .add_string("ClientKernelName", std::env::consts::OS)
-                    .add_string("ClientKernelVersion", &os_version);
+                    .add_string("ClientKernelVersion", &os_version)
+                    // OutRpcWinVer fields (Windows version info - CRITICAL!)
+                    .add_int("V_IsWindows", if cfg!(target_os = "windows") { 1 } else { 0 })
+                    .add_int("V_IsNT", if cfg!(target_os = "windows") { 1 } else { 0 })
+                    .add_int("V_IsServer", 0)  // Client, not server
+                    .add_int("V_IsBeta", 0)  // Stable release
+                    .add_int("V_VerMajor", 15)  // macOS version major
+                    .add_int("V_VerMinor", 4)  // macOS version minor  
+                    .add_int("V_Build", 24)  // macOS build simplified
+                    .add_int("V_ServicePack", 0)  // No service pack
+                    .add_string("V_Title", &format!("{} {}", std::env::consts::OS, &os_version));
                     // Note: branded_ctos NOT added when empty (C Bridge skips it)
                 
                 eprintln!("[AUTH] 🎫 Ticket auth: hub={}, user={}, authtype={}", 
@@ -910,27 +920,30 @@ impl Session {
                 }
                 eprintln!("[AUTH] 🔍 DEBUG - End of initial response fields");
                 
-                // Check if this is an intermediate response (error=3 means "send ACK and wait for real Welcome")
+                // IMPORTANT: .junk code does NOT check error field - it extracts session_name directly!
+                // error=3 (ERR_DISCONNECTED) is server metadata, NOT a fatal error
                 if let Some(error_code) = initial_response.get_int("error") {
                     if error_code != 0 {
-                        eprintln!("[AUTH] ❌ Authentication error: code={}", error_code);
-                        return Err(Error::AuthenticationFailed);
+                        eprintln!("[AUTH] ⚠️  Server sent error code={}, but continuing (following .junk behavior)", error_code);
                     }
                 }
                 
-                // error=0 or no error field, this IS the Welcome packet
-                eprintln!("[AUTH] ✅ Got Welcome packet with error=0");
+                // Process response as Welcome packet (like .junk does)
+                eprintln!("[AUTH] ✅ Processing response as Welcome packet");
                 let welcome_packet = initial_response;
                 
-                // Extract session info
-                if let Some(session_name) = welcome_packet.get_string("session_name") {
+                // Extract session info (SessionName or session_name)
+                if let Some(session_name) = welcome_packet.get_string("SessionName")
+                    .or_else(|| welcome_packet.get_string("session_name")) {
                     *self.session_name.lock().unwrap() = Some(session_name.to_string());
                     eprintln!("[AUTH] 📋 Session Name: {}", session_name);
                 } else {
                     eprintln!("[AUTH] ⚠️  Session name not found in Welcome packet after redirect");
                 }
                 
-                if let Some(connection_name) = welcome_packet.get_string("connection_name") {
+                // Extract connection info (ConnectionName or connection_name)
+                if let Some(connection_name) = welcome_packet.get_string("ConnectionName")
+                    .or_else(|| welcome_packet.get_string("connection_name")) {
                     *self.connection_name.lock().unwrap() = Some(connection_name.to_string());
                     eprintln!("[AUTH] 📋 Connection Name: {}", connection_name);
                 } else {
