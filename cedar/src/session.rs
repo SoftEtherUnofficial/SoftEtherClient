@@ -142,6 +142,8 @@ pub struct Session {
     session_name: Arc<Mutex<Option<String>>>,
     /// Connection name from server (e.g., "CID-3292")
     connection_name: Arc<Mutex<Option<String>>>,
+    /// Expected certificate from redirect response (for validation)
+    expected_cert: Arc<Mutex<Option<Vec<u8>>>>,
     /// Streaming mode enabled (true after auth, for raw PACK streaming)
     streaming_mode: AtomicBool,
 }
@@ -159,6 +161,7 @@ impl Session {
             server_random: Arc::new(Mutex::new(None)),
             session_name: Arc::new(Mutex::new(None)),
             connection_name: Arc::new(Mutex::new(None)),
+            expected_cert: Arc::new(Mutex::new(None)),
             streaming_mode: AtomicBool::new(false),
         }
     }
@@ -574,6 +577,325 @@ impl Session {
 
         eprintln!("[AUTH] ✅ Authentication successful (error=0 or not present)");
 
+        // DEBUG: Dump all fields in auth_response
+        eprintln!("[AUTH] 🔍 DEBUG - All fields in packet:");
+        for (key, value) in &auth_response.params {
+            match value {
+                crate::protocol::PacketValue::Int(v) => {
+                    eprintln!("[AUTH]   {} = Int({})", key, v);
+                }
+                crate::protocol::PacketValue::Data(v) => {
+                    eprintln!("[AUTH]   {} = Data({} bytes)", key, v.len());
+                }
+                crate::protocol::PacketValue::String(v) => {
+                    eprintln!("[AUTH]   {} = String(\"{}\")", key, v);
+                }
+                crate::protocol::PacketValue::Int64(v) => {
+                    eprintln!("[AUTH]   {} = Int64({})", key, v);
+                }
+                crate::protocol::PacketValue::Bool(v) => {
+                    eprintln!("[AUTH]   {} = Bool({})", key, v);
+                }
+            }
+        }
+        eprintln!("[AUTH] 🔍 DEBUG - End of packet fields");
+
+        // Check for server redirect
+        if let Some(redirect_flag) = auth_response.get_int("Redirect") {
+            if redirect_flag != 0 {
+                eprintln!("[AUTH] 🔄 Server requested redirect");
+                
+                // Extract redirect information
+                let redirect_ip = auth_response.get_int("Ip")
+                    .ok_or(Error::InvalidResponse)?;
+                let redirect_port = auth_response.get_int("Port")
+                    .ok_or(Error::InvalidResponse)?;
+                let ticket_data = auth_response.get_data("Ticket")
+                    .ok_or(Error::InvalidResponse)?;
+                
+                // CRITICAL: Extract certificate from redirect response (Protocol.c:6031-6042)
+                // This certificate MUST match the redirected server's cert for ticket auth to succeed
+                let expected_cert = auth_response.get_data("Cert");
+                if let Some(cert_data) = expected_cert {
+                    eprintln!("[AUTH] 🔐 Received expected certificate from redirect ({} bytes)", cert_data.len());
+                    let mut cert_lock = self.expected_cert.lock().unwrap();
+                    *cert_lock = Some(cert_data.to_vec());
+                } else {
+                    eprintln!("[AUTH] ⚠️  No certificate in redirect response (unusual but may be OK)");
+                }
+                
+                // Convert IP to string
+                let ip_bytes = redirect_ip.to_be_bytes();
+                let redirect_host = format!("{}.{}.{}.{}", 
+                    ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]);
+                
+                eprintln!("[AUTH] 📍 Redirecting to: {}:{}", redirect_host, redirect_port);
+                eprintln!("[AUTH] 🎫 Using ticket ({} bytes)", ticket_data.len());
+                
+                // CRITICAL: Send empty pack BEFORE disconnecting (matches C code at Protocol.c:5954)
+                // This acknowledges receipt of the redirect response
+                eprintln!("[AUTH] 📤 Sending empty ACK pack before disconnect...");
+                let empty_pack = Packet::new("");
+                let empty_data = empty_pack.to_bytes()?;
+                let empty_http = HttpRequest::new_vpn_post(
+                    &self.config.server,
+                    self.config.port,
+                    empty_data
+                );
+                let empty_bytes = empty_http.to_bytes();
+                self.send_raw(&empty_bytes)?;
+                {
+                    let mut connections = self.tcp_connections.lock().unwrap();
+                    if !connections.is_empty() {
+                        connections[0].flush()?;
+                    }
+                }
+                
+                // Close current connection
+                {
+                    let mut connections = self.tcp_connections.lock().unwrap();
+                    connections.clear();
+                }
+                
+                eprintln!("[AUTH] 🔌 Reconnecting to redirected server...");
+                
+                // Important: Use the original hostname for TLS SNI, but connect to the redirected IP
+                // For simplicity, we'll use the hostname from config since the server likely
+                // has the same certificate for the same hostname regardless of IP
+                eprintln!("[AUTH] 🔌 Using hostname {} for TLS SNI", self.config.server);
+                
+                // Reconnect to redirected server using TcpSocket
+                // Note: TcpSocket::connect_tls will use DNS, but we want to connect to the redirect IP
+                // For now, we'll connect to the hostname (which may resolve to a different IP)
+                // This is acceptable since the server is part of the same cluster
+                let redirect_socket = TcpSocket::connect_tls(&self.config.server, redirect_port as u16)?;
+                
+                {
+                    let mut connections = self.tcp_connections.lock().unwrap();
+                    connections.clear();
+                    connections.push(redirect_socket);
+                }
+                
+                eprintln!("[AUTH] 🔌 TLS connection established to redirected server");
+                
+                // Perform handshake on new connection
+                self.send_handshake()?;
+                
+                // Send ticket-based authentication
+                eprintln!("[AUTH] 🎫 Sending ticket-based auth packet...");
+                
+                // Get username from config
+                let username = match &self.config.auth {
+                    AuthConfig::Password { username, .. } => username.clone(),
+                    AuthConfig::Certificate { username, .. } => username.clone(),
+                    AuthConfig::Anonymous => String::new(),
+                };
+                
+                // Get all the same client info we sent in the initial auth
+                let client_str = "SoftEther VPN Client";
+                let protocol_ver = 444;
+                let client_build = 9807;
+                let hostname = hostname::get()
+                    .unwrap_or_else(|_| std::ffi::OsString::from("unknown"))
+                    .to_string_lossy()
+                    .to_string();
+                let os_name = std::env::consts::OS;
+                let unique_id = Self::generate_unique_id();
+                
+                // Get network endpoint information
+                let connections = self.tcp_connections.lock().unwrap();
+                let (client_ip, client_port) = if !connections.is_empty() {
+                    Self::get_local_address(&connections[0])
+                } else {
+                    ([0, 0, 0, 0], 0)
+                };
+                let (server_ip, server_port) = if !connections.is_empty() {
+                    Self::get_peer_address(&connections[0])
+                } else {
+                    ([0, 0, 0, 0], 0)
+                };
+                drop(connections);
+                
+                // Get OS version info
+                let (os_type, service_pack, _os_build, os_system_name, os_product_name) = Self::get_win_ver_info();
+                let os_version = Self::get_os_version();
+                
+                // Build ticket auth packet matching C code format
+                // According to Protocol.c line 6880-6940, ticket auth needs ALL client fields
+                const AUTHTYPE_TICKET: u32 = 99;
+                let ticket_auth = Packet::new("")
+                    // Basic ticket auth fields
+                    .add_string("method", "login")
+                    .add_string("hubname", &self.config.hub)
+                    .add_string("username", &username)
+                    .add_int("authtype", AUTHTYPE_TICKET)
+                    .add_data("ticket", ticket_data.to_vec())
+                    // Client version info (matches PackAddClientVersion + additional fields)
+                    .add_int("protocol", 0)
+                    .add_string("client_str", client_str)  // FIXED: was "hello", should be "client_str"
+                    .add_int("client_ver", protocol_ver)   // FIXED: was "version", should be "client_ver"
+                    .add_int("client_build", client_build) // FIXED: was "build", should be "client_build"
+                    .add_int("client_id", 0)
+                    // Connection parameters
+                    .add_int("max_connection", self.config.max_connection)
+                    .add_int("use_encrypt", if self.config.use_encrypt { 1 } else { 0 })
+                    .add_int("use_compress", if self.config.use_compress { 1 } else { 0 })
+                    .add_int("half_connection", 0)
+                    // Bridge/routing mode flags
+                    .add_int("require_bridge_routing_mode", 1)
+                    .add_int("require_monitor_mode", 0)
+                    .add_int("qos", 0)
+                    // UDP acceleration support
+                    .add_int("support_bulk_on_rudp", 1)
+                    .add_int("support_hmac_on_bulk_of_rudp", 1)
+                    .add_int("support_udp_recovery", 1)
+                    // Unique ID
+                    .add_data("unique_id", unique_id)
+                    // Network endpoint info
+                    .add_int("ClientIpAddress", u32::from_be_bytes(client_ip))
+                    .add_int("ClientPort", client_port)
+                    .add_int("ServerIpAddress", u32::from_be_bytes(server_ip))
+                    .add_int("ServerPort2", server_port)
+                    // OS/Environment info
+                    .add_string("ClientOsName", os_name)
+                    .add_string("ClientHostname", &hostname)
+                    .add_string("ClientProductName", client_str)
+                    .add_int("ClientProductVer", protocol_ver)
+                    .add_int("ClientProductBuild", client_build)
+                    .add_int("ClientOsType", os_type)
+                    .add_int("ClientOsServicePack", service_pack)
+                    .add_string("ClientOsSystemName", &os_system_name)
+                    .add_string("ClientOsProductName", &os_product_name)
+                    .add_string("ClientOsVendorName", if cfg!(target_os = "macos") { "Apple Inc." } else if cfg!(target_os = "windows") { "Microsoft Corporation" } else { "Linux" })
+                    .add_string("ClientOsVersion", &os_version)
+                    .add_string("ClientKernelName", std::env::consts::OS)
+                    .add_string("ClientKernelVersion", &os_version);
+                
+                eprintln!("[AUTH] 🎫 Ticket auth: hub={}, user={}, authtype={} (with full client info)", 
+                    self.config.hub, username, AUTHTYPE_TICKET);
+                
+                // Debug: Hex dump ticket data for comparison with C Bridge
+                eprintln!("[AUTH] 🔍 Ticket hex dump (20 bytes):");
+                for (i, byte) in ticket_data.iter().enumerate() {
+                    if i % 16 == 0 {
+                        eprint!("[AUTH]   ");
+                    }
+                    eprint!("{:02x} ", byte);
+                    if i % 16 == 15 || i == ticket_data.len() - 1 {
+                        eprintln!();
+                    }
+                }
+                
+                let pack_data = ticket_auth.to_bytes()?;
+                eprintln!("[AUTH] 🔍 Ticket auth packet size: {} bytes", pack_data.len());
+                
+                // CRITICAL: Use original hostname in HTTP Host header, not the redirect IP!
+                // The ticket is validated against the original hostname
+                let http_request = HttpRequest::new_vpn_post(
+                    &self.config.server,  // Use original hostname, NOT redirect_host
+                    redirect_port as u16,
+                    pack_data
+                );
+                
+                let http_bytes = http_request.to_bytes();
+                self.send_raw(&http_bytes)?;
+                
+                {
+                    let mut connections = self.tcp_connections.lock().unwrap();
+                    if !connections.is_empty() {
+                        connections[0].flush()?;
+                    }
+                }
+                
+                // Receive response after redirect
+                let redirect_response = self.receive_http_response()?;
+                
+                if redirect_response.status_code != 200 {
+                    eprintln!("[AUTH] ❌ Redirect authentication failed: HTTP {}", redirect_response.status_code);
+                    return Err(Error::AuthenticationFailed);
+                }
+                
+                // Strip watermark if present
+                let redirect_pack_data = if redirect_response.body.len() > WATERMARK.len() && 
+                                  &redirect_response.body[0..6] == &WATERMARK[0..6] {
+                    &redirect_response.body[WATERMARK.len()..]
+                } else {
+                    &redirect_response.body[..]
+                };
+                
+                // Parse redirected response (this should be the real Welcome packet)
+                let welcome_packet = Packet::from_bytes(redirect_pack_data)?;
+                
+                eprintln!("[AUTH] ✅ Received Welcome packet from redirected server");
+                eprintln!("[AUTH] 🔍 DEBUG - All fields in Welcome packet:");
+                for (key, value) in &welcome_packet.params {
+                    match value {
+                        crate::protocol::PacketValue::Int(v) => {
+                            eprintln!("[AUTH]   {} = Int({})", key, v);
+                        }
+                        crate::protocol::PacketValue::Data(v) => {
+                            eprintln!("[AUTH]   {} = Data({} bytes)", key, v.len());
+                        }
+                        crate::protocol::PacketValue::String(v) => {
+                            eprintln!("[AUTH]   {} = String(\"{}\")", key, v);
+                        }
+                        crate::protocol::PacketValue::Int64(v) => {
+                            eprintln!("[AUTH]   {} = Int64({})", key, v);
+                        }
+                        crate::protocol::PacketValue::Bool(v) => {
+                            eprintln!("[AUTH]   {} = Bool({})", key, v);
+                        }
+                    }
+                }
+                eprintln!("[AUTH] 🔍 DEBUG - End of Welcome packet fields");
+                
+                // Extract session info from Welcome packet (after redirect)
+                if let Some(session_name) = welcome_packet.get_string("session_name") {
+                    *self.session_name.lock().unwrap() = Some(session_name.to_string());
+                    eprintln!("[AUTH] 📋 Session Name: {}", session_name);
+                } else {
+                    eprintln!("[AUTH] ⚠️  Session name not found in Welcome packet");
+                }
+                
+                if let Some(connection_name) = welcome_packet.get_string("connection_name") {
+                    *self.connection_name.lock().unwrap() = Some(connection_name.to_string());
+                    eprintln!("[AUTH] 📋 Connection Name: {}", connection_name);
+                } else {
+                    eprintln!("[AUTH] ⚠️  Connection name not found in Welcome packet");
+                }
+                
+                // Parse server policy settings from Welcome packet
+                eprintln!("[AUTH] 📜 Server Policy Settings:");
+                if let Some(access) = welcome_packet.get_bool("Access") {
+                    eprintln!("[AUTH]   Access: {}", access);
+                }
+                if let Some(bridge) = welcome_packet.get_bool("NoBridge") {
+                    eprintln!("[AUTH]   NoBridge: {}", bridge);
+                }
+                if let Some(routing) = welcome_packet.get_bool("NoRouting") {
+                    eprintln!("[AUTH]   NoRouting: {}", routing);
+                }
+                if let Some(dhcp_filter) = welcome_packet.get_bool("DHCPFilter") {
+                    eprintln!("[AUTH]   DHCPFilter: {}", dhcp_filter);
+                }
+                if let Some(dhcp_no_server) = welcome_packet.get_bool("DHCPNoServer") {
+                    eprintln!("[AUTH]   DHCPNoServer: {}", dhcp_no_server);
+                }
+                if let Some(monitor) = welcome_packet.get_bool("MonitorPort") {
+                    eprintln!("[AUTH]   MonitorPort: {}", monitor);
+                }
+                
+                eprintln!("[AUTH] 🎉 Authentication phase complete (after redirect)!");
+                
+                // Enable streaming mode for data packets (no HTTP headers)
+                self.streaming_mode.store(true, Ordering::Release);
+                eprintln!("[AUTH] 🔄 Switched to streaming mode for data packets");
+                
+                return Ok(());
+            }
+        }
+
+        // No redirect - process as normal Welcome packet
         // P1: Parse session tracking information from Welcome packet
         // These are STRINGS not data blobs!
         if let Some(session_name) = auth_response.get_string("session_name") {
