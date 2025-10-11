@@ -200,6 +200,13 @@ impl Session {
         // Session established
         self.set_status(SessionStatus::Established);
 
+        eprintln!("[CONNECT] ✅ Connection established! Status: {:?}", self.status());
+        eprintln!("[CONNECT] Ready to start session loop");
+
+        // Start session loop (packet forwarding + keep-alive)
+        eprintln!("[CONNECT] Starting session loop...");
+        self.run_session()?;
+
         Ok(())
     }
 
@@ -212,10 +219,7 @@ impl Session {
         // CRITICAL FIX: Based on SoftEtherRust working implementation
         // Send ONLY watermark + random padding (no PACK!) with Content-Type: image/jpeg
         // Server will respond with hello PACK containing server_random
-        eprintln!("[HANDSHAKE] Creating initial handshake (watermark-only, following SoftEtherRust pattern)");
-        
         // Add random padding (up to 2000 bytes) like Go and SoftEtherRust clients
-        // Use timestamp for pseudo-random size
         const HTTP_PACK_RAND_SIZE_MAX: usize = 1000;
         let timestamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -226,32 +230,15 @@ impl Session {
         let mut body = Vec::with_capacity(WATERMARK.len() + rand_size);
         body.extend_from_slice(WATERMARK);
         if rand_size > 0 {
-            // Fill with zeros for simplicity (Go/Rust implementations use random bytes)
             body.extend(std::iter::repeat(0u8).take(rand_size));
         }
-        
-        eprintln!("[HANDSHAKE] Watermark body: {} bytes (watermark: {} + padding: {})", 
-                 body.len(), WATERMARK.len(), rand_size);
 
-        // Step 2: Create HTTP POST with image/jpeg content-type (NOT application/octet-stream!)
-        // This is the critical difference from previous implementation
         let http_request = HttpRequest::new_handshake_post(
             &self.config.server,
             self.config.port,
             body
         );
         
-        eprintln!("[HANDSHAKE] Sending HTTP POST to /vpnsvc/connect.cgi");
-        eprintln!("[HTTP] Content-Type: application/octet-stream");
-        eprintln!("[HTTP] Content-Length: {} bytes", http_request.body.len());
-        
-        // Debug: Print actual HTTP headers being sent
-        eprintln!("[HTTP] Headers being sent:");
-        for (name, value) in &http_request.headers {
-            eprintln!("[HTTP]   {}: {}", name, value);
-        }
-        
-        // Step 5: Send HTTP request (headers + binary body)
         let http_bytes = http_request.to_bytes();
         self.send_raw(&http_bytes)?;
         
@@ -259,70 +246,27 @@ impl Session {
             let mut connections = self.tcp_connections.lock().unwrap();
             if !connections.is_empty() {
                 connections[0].flush()?;
-                eprintln!("[HANDSHAKE] HTTP request sent and flushed");
-                
-                // Log TLS info after first I/O (handshake completed by now)
-                eprintln!("[TLS-CEDAR] ========================================");
-                eprintln!("[TLS-CEDAR] TLS INFO AFTER HANDSHAKE I/O");
-                eprintln!("[TLS-CEDAR] ========================================");
-                eprintln!("[TLS-CEDAR] NOTE: Rustls .with_safe_defaults() supports TLS 1.2 & 1.3");
-                eprintln!("[TLS-CEDAR] Using DangerAcceptAnyCertVerifier (test mode)");
-                eprintln!("[TLS-CEDAR] ========================================");
             }
         }
-
-        eprintln!("[HANDSHAKE] Waiting for HTTP response from server...");
         
-        // Step 6: Receive HTTP response
         let response = self.receive_http_response()?;
 
-        eprintln!("[HTTP] Response: {} {}", response.status_code, 
-                 response.headers.get("content-type").unwrap_or(&"unknown".to_string()));
-        eprintln!("[HTTP] Body: {} bytes", response.body.len());
-
-        // Debug: Print error body if not 200 OK
         if response.status_code != 200 {
-            eprintln!("[HTTP] Error response body:");
-            if let Ok(body_str) = String::from_utf8(response.body.clone()) {
-                eprintln!("{}", body_str);
-            }
+            eprintln!("[HANDSHAKE] ❌ Server returned HTTP {}", response.status_code);
             return Err(Error::InvalidResponse);
         }
 
-        // Debug: Show response body (first 100 bytes)
-        eprintln!("[HTTP] Response body (first 100 bytes): {:02X?}", 
-                 &response.body[..response.body.len().min(100)]);
-
-        // Step 7: Handle watermark in response (may or may not be present)
-        // Server sends watermark (1411 bytes) + PACK in initial handshake
-        // But may send PACK directly in subsequent responses
         let pack_data = if response.body.len() > WATERMARK.len() && 
                           &response.body[0..6] == &WATERMARK[0..6] {
-            eprintln!("[HANDSHAKE] Detected watermark, stripping {} bytes", WATERMARK.len());
             &response.body[WATERMARK.len()..]
         } else {
-            eprintln!("[HANDSHAKE] No watermark detected, parsing {} bytes of PACK data directly", response.body.len());
             &response.body[..]
         };
 
-        // Step 8: Parse PACK from HTTP response body
-        eprintln!("[HANDSHAKE] Attempting to parse PACK from {} bytes", pack_data.len());
-        eprintln!("[HANDSHAKE] First 50 bytes: {:02X?}", &pack_data[..pack_data.len().min(50)]);
-        
-        let server_hello = match Packet::from_bytes(pack_data) {
-            Ok(packet) => {
-                eprintln!("[HANDSHAKE] ✅ PACK parsed successfully");
-                packet
-            },
-            Err(e) => {
-                eprintln!("[HANDSHAKE] ❌ PACK parsing failed: {:?}", e);
-                return Err(e);
-            }
-        };
+        let server_hello = Packet::from_bytes(pack_data)?;
 
         eprintln!("[HANDSHAKE] Received server hello packet");
         
-        // Step 9: Extract and validate server information
         let server_str = server_hello
             .get_string("hello")
             .ok_or(Error::InvalidResponse)?;
@@ -335,51 +279,25 @@ impl Session {
             .get_int("build")
             .unwrap_or(0);
 
-        // CRITICAL: Extract server random challenge for authentication
+        // Store server random challenge for authentication
         if let Some(random_data) = server_hello.get_data("random") {
-            eprintln!("[HANDSHAKE] ========================================");
-            eprintln!("[HANDSHAKE] SERVER RANDOM RECEIVED");
-            eprintln!("[HANDSHAKE] ========================================");
-            eprintln!("[HANDSHAKE] Server random length: {} bytes", random_data.len());
-            eprintln!("[HANDSHAKE] Server random (hex): {}", 
-                     random_data.iter().map(|b| format!("{:02x}", b)).collect::<String>());
-            eprintln!("[HANDSHAKE] Server random (decimal): {:?}", random_data);
-            eprintln!("[HANDSHAKE] Storing in self.server_random for later auth use");
             *self.server_random.lock().unwrap() = Some(random_data.to_vec());
-            eprintln!("[HANDSHAKE] ✅ Server random stored successfully");
-            eprintln!("[HANDSHAKE] ========================================");
-        } else {
-            eprintln!("[HANDSHAKE] ❌ CRITICAL: No random challenge received from server");
-            eprintln!("[HANDSHAKE] This will cause authentication to fail!");
         }
 
-        eprintln!("[HANDSHAKE] ✅ Server: {} (version: {}, build: {})", 
+        eprintln!("[HANDSHAKE] ✅ Server: {} (v{}, build {})", 
                  server_str, server_version, server_build);
-        eprintln!("[HANDSHAKE] Protocol handshake completed successfully!");
-
-        // Validate protocol version compatibility
-        if server_version != PROTOCOL_VERSION {
-            eprintln!("[HANDSHAKE] WARNING: Version mismatch - Client: {}, Server: {}",
-                    PROTOCOL_VERSION, server_version);
-        }
 
         Ok(())
     }
 
-    /// Internal authentication helper using config
     fn authenticate_from_config(&self) -> Result<()> {
         use crate::protocol::{Packet, WATERMARK};
         use mayaqua::HttpRequest;
 
-        eprintln!("[AUTH] Starting authentication phase");
-
-        // Create authentication packet based on config
         const CLIENT_AUTHTYPE_ANONYMOUS: u32 = 0;
         const CLIENT_AUTHTYPE_PASSWORD: u32 = 1;
-        
         let auth_packet = match &self.config.auth {
             AuthConfig::Anonymous => {
-                eprintln!("[AUTH] Using anonymous authentication");
                 Packet::new("auth")
                     .add_string("method", "login")
                     .add_string("hubname", &self.config.hub)
@@ -387,97 +305,26 @@ impl Session {
                     .add_int("authtype", CLIENT_AUTHTYPE_ANONYMOUS)
             }
             AuthConfig::Password { username, password } => {
-                eprintln!("[AUTH] Using password authentication for user: {}", username);
-                
-                // Get password hash (SHA-0)
+                // Get password hash
                 let password_hash: Vec<u8> = if password.starts_with("SHA:") || password.contains("=") {
-                    // Already a base64-encoded hash
-                    eprintln!("[AUTH] Using pre-hashed password");
                     let hash_b64 = password.trim_start_matches("SHA:");
                     use base64::Engine;
                     base64::engine::general_purpose::STANDARD.decode(hash_b64)
                         .map_err(|_| Error::InvalidParameter)?
                 } else {
-                    // Hash the password (SHA-0 with username as salt)
-                    eprintln!("[AUTH] Hashing password");
                     mayaqua::crypto::softether_password_hash(password, username).to_vec()
                 };
 
-                eprintln!("[AUTH] Password hash length: {} bytes", password_hash.len());
-                eprintln!("[AUTH] Password hash (hex): {}", password_hash.iter().map(|b| format!("{:02x}", b)).collect::<String>());
-
-                // Get server random challenge (CRITICAL for authentication)
-                eprintln!("[AUTH] ========================================");
-                eprintln!("[AUTH] RETRIEVING SERVER RANDOM FOR AUTH");
-                eprintln!("[AUTH] ========================================");
+                // Get server random challenge
+                let server_random = self.server_random.lock().unwrap()
+                    .clone()
+                    .ok_or(Error::InvalidResponse)?;
                 
-                let server_random_lock = self.server_random.lock().unwrap();
-                let server_random = server_random_lock.clone();
-                drop(server_random_lock); // Release lock immediately
-                
-                let server_random = match server_random {
-                    Some(r) => {
-                        eprintln!("[AUTH] ✅ Server random retrieved from handshake");
-                        r
-                    },
-                    None => {
-                        eprintln!("[AUTH] ❌ CRITICAL ERROR: No server random available!");
-                        eprintln!("[AUTH] Handshake may have failed or random was not stored");
-                        return Err(Error::InvalidResponse);
-                    }
-                };
-                
-                eprintln!("[AUTH] Server random length: {} bytes", server_random.len());
-                eprintln!("[AUTH] Server random (hex): {}", server_random.iter().map(|b| format!("{:02x}", b)).collect::<String>());
-                eprintln!("[AUTH] Server random (decimal): {:?}", server_random);
-                
-                // Verify server random is exactly 20 bytes (SHA1_SIZE)
-                if server_random.len() != 20 {
-                    eprintln!("[AUTH] ⚠️  WARNING: Server random is {} bytes, expected 20!", server_random.len());
-                }
-
                 // Compute secure_password = SHA-0(password_hash || server_random)
-                // This is the SecurePassword() function from Sam.c
-                // CRITICAL: SoftEther uses SHA-0 (not SHA-1!) for authentication!
-                eprintln!("[AUTH] ========================================");
-                eprintln!("[AUTH] SECURE PASSWORD CALCULATION (DEEP DEBUG)");
-                eprintln!("[AUTH] ========================================");
-                eprintln!("[AUTH] Step 1: Prepare inputs");
-                eprintln!("[AUTH]   Username:          '{}'", username);
-                eprintln!("[AUTH]   Password hash:     {} ({} bytes)", 
-                         password_hash.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
-                         password_hash.len());
-                eprintln!("[AUTH]   Server random:     {} ({} bytes)", 
-                         server_random.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
-                         server_random.len());
-                
-                eprintln!("[AUTH] Step 2: Concatenate password_hash + server_random");
                 let mut combined = Vec::with_capacity(password_hash.len() + server_random.len());
                 combined.extend_from_slice(&password_hash);
-                eprintln!("[AUTH]   After adding password_hash: {} bytes", combined.len());
                 combined.extend_from_slice(&server_random);
-                eprintln!("[AUTH]   After adding server_random: {} bytes", combined.len());
-                eprintln!("[AUTH]   Combined (hex):    {} ({} bytes)", 
-                         combined.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
-                         combined.len());
-                
-                eprintln!("[AUTH] Step 3: Apply SHA-0 hash");
                 let secure_token = mayaqua::crypto::sha0(&combined).to_vec();
-                eprintln!("[AUTH]   SHA-0 output:      {} ({} bytes)", 
-                         secure_token.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
-                         secure_token.len());
-                
-                eprintln!("[AUTH] Step 4: Verification");
-                if secure_token.len() != 20 {
-                    eprintln!("[AUTH]   ⚠️  WARNING: Secure token is {} bytes, expected 20!", secure_token.len());
-                } else {
-                    eprintln!("[AUTH]   ✅ Secure token size correct (20 bytes)");
-                }
-                eprintln!("[AUTH] ========================================");
-
-                // MINIMAL AUTH PACK - Match softether-rust exactly
-                // Based on successful authentication from reference implementation
-                // Only 25 essential fields, no extra NodeInfo/IPv6/Proxy/WinVer fields
                 
                 let client_str = "SoftEther VPN Client";
                 let protocol_ver = 444;
@@ -540,186 +387,188 @@ impl Session {
             }
         };
 
-        eprintln!("[AUTH] Serializing authentication packet");
         let pack_data = auth_packet.to_bytes()?;
-        
-        // === COMPREHENSIVE PACKET ANALYSIS ===
-        eprintln!("[AUTH] ========================================");
-        eprintln!("[AUTH] AUTHENTICATION PACKET SUMMARY");
-        eprintln!("[AUTH] ========================================");
-        eprintln!("[AUTH] Total PACK size: {} bytes", pack_data.len());
-        eprintln!("[AUTH] Field count: {} (0x{:02X})", auth_packet.params.len(), auth_packet.params.len());
-        eprintln!("[AUTH] ========================================");
-        eprintln!("[AUTH] Fields (alphabetically sorted):");
-        let mut sorted_fields: Vec<_> = auth_packet.params.iter().collect();
-        sorted_fields.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
-        for (i, (key, value)) in sorted_fields.iter().enumerate() {
-            let value_desc = match value {
-                crate::protocol::PacketValue::Int(v) => format!("Int({})", v),
-                crate::protocol::PacketValue::Int64(v) => format!("Int64({})", v),
-                crate::protocol::PacketValue::String(s) => {
-                    if s.len() > 40 {
-                        format!("String('{}...')", &s[..40])
-                    } else {
-                        format!("String('{}')", s)
-                    }
-                },
-                crate::protocol::PacketValue::Data(d) => format!("Data({} bytes)", d.len()),
-                crate::protocol::PacketValue::Bool(b) => format!("Bool({})", b),
-            };
-            eprintln!("[AUTH]   {:2}. {:35} = {}", i + 1, key, value_desc);
-        }
-        eprintln!("[AUTH] ========================================");
-        
-        // === COMPLETE HEX DUMP WITH ASCII ===
-        eprintln!("[AUTH] === COMPLETE PACK DATA HEX DUMP ({} bytes) ===", pack_data.len());
-        for (i, chunk) in pack_data.chunks(16).enumerate() {
-            eprint!("[AUTH]   {:04x}:", i * 16);
-            // Hex bytes
-            for byte in chunk {
-                eprint!(" {:02x}", byte);
-            }
-            // Padding for alignment
-            for _ in chunk.len()..16 {
-                eprint!("   ");
-            }
-            eprint!("  ");
-            // ASCII representation
-            for byte in chunk {
-                if *byte >= 32 && *byte < 127 {
-                    eprint!("{}", *byte as char);
-                } else {
-                    eprint!(".");
-                }
-            }
-            eprintln!();
-        }
-        eprintln!("[AUTH] === END COMPLETE PACK DATA HEX DUMP ===");
-
-        // CRITICAL FIX: For auth/communication, send PACK ONLY (no watermark!)
-        // Watermark is ONLY for initial handshake (/vpnsvc/connect.cgi)
-        // After handshake, /vpnsvc/vpn.cgi expects pure PACK data
-        // (Based on SoftEtherRust send_pack() implementation)
-        eprintln!("[AUTH] Sending PACK-only body (no watermark): {} bytes", pack_data.len());
 
         // Send via HTTP POST
         let http_request = HttpRequest::new_vpn_post(
             &self.config.server,
             self.config.port,
-            pack_data  // Send pack_data directly, NOT wrapped with watermark!
+            pack_data
         );
 
-        eprintln!("[AUTH] Sending HTTP POST for authentication");
-        eprintln!("[AUTH] HTTP Request - Method: {}, Path: {}", http_request.method, http_request.path);
         let http_bytes = http_request.to_bytes();
-        
-        // Hex dump of HTTP headers (first 512 bytes)
-        eprintln!("[AUTH] === HTTP REQUEST HEX DUMP (first 512 bytes) ===");
-        let http_dump_len = http_bytes.len().min(512);
-        for (i, chunk) in http_bytes[..http_dump_len].chunks(16).enumerate() {
-            eprint!("[AUTH]   {:04x}:", i * 16);
-            for byte in chunk {
-                eprint!(" {:02x}", byte);
-            }
-            eprintln!();
-        }
-        if http_bytes.len() > 512 {
-            eprintln!("[AUTH]   ... ({} more bytes)", http_bytes.len() - 512);
-        }
-        eprintln!("[AUTH] === END HTTP REQUEST HEX DUMP ===");
-        
         self.send_raw(&http_bytes)?;
 
         {
             let mut connections = self.tcp_connections.lock().unwrap();
             if !connections.is_empty() {
                 connections[0].flush()?;
-                eprintln!("[AUTH] Authentication request sent and flushed");
             }
         }
-
-        eprintln!("[AUTH] Waiting for authentication response...");
         
         // Receive HTTP response
         let response = self.receive_http_response()?;
 
         if response.status_code != 200 {
             eprintln!("[AUTH] ❌ Authentication failed: HTTP {}", response.status_code);
-            if let Ok(body_str) = String::from_utf8(response.body.clone()) {
-                eprintln!("[AUTH] Server response: {}", body_str);
-            }
             return Err(Error::AuthenticationFailed);
         }
-
-        eprintln!("[AUTH] HTTP 200 OK - parsing response");
 
         // Strip watermark if present
         let pack_data = if response.body.len() > WATERMARK.len() && 
                           &response.body[0..6] == &WATERMARK[0..6] {
-            eprintln!("[AUTH] Stripping watermark");
             &response.body[WATERMARK.len()..]
         } else {
             &response.body[..]
         };
 
         // Parse response packet
-        eprintln!("[AUTH] Parsing PACK response ({} bytes)", pack_data.len());
         let auth_response = Packet::from_bytes(pack_data)?;
 
-        // Debug: Print ALL fields in the response
-        eprintln!("[AUTH] === Response fields ===");
-        for (key, value) in &auth_response.params {
-            match value {
-                crate::protocol::PacketValue::Int(v) => eprintln!("[AUTH]   {} = {} (int)", key, v),
-                crate::protocol::PacketValue::String(s) => eprintln!("[AUTH]   {} = {:?} (string)", key, s),
-                crate::protocol::PacketValue::Data(d) => eprintln!("[AUTH]   {} = <{} bytes> (data)", key, d.len()),
-                crate::protocol::PacketValue::Bool(b) => eprintln!("[AUTH]   {} = {} (bool)", key, b),
-                _ => eprintln!("[AUTH]   {} = <other>", key),
-            }
-        }
-        eprintln!("[AUTH] === End response fields ===");
-
         // Check authentication result
-        // C bridge (Protocol.c:5923) exits immediately on any error code
         if let Some(error_code) = auth_response.get_int("error") {
             if error_code != 0 {
-                eprintln!("[AUTH] ❌ Server returned error code: {}", error_code);
-                
-                // Check if pencore contains error details
-                if let Some(pencore) = auth_response.get_data("pencore") {
-                    eprintln!("[AUTH] Pencore error data: {} bytes", pencore.len());
-                }
-                
-                // Map error codes
-                let error_desc = match error_code {
-                    3 => "Connection interrupted (ERR_DISCONNECTED)",
-                    7 => "Auth type not supported (ERR_AUTHTYPE_NOT_SUPPORTED)",
-                    9 => "Authentication failed (ERR_AUTH_FAILED)",
-                    68 => "User auth type not password (ERR_USER_AUTHTYPE_NOT_PASSWORD)",
-                    _ => "Unknown error",
-                };
-                eprintln!("[AUTH] Error: {}", error_desc);
-                
+                eprintln!("[AUTH] ❌ Authentication failed - error code: {}", error_code);
                 return Err(Error::AuthenticationFailed);
             }
         }
 
-        eprintln!("[AUTH] ✅ No error code - authentication successful!");
-
-        // Check for explicit success indicator (authok field)
-        if let Some(authok) = auth_response.get_int("authok") {
-            if authok != 0 {
-                eprintln!("[AUTH] authok={}", authok);
-            }
-        }
-
-        // Extract session information if provided
-        if let Some(session_key) = auth_response.get_data("session_key") {
-            eprintln!("[AUTH] Received session key: {} bytes", session_key.len());
-        }
+        eprintln!("[AUTH] ✅ Authentication successful");
 
         eprintln!("[AUTH] 🎉 Authentication phase complete!");
 
+        Ok(())
+    }
+
+    /// Run session loop (packet forwarding + keep-alive)
+    pub fn run_session(&self) -> Result<()> {
+        if self.status() != SessionStatus::Established {
+            return Err(Error::InvalidState);
+        }
+
+        eprintln!("[SESSION] Starting session loop");
+        eprintln!("[SESSION] Session established - ready for packet forwarding");
+        eprintln!("[SESSION] Keep-alive interval: {:?}", self.config.keep_alive_interval);
+        eprintln!();
+        eprintln!("[SESSION] \u{1f4a1} TUN/TAP Integration Ready!");
+        eprintln!("[SESSION] To enable full VPN tunnel:");
+        eprintln!("[SESSION]   1. Run as root/sudo for TUN device permissions");
+        eprintln!("[SESSION]   2. Uncomment TUN/TAP code in client.zig");
+        eprintln!("[SESSION]   3. Forward packets through tunnel");
+        eprintln!();
+
+        let mut last_keepalive = Instant::now();
+        let mut packet_count = 0u64;
+        let start_time = Instant::now();
+
+        loop {
+            // Check connection status
+            if !self.is_alive() {
+                eprintln!("[SESSION] Connection lost, exiting session loop");
+                break;
+            }
+
+            // Send keep-alive if needed
+            if last_keepalive.elapsed() >= self.config.keep_alive_interval {
+                let elapsed = start_time.elapsed();
+                eprintln!("[SESSION] \u{1f493} Keep-alive (session uptime: {:?})", elapsed);
+                if let Err(e) = self.send_keepalive() {
+                    eprintln!("[SESSION] \u{26a0}\u{fe0f}  Keep-alive failed: {:?}", e);
+                    break;
+                }
+                last_keepalive = Instant::now();
+            }
+
+            // Try to receive data packets from server
+            // This would normally forward to TUN device
+            match self.try_receive_data_packet() {
+                Ok(Some((packet_type, size))) => {
+                    eprintln!("[SESSION] \u{1f4e6} Received {} bytes (type: {})", size, packet_type);
+                    packet_count += 1;
+                }
+                Ok(None) => {
+                    // No packet available (normal)
+                }
+                Err(e) => {
+                    eprintln!("[SESSION] \u{26a0}\u{fe0f}  Receive error: {:?}", e);
+                    // Don't break on receive errors - might be transient
+                }
+            }
+
+            // Statistics every 30 seconds
+            if packet_count > 0 && packet_count % 100 == 0 {
+                let elapsed = start_time.elapsed();
+                let stats = self.stats();
+                eprintln!("[SESSION] \u{1f4ca} Statistics:");
+                eprintln!("[SESSION]   Uptime:     {:?}", elapsed);
+                eprintln!("[SESSION]   Packets RX: {}", stats.packets_received);
+                eprintln!("[SESSION]   Packets TX: {}", stats.packets_sent);
+                eprintln!("[SESSION]   Bytes RX:   {}", stats.bytes_received);
+                eprintln!("[SESSION]   Bytes TX:   {}", stats.bytes_sent);
+            }
+
+            // Small delay to prevent CPU spinning
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        let elapsed = start_time.elapsed();
+        eprintln!("[SESSION] Session ended after {:?}", elapsed);
+        Ok(())
+    }
+
+    /// Try to receive a data packet from server (non-blocking)
+    /// Returns Some((packet_type, size)) if packet received, None if no packet available
+    fn try_receive_data_packet(&self) -> Result<Option<(String, usize)>> {
+        // For now, just return None since we don't have non-blocking receive implemented
+        // This will be replaced with proper TUN/TAP integration
+        // TODO: Implement non-blocking packet receive from server
+        Ok(None)
+    }
+
+    /// Send keep-alive packet to maintain connection
+    fn send_keepalive(&self) -> Result<()> {
+        use mayaqua::HttpRequest;
+
+        eprintln!("[KEEPALIVE] Creating keep-alive packet");
+
+        // Create keep-alive PACK
+        let keepalive_packet = Packet::new("keep_alive")
+            .add_string("method", "keepalive")
+            .add_int("timestamp", std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as u32);
+
+        let pack_data = keepalive_packet.to_bytes()?;
+        eprintln!("[KEEPALIVE] PACK data: {} bytes", pack_data.len());
+
+        // Send via HTTP POST
+        let http_request = HttpRequest::new_vpn_post(
+            &self.config.server,
+            self.config.port,
+            pack_data,
+        );
+
+        let http_bytes = http_request.to_bytes();
+        self.send_raw(&http_bytes)?;
+
+        {
+            let mut connections = self.tcp_connections.lock().unwrap();
+            if !connections.is_empty() {
+                connections[0].flush()?;
+            }
+        }
+
+        eprintln!("[KEEPALIVE] ✅ Keep-alive sent");
+
+        // Receive keep-alive response
+        let response = self.receive_http_response()?;
+        if response.status_code != 200 {
+            eprintln!("[KEEPALIVE] ❌ Server returned HTTP {}", response.status_code);
+            return Err(Error::InvalidResponse);
+        }
+
+        eprintln!("[KEEPALIVE] ✅ Keep-alive acknowledged by server");
         Ok(())
     }
 
@@ -801,7 +650,6 @@ impl Session {
 
     /// Internal method: Receive HTTP response (for handshake)
     fn receive_http_response(&self) -> Result<mayaqua::HttpResponse> {
-        use std::io::BufRead;
         
         let mut connections = self.tcp_connections.lock().unwrap();
         if connections.is_empty() {
