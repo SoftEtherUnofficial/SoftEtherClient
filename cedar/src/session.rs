@@ -7,6 +7,7 @@ use crate::protocol::{Packet, PROTOCOL_VERSION};
 use mayaqua::error::{Error, Result};
 use mayaqua::network::{TcpSocket, UdpSocketWrapper};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// Session status
@@ -141,6 +142,8 @@ pub struct Session {
     session_name: Arc<Mutex<Option<String>>>,
     /// Connection name from server (e.g., "CID-3292")
     connection_name: Arc<Mutex<Option<String>>>,
+    /// Streaming mode enabled (true after auth, for raw PACK streaming)
+    streaming_mode: AtomicBool,
 }
 
 impl Session {
@@ -156,6 +159,7 @@ impl Session {
             server_random: Arc::new(Mutex::new(None)),
             session_name: Arc::new(Mutex::new(None)),
             connection_name: Arc::new(Mutex::new(None)),
+            streaming_mode: AtomicBool::new(false),
         }
     }
 
@@ -553,26 +557,37 @@ impl Session {
         // Check authentication result
         if let Some(error_code) = auth_response.get_int("error") {
             if error_code != 0 {
+                eprintln!("[AUTH] ❌ Server returned error code: {}", error_code);
+                
+                // Check for redirect
+                if let Some(ip) = auth_response.get_int("Ip") {
+                    eprintln!("[AUTH] 📍 Redirect to IP: {}", ip);
+                }
+                if let Some(port) = auth_response.get_int("Port") {
+                    eprintln!("[AUTH] 📍 Redirect to Port: {}", port);
+                }
+                
                 eprintln!("[AUTH] ❌ Authentication failed - error code: {}", error_code);
                 return Err(Error::AuthenticationFailed);
             }
         }
 
-        eprintln!("[AUTH] ✅ Authentication successful");
+        eprintln!("[AUTH] ✅ Authentication successful (error=0 or not present)");
 
-        // P1: Parse session tracking information from response
-        if let Some(session_name_data) = auth_response.get_data("session_name") {
-            if let Ok(name) = String::from_utf8(session_name_data.to_vec()) {
-                *self.session_name.lock().unwrap() = Some(name.clone());
-                eprintln!("[AUTH] 📋 Session Name: {}", name);
-            }
+        // P1: Parse session tracking information from Welcome packet
+        // These are STRINGS not data blobs!
+        if let Some(session_name) = auth_response.get_string("session_name") {
+            *self.session_name.lock().unwrap() = Some(session_name.to_string());
+            eprintln!("[AUTH] 📋 Session Name: {}", session_name);
+        } else {
+            eprintln!("[AUTH] ⚠️  Session name not found in Welcome packet");
         }
         
-        if let Some(connection_name_data) = auth_response.get_data("connection_name") {
-            if let Ok(name) = String::from_utf8(connection_name_data.to_vec()) {
-                *self.connection_name.lock().unwrap() = Some(name.clone());
-                eprintln!("[AUTH] 📋 Connection Name: {}", name);
-            }
+        if let Some(connection_name) = auth_response.get_string("connection_name") {
+            *self.connection_name.lock().unwrap() = Some(connection_name.to_string());
+            eprintln!("[AUTH] 📋 Connection Name: {}", connection_name);
+        } else {
+            eprintln!("[AUTH] ⚠️  Connection name not found in Welcome packet");
         }
         
         // P1: Parse and log server policy settings
@@ -597,6 +612,10 @@ impl Session {
         }
 
         eprintln!("[AUTH] 🎉 Authentication phase complete!");
+        
+        // Enable streaming mode for data packets (no HTTP headers)
+        self.streaming_mode.store(true, Ordering::Release);
+        eprintln!("[AUTH] 🔄 Switched to streaming mode for data packets");
 
         Ok(())
     }
@@ -653,6 +672,137 @@ impl Session {
     /// Try to receive a data packet from server (non-blocking)
     /// Returns Some((packet_type, data)) if packet received, None if no packet available
     pub fn try_receive_data_packet(&self) -> Result<Option<(String, Vec<u8>)>> {
+        if self.streaming_mode.load(Ordering::Acquire) {
+            // Streaming mode: read raw PACK (no HTTP headers)
+            if let Some(packet) = self.stream_receive_pack()? {
+                if let Some(method) = packet.get_string("method") {
+                    match method {
+                        "data" => {
+                            if let Some(data) = packet.get_data("data") {
+                                return Ok(Some(("data".to_string(), data.to_vec())));
+                            }
+                        }
+                        "keepalive" => {
+                            return Ok(Some(("keepalive".to_string(), Vec::new())));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Ok(None)
+        } else {
+            // HTTP mode: read HTTP response (for initial handshake/auth)
+            use crate::protocol::WATERMARK;
+            
+            let mut connections = self.tcp_connections.lock().unwrap();
+            if connections.is_empty() {
+                return Ok(None);
+            }
+            
+            // Try non-blocking peek to check if data is available
+            let mut peek_buf = [0u8; 1];
+            match connections[0].peek(&mut peek_buf) {
+                Ok(0) => {
+                    // Connection closed
+                    drop(connections);
+                    return Err(Error::DisconnectedError);
+                }
+                Ok(_) => {
+                    // Data available, try to read HTTP response
+                }
+                Err(_) => {
+                    // No data available or error - just return None for non-blocking
+                    return Ok(None);
+                }
+            }
+            
+            // Try to receive HTTP response (this may block briefly)
+            drop(connections); // Release lock before receiving
+            
+            match self.try_receive_http_response_nonblock() {
+                Ok(Some(response)) => {
+                    if response.status_code != 200 {
+                        eprintln!("[SESSION] HTTP error {}", response.status_code);
+                        return Err(Error::InvalidResponse);
+                    }
+                    
+                    // Strip watermark if present
+                    let pack_data = if response.body.len() > WATERMARK.len() && 
+                                      &response.body[0..6] == &WATERMARK[0..6] {
+                        &response.body[WATERMARK.len()..]
+                    } else {
+                        &response.body[..]
+                    };
+                    
+                    if pack_data.is_empty() {
+                        return Ok(None);
+                    }
+                    
+                    // Parse PACK packet
+                    match Packet::from_bytes(pack_data) {
+                        Ok(packet) => {
+                            // Check packet type
+                            if let Some(method) = packet.get_string("method") {
+                                // Handle different packet types
+                                match method {
+                                    "data" => {
+                                        // Data packet - extract and return for TUN forwarding
+                                        if let Some(data) = packet.get_data("data") {
+                                            eprintln!("[SESSION] 📦 Data packet: {} bytes", data.len());
+                                            return Ok(Some(("data".to_string(), data.to_vec())));
+                                        }
+                                    }
+                                    "keepalive" => {
+                                        // Keep-alive response - return empty data
+                                        return Ok(Some(("keepalive".to_string(), Vec::new())));
+                                    }
+                                    _ => {
+                                        eprintln!("[SESSION] Unknown packet method: {}", method);
+                                    }
+                                }
+                            }
+                            Ok(Some(("unknown".to_string(), Vec::new())))
+                        }
+                        Err(e) => {
+                            eprintln!("[SESSION] Failed to parse packet: {:?}", e);
+                            Ok(None)
+                        }
+                    }
+                }
+                Ok(None) => Ok(None),
+                Err(e) => Err(e),
+            }
+        }
+    }
+    
+    /// Send a PACK in streaming mode (no HTTP headers, just watermark+size+data)
+    fn stream_send_pack(&self, pack: &Packet) -> Result<()> {
+        use crate::protocol::WATERMARK;
+        
+        let pack_data = pack.to_bytes()?;
+        
+        // Format: [WATERMARK(16)][SIZE(4 BE)][PACK_DATA]
+        let mut stream_data = Vec::with_capacity(16 + 4 + pack_data.len());
+        stream_data.extend_from_slice(&WATERMARK);
+        stream_data.extend_from_slice(&(pack_data.len() as u32).to_be_bytes());
+        stream_data.extend_from_slice(&pack_data);
+        
+        // Send raw data on persistent connection
+        self.send_raw(&stream_data)?;
+        
+        // Flush TCP connection
+        {
+            let mut connections = self.tcp_connections.lock().unwrap();
+            if !connections.is_empty() {
+                connections[0].flush()?;
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Receive a PACK from streaming mode (no HTTP headers, just watermark+size+data)
+    fn stream_receive_pack(&self) -> Result<Option<Packet>> {
         use crate::protocol::WATERMARK;
         
         let mut connections = self.tcp_connections.lock().unwrap();
@@ -660,80 +810,58 @@ impl Session {
             return Ok(None);
         }
         
-        // Try non-blocking peek to check if data is available
-        let mut peek_buf = [0u8; 1];
-        match connections[0].peek(&mut peek_buf) {
-            Ok(0) => {
-                // Connection closed
-                drop(connections);
-                return Err(Error::DisconnectedError);
+        // 1. Look for watermark (16 bytes)
+        let mut watermark_buf = [0u8; 16];
+        match connections[0].peek(&mut watermark_buf) {
+            Ok(16) if &watermark_buf == &WATERMARK => {
+                // Consume watermark
+                connections[0].recv(&mut watermark_buf)?;
             }
-            Ok(_) => {
-                // Data available, try to read HTTP response
-            }
-            Err(_) => {
-                // No data available or error - just return None for non-blocking
-                return Ok(None);
+            Ok(n) if n < 16 => return Ok(None),  // Not enough data yet
+            _ => return Ok(None),  // No watermark or error
+        }
+        
+        // 2. Read size (4 bytes, big-endian)
+        let mut size_buf = [0u8; 4];
+        match connections[0].recv(&mut size_buf) {
+            Ok(4) => {}
+            _ => return Ok(None),
+        }
+        let pack_size = u32::from_be_bytes(size_buf) as usize;
+        
+        // Sanity check on size (max 1MB)
+        if pack_size > 1024 * 1024 {
+            eprintln!("[SESSION] Invalid PACK size: {} bytes", pack_size);
+            return Err(Error::InvalidResponse);
+        }
+        
+        // 3. Read PACK data
+        let mut pack_buf = vec![0u8; pack_size];
+        let mut total_read = 0;
+        while total_read < pack_size {
+            match connections[0].recv(&mut pack_buf[total_read..]) {
+                Ok(n) if n > 0 => total_read += n,
+                Ok(0) => return Err(Error::DisconnectedError),
+                Ok(_) => {
+                    // Zero bytes but not disconnected, wait briefly
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    continue;
+                }
+                Err(_) => {
+                    // Error reading - might be WouldBlock, wait briefly and retry
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    continue;
+                }
             }
         }
         
-        // Try to receive HTTP response (this may block briefly)
-        drop(connections); // Release lock before receiving
-        
-        match self.try_receive_http_response_nonblock() {
-            Ok(Some(response)) => {
-                if response.status_code != 200 {
-                    eprintln!("[SESSION] HTTP error {}", response.status_code);
-                    return Err(Error::InvalidResponse);
-                }
-                
-                // Strip watermark if present
-                let pack_data = if response.body.len() > WATERMARK.len() && 
-                                  &response.body[0..6] == &WATERMARK[0..6] {
-                    &response.body[WATERMARK.len()..]
-                } else {
-                    &response.body[..]
-                };
-                
-                if pack_data.is_empty() {
-                    return Ok(None);
-                }
-                
-                // Parse PACK packet
-                match Packet::from_bytes(pack_data) {
-                    Ok(packet) => {
-                        // Check packet type
-                        if let Some(method) = packet.get_string("method") {
-                            let size = pack_data.len();
-                            
-                            // Handle different packet types
-                            match method {
-                                "data" => {
-                                    // Data packet - extract and return for TUN forwarding
-                                    if let Some(data) = packet.get_data("data") {
-                                        eprintln!("[SESSION] 📦 Data packet: {} bytes", data.len());
-                                        return Ok(Some(("data".to_string(), data.to_vec())));
-                                    }
-                                }
-                                "keepalive" => {
-                                    // Keep-alive response - return empty data
-                                    return Ok(Some(("keepalive".to_string(), Vec::new())));
-                                }
-                                _ => {
-                                    eprintln!("[SESSION] Unknown packet method: {}", method);
-                                }
-                            }
-                        }
-                        Ok(Some(("unknown".to_string(), Vec::new())))
-                    }
-                    Err(e) => {
-                        eprintln!("[SESSION] Failed to parse packet: {:?}", e);
-                        Ok(None)
-                    }
-                }
+        // 4. Parse PACK
+        match Packet::from_bytes(&pack_buf) {
+            Ok(packet) => Ok(Some(packet)),
+            Err(e) => {
+                eprintln!("[SESSION] Failed to parse PACK: {:?}", e);
+                Ok(None)
             }
-            Ok(None) => Ok(None),
-            Err(e) => Err(e),
         }
     }
     
@@ -816,46 +944,50 @@ impl Session {
     
     /// Send data packet to server
     pub fn send_data_packet(&self, data: &[u8]) -> Result<()> {
-        use crate::protocol::WATERMARK;
-        
         // Create data PACK packet
         let data_packet = Packet::new("data")
             .add_string("method", "data")
             .add_data("data", data.to_vec());
         
-        let pack_data = data_packet.to_bytes()?;
-        
-        // Build HTTP request with watermark and PACK data
-        let mut request_data = Vec::new();
-        
-        // HTTP POST header
-        let header = format!(
-            "POST /vpnsvc/vpn.cgi HTTP/1.1\r\n\
-             Host: {}\r\n\
-             Content-Type: application/octet-stream\r\n\
-             Content-Length: {}\r\n\
-             Connection: Keep-Alive\r\n\
-             \r\n",
-            self.config.server,
-            WATERMARK.len() + pack_data.len()
-        );
-        request_data.extend_from_slice(header.as_bytes());
-        
-        // Add watermark
-        request_data.extend_from_slice(&WATERMARK);
-        
-        // Add PACK data
-        request_data.extend_from_slice(&pack_data);
-        
-        // Send all at once
-        // NOTE: For data packets, we do NOT wait for response
-        // The response will be picked up by try_receive_data_packet() on the receive side
-        self.send_raw(&request_data)?;
-        
-        {
-            let mut connections = self.tcp_connections.lock().unwrap();
-            if !connections.is_empty() {
-                connections[0].flush()?;
+        if self.streaming_mode.load(Ordering::Acquire) {
+            // Streaming mode: send raw PACK (no HTTP headers)
+            self.stream_send_pack(&data_packet)?;
+        } else {
+            // HTTP mode: send HTTP POST (for initial handshake/auth only)
+            use crate::protocol::WATERMARK;
+            
+            let pack_data = data_packet.to_bytes()?;
+            
+            // Build HTTP request with watermark and PACK data
+            let mut request_data = Vec::new();
+            
+            // HTTP POST header
+            let header = format!(
+                "POST /vpnsvc/vpn.cgi HTTP/1.1\r\n\
+                 Host: {}\r\n\
+                 Content-Type: application/octet-stream\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: Keep-Alive\r\n\
+                 \r\n",
+                self.config.server,
+                WATERMARK.len() + pack_data.len()
+            );
+            request_data.extend_from_slice(header.as_bytes());
+            
+            // Add watermark
+            request_data.extend_from_slice(&WATERMARK);
+            
+            // Add PACK data
+            request_data.extend_from_slice(&pack_data);
+            
+            // Send all at once
+            self.send_raw(&request_data)?;
+            
+            {
+                let mut connections = self.tcp_connections.lock().unwrap();
+                if !connections.is_empty() {
+                    connections[0].flush()?;
+                }
             }
         }
         

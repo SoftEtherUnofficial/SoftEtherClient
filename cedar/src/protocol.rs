@@ -402,14 +402,13 @@ impl Packet {
         for i in 0..element_count {
             eprintln!("[PACK] === Processing element {} at cursor={} ===", i, cursor);
             
-            // Read key length
+            // Read key length (4 bytes, big-endian) - ALL elements use ReadBufInt (4 bytes)
             if data.len() < cursor + 4 {
                 eprintln!("[PACK] ERROR: Not enough bytes for key length. Need 4, have {}", data.len() - cursor);
                 return Err(Error::BufferTooSmall);
             }
-            eprintln!("[PACK] Reading key_len from positions {}-{}: bytes = {:02X?}", 
-                     cursor, cursor+3, &data[cursor..cursor+4]);
-            let key_len = u32::from_be_bytes([  // BIG-ENDIAN
+            
+            let key_len = u32::from_be_bytes([
                 data[cursor],
                 data[cursor + 1],
                 data[cursor + 2],
@@ -419,69 +418,58 @@ impl Packet {
 
             eprintln!("[PACK] key_len={}, cursor={}, remaining={}", key_len, cursor, data.len() - cursor);
 
-            // Read key (includes null terminator in the length)
-            if data.len() < cursor + key_len {
-                eprintln!("[PACK] ERROR: Not enough bytes for key. Need {}, have {}", key_len, data.len() - cursor);
+            // Read key string
+            // C behavior: ReadBufStr reads length (including null), decrements by 1, reads len-1 bytes
+            // The null terminator is NOT in the stream! So we read (key_len - 1) bytes.
+            if key_len == 0 {
+                eprintln!("[PACK] WARNING: key_len=0, empty key name");
+                // Empty key - skip to next element but this shouldn't normally happen
+                // For now, treat as error since it indicates misalignment
                 eprintln!("[PACK] Successfully parsed {} out of {} elements", i, element_count);
-                eprintln!("[PACK] Parsed elements so far:");
-                for (k, v) in &params {
-                    match v {
-                        PacketValue::Int(val) => eprintln!("[PACK]   {} = {} (Int)", k, val),
-                        PacketValue::Int64(val) => eprintln!("[PACK]   {} = {} (Int64)", k, val),
-                        PacketValue::String(val) => eprintln!("[PACK]   {} = '{}' (String)", k, val),
-                        PacketValue::Data(val) => eprintln!("[PACK]   {} = <{} bytes> (Data)", k, val.len()),
-                        PacketValue::Bool(val) => eprintln!("[PACK]   {} = {} (Bool)", k, val),
-                    }
-                }
-                // Check if we already have the important fields
-                if let Some((_, v)) = params.iter().find(|(k, _)| k == "error") {
-                    eprintln!("[PACK] ✓ Found 'error' field in parsed data");
-                    if let PacketValue::Int(err_code) = v {
-                        eprintln!("[PACK] ✓ Error code = {}", err_code);
-                    }
-                }
-                
-                // If key_len looks unreasonably large (>10000), we might be misaligned
-                // Return what we have so far instead of failing completely
-                if key_len > 10000 {
-                    eprintln!("[PACK] WARNING: key_len={} is unreasonably large, assuming misalignment", key_len);
-                    eprintln!("[PACK] Returning {} successfully parsed elements", params.len());
-                    return Ok(Self {
-                        command: String::new(),
-                        params,
-                    });
-                }
-                
+                return Ok(Self {
+                    command: String::new(),
+                    params,
+                });
+            }
+            
+            let actual_key_len = key_len - 1;  // Null terminator counted but not in stream
+            if data.len() < cursor + actual_key_len {
+                eprintln!("[PACK] ERROR: Not enough bytes for key. Need {}, have {}", actual_key_len, data.len() - cursor);
+                eprintln!("[PACK] Successfully parsed {} out of {} elements", i, element_count);
                 return Err(Error::BufferTooSmall);
             }
-            // Strip null terminator from key string
-            let key_bytes = &data[cursor..cursor + key_len];
-            let key = String::from_utf8(key_bytes.iter()
-                .take_while(|&&b| b != 0)  // Take until null terminator
-                .cloned()
-                .collect())
+            
+            let key_bytes = &data[cursor..cursor + actual_key_len];
+            let key = String::from_utf8(key_bytes.to_vec())
                 .map_err(|_| Error::EncodingError)?;
-            cursor += key_len;
+            cursor += actual_key_len;
             
             eprintln!("[PACK] key='{}' (len={}, raw_bytes={:?}), cursor after reading key={}", 
                      key, key.len(), &data[cursor-key_len..cursor], cursor);
 
-            // Read type structure: [pad(2)][type(1)][pad(1)] = 4 bytes
-            // The type byte is at offset +2
+            // Read type and value_count
+            // In response format, these are full 4-byte big-endian integers (not compressed)
             if data.len() < cursor + 8 {
                 eprintln!("[PACK] ERROR: Not enough bytes for type+count fields. Need 8, have {}", data.len() - cursor);
                 return Err(Error::BufferTooSmall);
             }
-            eprintln!("[PACK] Reading type structure from positions {}-{}: bytes = {:02X?}", 
-                     cursor, cursor+3, &data[cursor..cursor+4]);
-            let value_type = data[cursor + 2] as u32;  // Type is 1 byte at offset +2
+            
+            // Read type (4 bytes, big-endian)
+            let value_type = u32::from_be_bytes([
+                data[cursor],
+                data[cursor + 1],
+                data[cursor + 2],
+                data[cursor + 3],
+            ]);
             cursor += 4;
             
-            // Read value_count structure: [pad(2)][count(1)][pad(1)] = 4 bytes
-            // The count byte is at offset +2
-            eprintln!("[PACK] Reading value_count structure from positions {}-{}: bytes = {:02X?}", 
-                     cursor, cursor+3, &data[cursor..cursor+4]);
-            let value_count = data[cursor + 2] as usize;  // Count is 1 byte at offset +2
+            // Read value_count (4 bytes, big-endian)
+            let value_count = u32::from_be_bytes([
+                data[cursor],
+                data[cursor + 1],
+                data[cursor + 2],
+                data[cursor + 3],
+            ]) as usize;
             cursor += 4;
             
             eprintln!("[PACK] Element {}: key='{}' type={} value_count={} cursor={} remaining={}", 
@@ -497,72 +485,39 @@ impl Packet {
                 // Single value - read based on type
                 match value_type {
                 0 => {
-                    // VALUE_INT in response format: [pad(1)][value_big_endian(2)]
-                    if data.len() < cursor + 3 {
-                        eprintln!("[PACK] ERROR: Not enough bytes for Int value (need 3, have {})", data.len() - cursor);
+                    // VALUE_INT: ReadBufInt() = 4 bytes big-endian
+                    if data.len() < cursor + 4 {
+                        eprintln!("[PACK] ERROR: Not enough bytes for Int value (need 4, have {})", data.len() - cursor);
                         return Err(Error::BufferTooSmall);
                     }
                     
-                    // Skip 1-byte padding
-                    let value_start = cursor + 1;
-                    
-                    // Read 2-byte big-endian value
-                    let v = u16::from_be_bytes([data[value_start], data[value_start + 1]]) as u32;
-                    cursor += 3;  // Advance past the whole structure (pad + value)
+                    let v = u32::from_be_bytes([
+                        data[cursor],
+                        data[cursor + 1],
+                        data[cursor + 2],
+                        data[cursor + 3],
+                    ]);
+                    cursor += 4;
                     
                     eprintln!("[PACK] Element {}: key='{}' type=Int value={}", i, key, v);
                     PacketValue::Int(v)
                 }
                 1 => {
-                    // VALUE_DATA in response format:
-                    // - Small data (<256): [pad(2)][size(1)][data...] - size at offset +2
-                    // - Large data (≥256): [pad(2)][size(2 big-endian)][data...] - size at offset +1-2
-                    // Detection strategy:
-                    //   1. If bytes [0,1] are [00,00], definitely small format (size at +2)
-                    //   2. If bytes [0,1] are [00,0X] where X>0, could be either:
-                    //      - Small: X is padding, size at +2
-                    //      - Large: X is high byte of 2-byte size
-                    //   3. Use heuristic: If byte[2] < 256 and reasonable, assume small format
-                    //   4. Otherwise use 2-byte format
+                    // VALUE_DATA: ReadBufInt() for size (4 bytes BE), then data bytes
                     if data.len() < cursor + 4 {
                         return Err(Error::BufferTooSmall);
                     }
                     
-                    let end = (cursor + 8).min(data.len());
-                    eprintln!("[PACK]   Data bytes at cursor={}: {:02X?}", cursor, &data[cursor..end]);
+                    // Read size (4 bytes, big-endian)
+                    let data_len = u32::from_be_bytes([
+                        data[cursor],
+                        data[cursor + 1],
+                        data[cursor + 2],
+                        data[cursor + 3],
+                    ]) as usize;
+                    cursor += 4;
                     
-                    let data_len: usize;
-                    if data[cursor] == 0 && data[cursor + 1] == 0 {
-                        // Definitely small format: [00, 00, size]
-                        data_len = data[cursor + 2] as usize;
-                        cursor += 3;
-                        eprintln!("[PACK]   Data size={} bytes (1-byte: [00,00,size])", data_len);
-                    } else if data[cursor] == 0 && data[cursor + 1] <= 0x01 {
-                        // Ambiguous: [00, 01, XX, ...] could be:
-                        //   - Small: size=XX (up to 255)
-                        //   - Large: size=0x01XX (256-511)
-                        // Heuristic: If XX < 128, likely small format
-                        let candidate_small = data[cursor + 2] as usize;
-                        if candidate_small < 128 {
-                            data_len = candidate_small;
-                            cursor += 3;
-                            eprintln!("[PACK]   Data size={} bytes (1-byte heuristic)", data_len);
-                        } else {
-                            data_len = u16::from_be_bytes([data[cursor + 1], data[cursor + 2]]) as usize;
-                            cursor += 3;
-                            eprintln!("[PACK]   Data size={} bytes (2-byte heuristic)", data_len);
-                        }
-                    } else if data[cursor] == 0 {
-                        // Large format: [00, HI, LO, ...]
-                        data_len = u16::from_be_bytes([data[cursor + 1], data[cursor + 2]]) as usize;
-                        cursor += 3;
-                        eprintln!("[PACK]   Data size={} bytes (2-byte: [00,HI,LO])", data_len);
-                    } else {
-                        // Fallback: try 1-byte at offset +2
-                        data_len = data[cursor + 2] as usize;
-                        cursor += 3;
-                        eprintln!("[PACK]   Data size={} bytes (fallback 1-byte)", data_len);
-                    }
+                    eprintln!("[PACK]   Data size={} bytes", data_len);
                     
                     if data.len() < cursor + data_len {
                         eprintln!("[PACK]   ERROR: Not enough data (need {}, have {})", data_len, data.len() - cursor);
@@ -574,16 +529,23 @@ impl Packet {
                     PacketValue::Data(d)
                 }
                 2 => {
-                    // VALUE_STR in response format: [pad(2)][size(1)][utf8_string(size)]
-                    if data.len() < cursor + 3 {
+                    // VALUE_STR: ReadBufInt() for length (4 bytes BE), then string bytes (no null)
+                    // C code: len = ReadBufInt(b); ReadBuf(b, str, len); str[len] = 0;
+                    // The length does NOT include null, null is NOT in stream
+                    if data.len() < cursor + 4 {
                         return Err(Error::BufferTooSmall);
                     }
                     
-                    // Skip 2-byte padding, read 1-byte size
-                    let str_len = data[cursor + 2] as usize;
-                    cursor += 3;
+                    // Read string length (4 bytes, big-endian)
+                    let str_len = u32::from_be_bytes([
+                        data[cursor],
+                        data[cursor + 1],
+                        data[cursor + 2],
+                        data[cursor + 3],
+                    ]) as usize;
+                    cursor += 4;
                     
-                    eprintln!("[PACK]   String size={} bytes", str_len);
+                    eprintln!("[PACK]   String length={} bytes (null not in stream)", str_len);
                     
                     if data.len() < cursor + str_len {
                         eprintln!("[PACK]   ERROR: Not enough data for string (need {}, have {})", str_len, data.len() - cursor);
@@ -607,20 +569,23 @@ impl Packet {
                 }
             } else {
                 // Array case: value_count > 1
-                // For now, only support Int arrays (like Port)
-                // Use same 3-byte format as single values
                 eprintln!("[PACK] Element {}: key='{}' is an array with {} values", i, key, value_count);
                 
                 match value_type {
                     0 => {
-                        // Read all Int values using 3-byte format: [pad(1)][value(2)]
+                        // Read all Int values using full 4-byte big-endian format
                         let mut values = Vec::new();
                         for _j in 0..value_count {
-                            if data.len() < cursor + 3 {
+                            if data.len() < cursor + 4 {
                                 return Err(Error::BufferTooSmall);
                             }
-                            let v = u16::from_be_bytes([data[cursor + 1], data[cursor + 2]]) as u32;
-                            cursor += 3;
+                            let v = u32::from_be_bytes([
+                                data[cursor],
+                                data[cursor + 1],
+                                data[cursor + 2],
+                                data[cursor + 3],
+                            ]);
+                            cursor += 4;
                             values.push(v);
                         }
                         eprintln!("[PACK] Element {}: key='{}' type=IntArray values={:?}", i, key, values);
