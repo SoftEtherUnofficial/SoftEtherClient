@@ -358,10 +358,10 @@ impl Packet {
         // Response format has element count < 256 (typically 3-10)
         // Command format has command length > 256 (typically command string length)
         if first_u32 < 256 {
-            eprintln!("[PACK] Detected RESPONSE format (element count: {})", first_u32);
+            // eprintln!("[PACK] Detected RESPONSE format (element count: {})", first_u32);
             Self::from_bytes_response(data)
         } else {
-            eprintln!("[PACK] Detected COMMAND format (command length: {})", first_u32);
+            // eprintln!("[PACK] Detected COMMAND format (command length: {})", first_u32);
             Self::from_bytes_command(data)
         }
     }
@@ -380,21 +380,9 @@ impl Packet {
         ]) as usize;
         cursor += 4;
 
-        eprintln!("[PACK] Parsing {} elements from response", element_count);
+        // eprintln!("[PACK] Parsing {} elements from response", element_count);
         
-        // Debug: dump first 80 bytes to see full structure
-        if data.len() >= 80 {
-            eprintln!("[PACK] First 80 bytes:");
-            for chunk_start in (0..80).step_by(16) {
-                eprint!("[PACK]   {:03}: ", chunk_start);
-                for i in 0..16 {
-                    if chunk_start + i < 80 {
-                        eprint!("{:02X} ", data[chunk_start + i]);
-                    }
-                }
-                eprintln!();
-            }
-        }
+        // Hex dump removed for cleaner output
 
         let mut params = Vec::with_capacity(element_count);
 
@@ -444,8 +432,8 @@ impl Packet {
                 .map_err(|_| Error::EncodingError)?;
             cursor += actual_key_len;
             
-            eprintln!("[PACK] key='{}' (len={}, raw_bytes={:?}), cursor after reading key={}", 
-                     key, key.len(), &data[cursor-key_len..cursor], cursor);
+            // eprintln!("[PACK] key='{}' (len={}, raw_bytes={:?}), cursor after reading key={}", 
+            //         key, key.len(), &data[cursor-key_len..cursor], cursor);
 
             // Read type and value_count
             // In response format, these are full 4-byte big-endian integers (not compressed)

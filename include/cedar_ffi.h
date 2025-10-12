@@ -66,74 +66,6 @@
  */
 #define MAX_PACKET_SIZE ((16 * 1024) * 1024)
 
-#define DHCP_DISCOVER 1
-
-#define DHCP_OFFER 2
-
-#define DHCP_REQUEST 3
-
-#define DHCP_DECLINE 4
-
-#define DHCP_ACK 5
-
-#define DHCP_NAK 6
-
-#define DHCP_RELEASE 7
-
-#define DHCP_INFORM 8
-
-#define DHCP_OPT_PAD 0
-
-#define DHCP_OPT_SUBNET_MASK 1
-
-#define DHCP_OPT_ROUTER 3
-
-#define DHCP_OPT_DNS 6
-
-#define DHCP_OPT_REQUESTED_IP 50
-
-#define DHCP_OPT_LEASE_TIME 51
-
-#define DHCP_OPT_MSG_TYPE 53
-
-#define DHCP_OPT_SERVER_ID 54
-
-#define DHCP_OPT_PARAM_REQUEST 55
-
-#define DHCP_OPT_RENEWAL_TIME 58
-
-#define DHCP_OPT_REBINDING_TIME 59
-
-#define DHCP_OPT_CLIENT_ID 61
-
-#define DHCP_OPT_END 255
-
-#define ETH_TYPE_IPV4 2048
-
-#define ETH_TYPE_ARP 2054
-
-#define IP_PROTO_UDP 17
-
-#define DHCP_CLIENT_PORT 68
-
-#define DHCP_SERVER_PORT 67
-
-#define ARP_REQUEST 1
-
-#define ARP_REPLY 2
-
-#define DHCP_MAGIC_COOKIE 1669485411
-
-#define DHCP_INITIAL_DELAY_MS 2000
-
-#define DHCP_RETRY_INTERVAL_MS 3000
-
-#define DHCP_REQUEST_DELAY_MS 500
-
-#define DHCP_MAX_RETRIES 5
-
-#define KEEPALIVE_INTERVAL_MS 10000
-
 /**
  * Compression algorithm for FFI
  */
@@ -454,6 +386,12 @@ enum CedarErrorCode cedar_session_try_receive_data_packet(CedarSessionHandle han
  * interval_secs: Seconds between keep-alive packets (e.g., 30)
  */
 enum CedarErrorCode cedar_session_poll_keepalive(CedarSessionHandle handle, uint64_t interval_secs);
+
+/**
+ * Send initial DHCP packets (ARP + DISCOVER)
+ * Should be called from forwarding loop immediately after connection
+ */
+enum CedarErrorCode cedar_session_send_initial_dhcp_packets(CedarSessionHandle handle);
 
 /**
  * Authenticate with the server

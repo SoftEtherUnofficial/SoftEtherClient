@@ -37,6 +37,9 @@ pub mod nat_traversal;
 // DHCP client for automatic IP configuration
 pub mod dhcp;
 
+// ZigTapTun adapter FFI bindings
+pub mod adapter_ffi;
+
 // FFI exports for C/Zig integration
 pub mod ffi;
 

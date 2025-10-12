@@ -22,6 +22,9 @@ sha1 = "0.10"
 # Hostname for NodeInfo
 hostname = "0.4"
 
+# Random number generation for DHCP transaction IDs
+rand = "0.8"
+
 # TLS implementation with rustls
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2.1"

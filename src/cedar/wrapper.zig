@@ -263,6 +263,13 @@ pub const Session = struct {
         try errorFromCode(result);
     }
     
+    /// Send initial DHCP packets (ARP + DISCOVER)
+    /// Should be called from forwarding loop immediately after connection
+    pub fn sendInitialDhcpPackets(self: *Session) !void {
+        const result = c.cedar_session_send_initial_dhcp_packets(self.handle);
+        try errorFromCode(result);
+    }
+    
     // ============================================================================
     // DEPRECATED: Background thread API removed
     // Use synchronous sendData() and receiveData() instead

@@ -317,16 +317,25 @@ pub const VpnClient = struct {
 
         std.debug.print("\n📡 Starting VPN packet forwarding loop...\n", .{});
 
+        // Create ready event to synchronize forwarding loop startup
+        var ready_event = std.Thread.ResetEvent{};
+        
         // Start packet forwarding with TUN device
-        const forward_thread = try std.Thread.spawn(.{}, packetForwardingLoop, .{ &self.cedar_session.?, self.tun_adapter });
+        const forward_thread = try std.Thread.spawn(.{}, packetForwardingLoop, .{ &self.cedar_session.?, self.tun_adapter, &ready_event });
         forward_thread.detach();
+
+        // Wait for forwarding loop to be ready and polling for packets
+        // This ensures DHCP responses won't be missed
+        std.debug.print("⏳ Waiting for forwarding loop to start polling...\n", .{});
+        ready_event.wait();
+        std.debug.print("✅ Forwarding loop ready!\n", .{});
 
         std.debug.print("✅ Packet forwarding active!\n", .{});
         std.debug.print("💡 Press Ctrl+C to disconnect\n\n", .{});
     }
 
     /// Packet forwarding loop (runs in separate thread)
-    fn packetForwardingLoop(session: *cedar.Session, tun_adapter: ?*taptun.TunAdapter) void {
+    fn packetForwardingLoop(session: *cedar.Session, tun_adapter: ?*taptun.TunAdapter, ready_event: *std.Thread.ResetEvent) void {
         var tun_buffer: [65536]u8 = undefined;
         var packet_count: u64 = 0;
         var sent_count: u64 = 0;
@@ -341,6 +350,20 @@ pub const VpnClient = struct {
         }
 
         std.debug.print("[FORWARD] 📡 Synchronous event loop (non-blocking I/O)\n\n", .{});
+
+        // Signal that forwarding loop is ready and polling
+        // This ensures we're listening BEFORE DHCP packets are sent
+        std.debug.print("[FORWARD] ✅ Forwarding loop ready - signaling main thread\n", .{});
+        ready_event.set();
+        
+        // Small delay to ensure main thread receives signal before we send DHCP
+        std.Thread.sleep(10 * std.time.ns_per_ms);
+        
+        // Send initial DHCP packets immediately (like C Bridge adapter does)
+        std.debug.print("[FORWARD] 📡 Sending initial DHCP packets...\n", .{});
+        session.sendInitialDhcpPackets() catch |err| {
+            std.debug.print("[FORWARD] ⚠️  Failed to send initial DHCP: {}\n", .{err});
+        };
 
         while (true) {
             // ═══════════════════════════════════════
@@ -369,9 +392,16 @@ pub const VpnClient = struct {
             // DOWNSTREAM: Server → TUN (synchronous receive)
             // ═══════════════════════════════════════
             var recv_buffer: [65536]u8 = undefined;
+            var connection_alive = true;
             while (true) {
                 // Receive packet synchronously (non-blocking, returns null if none available)
                 const maybe_packet = session.tryReceiveDataPacket(&recv_buffer) catch |err| {
+                    // Fatal connection errors - exit main loop
+                    if (err == error.InternalError or err == error.IoError or err == error.NotConnected) {
+                        std.debug.print("[FORWARD] ❌ Fatal connection error: {} - exiting\n", .{err});
+                        connection_alive = false;
+                        break;
+                    }
                     std.debug.print("[FORWARD] ⚠️  Receive error: {}\n", .{err});
                     break; // Break inner loop on error
                 };
@@ -405,6 +435,12 @@ pub const VpnClient = struct {
                 }
             }
 
+            // Exit main loop if connection died
+            if (!connection_alive) {
+                std.debug.print("[FORWARD] 🔴 Connection terminated - stopping forwarding loop\n", .{});
+                break;
+            }
+
             // ═══════════════════════════════════════
             // Keep-alive maintenance  
             // ═══════════════════════════════════════
@@ -413,8 +449,8 @@ pub const VpnClient = struct {
                 std.debug.print("[FORWARD] ⚠️  Keep-alive error: {}\n", .{err});
             };
 
-            // Small delay to prevent busy-waiting
-            std.Thread.sleep(10 * std.time.ns_per_ms);
+            // Small delay to prevent busy-waiting (reduced for fast DHCP response)
+            std.Thread.sleep(1 * std.time.ns_per_ms);  // 1ms instead of 10ms for faster packet handling
         }
     }
 

@@ -968,6 +968,23 @@ pub extern "C" fn cedar_session_poll_keepalive(
     }
 }
 
+/// Send initial DHCP packets (ARP + DISCOVER)
+/// Should be called from forwarding loop immediately after connection
+#[no_mangle]
+pub extern "C" fn cedar_session_send_initial_dhcp_packets(
+    handle: CedarSessionHandle,
+) -> CedarErrorCode {
+    if handle.is_null() {
+        return CedarErrorCode::InvalidParameter;
+    }
+
+    let session = unsafe { &*(handle as *const Session) };
+    match session.send_initial_dhcp_packets() {
+        Ok(_) => CedarErrorCode::Success,
+        Err(e) => CedarErrorCode::from(e),
+    }
+}
+
 /// Authenticate with the server
 /// password_hash should be SHA-1 hash of password (20 bytes)
 #[no_mangle]

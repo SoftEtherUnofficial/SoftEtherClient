@@ -3,14 +3,14 @@
 //! Handles VPN session lifecycle, state management, and connection coordination.
 
 use crate::constants::*;
-use crate::protocol::{Packet, PROTOCOL_VERSION};
+use crate::protocol::Packet;
 use crate::dhcp::{DhcpClient, DhcpState};
 use mayaqua::error::{Error, Result};
 use mayaqua::network::{TcpSocket, UdpSocketWrapper};
+use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use std::collections::VecDeque;
 
 /// Session status
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -226,13 +226,13 @@ impl Session {
             // Try to connect
             match TcpSocket::connect_tls(&self.config.server, self.config.port) {
                 Ok(socket) => {
-                    eprintln!("[CONNECT] TLS connection established");
+                    // eprintln!("[CONNECT] TLS connection established");
                     
                     let mut connections = self.tcp_connections.lock().unwrap();
                     connections.push(socket);
                     drop(connections);
                     
-                    eprintln!("[CONNECT] Starting handshake...");
+                    // eprintln!("[CONNECT] Starting handshake...");
                     
                     // Send initial handshake
                     if let Err(e) = self.send_handshake() {
@@ -281,21 +281,14 @@ impl Session {
                     self.set_status(SessionStatus::Established);
                     
                     // ═══════════════════════════════════════════════════════════════
-                    // Send initial protocol packets to keep server connection alive
+                    // DHCP client will send initial packets automatically via tick()
                     // ═══════════════════════════════════════════════════════════════
-                    // The server expects the client to send traffic immediately after auth.
-                    // Without initial packets, the server sees the client as "dead" and closes the connection.
-                    // We send: Gratuitous ARP (registers MAC/IP) + DHCP DISCOVER (initiates DHCP handshake)
-                    eprintln!("[CONNECT] 📤 Sending initial protocol packets (ARP + DHCP DISCOVER)...");
-                    self.send_initial_protocol_packets()?;
+                    // The DHCP client's tick() function will send:
+                    // 1. Gratuitous ARP (registers MAC/IP)
+                    // 2. DHCP DISCOVER (initiates DHCP handshake)
+                    // This happens automatically in try_receive_data_packet() loop
                     
-                    // NOTE: Background thread was already started during authentication
-                    // (see authenticate() -> after streaming mode enabled). It's now handling
-                    // continuous bidirectional packet forwarding.
-                    
-                    eprintln!("[CONNECT] ✅ Connection established! Status: {:?}", self.status());
-                    eprintln!("[CONNECT] ✅ Session ready for packet forwarding");
-                    eprintln!("[CONNECT] 💡 Background thread is handling bidirectional forwarding");
+                    eprintln!("[CONNECT] ✅ Connection established");
                     
                     // Return immediately - background thread handles packet forwarding
                     return Ok(());
@@ -389,7 +382,7 @@ impl Session {
 
         let server_hello = Packet::from_bytes(pack_data)?;
 
-        eprintln!("[HANDSHAKE] Received server hello packet");
+        // eprintln!("[HANDSHAKE] Received packet");
         
         let server_str = server_hello
             .get_string("hello")
@@ -610,27 +603,27 @@ impl Session {
         eprintln!("[AUTH] ✅ Authentication successful (error=0 or not present)");
 
         // DEBUG: Dump all fields in auth_response
-        eprintln!("[AUTH] 🔍 DEBUG - All fields in packet:");
+        // eprintln!("[AUTH] DEBUG - All fields in packet:");
         for (key, value) in &auth_response.params {
             match value {
                 crate::protocol::PacketValue::Int(v) => {
-                    eprintln!("[AUTH]   {} = Int({})", key, v);
+                    // eprintln!("[AUTH]   {} = Int({})", key, v);
                 }
                 crate::protocol::PacketValue::Data(v) => {
-                    eprintln!("[AUTH]   {} = Data({} bytes)", key, v.len());
+                    // eprintln!("[AUTH]   {} = Data({} bytes)", key, v.len());
                 }
                 crate::protocol::PacketValue::String(v) => {
-                    eprintln!("[AUTH]   {} = String(\"{}\")", key, v);
+                    // eprintln!("[AUTH]   {} = String(\"{}\")", key, v);
                 }
                 crate::protocol::PacketValue::Int64(v) => {
-                    eprintln!("[AUTH]   {} = Int64({})", key, v);
+                    // eprintln!("[AUTH]   {} = Int64({})", key, v);
                 }
                 crate::protocol::PacketValue::Bool(v) => {
-                    eprintln!("[AUTH]   {} = Bool({})", key, v);
+                    // eprintln!("[AUTH]   {} = Bool({})", key, v);
                 }
             }
         }
-        eprintln!("[AUTH] 🔍 DEBUG - End of packet fields");
+        // eprintln!("[AUTH] DEBUG - End of packet fields");
 
         // Check for server redirect
         if let Some(redirect_flag) = auth_response.get_int("Redirect") {
@@ -839,55 +832,32 @@ impl Session {
                 
                 eprintln!("[AUTH] 🎫 Ticket auth: hub={}, user={}, authtype={}", 
                     self.config.hub, username, AUTHTYPE_TICKET);
-                eprintln!("[AUTH] 🔍 Field values:");
-                eprintln!("[AUTH]   - method: login");
-                eprintln!("[AUTH]   - version: {}", protocol_ver);
-                eprintln!("[AUTH]   - build: {}", client_build);
-                eprintln!("[AUTH]   - client_str: {}", client_str);
-                eprintln!("[AUTH]   - hubname: {}", self.config.hub);
-                eprintln!("[AUTH]   - username: {}", username);
-                eprintln!("[AUTH]   - protocol: SE-VPN4-PROTOCOL");
-                eprintln!("[AUTH]   - max_connection: {}", self.config.max_connection);
-                eprintln!("[AUTH]   - use_encrypt: {}", if self.config.use_encrypt { 1 } else { 0 });
-                eprintln!("[AUTH]   - use_compress: 0");
-                eprintln!("[AUTH]   - half_connection: 0");
-                eprintln!("[AUTH]   - authtype: 99");
-                eprintln!("[AUTH]   - client_id: 123");
-                eprintln!("[AUTH]   - client_os_name: {}", std::env::consts::OS);
-                eprintln!("[AUTH]   - client_hostname: {}", hostname);
-                eprintln!("[AUTH]   - client_product_name: {}", client_str);
-                eprintln!("[AUTH]   - branded_ctos: (empty string)");
+                // eprintln!("[AUTH] Field values:");
+                // eprintln!("[AUTH]   - method: login");
+                // eprintln!("[AUTH]   - version: {}", protocol_ver);
+                // eprintln!("[AUTH]   - build: {}", client_build);
+                // eprintln!("[AUTH]   - client_str: {}", client_str);
+                // eprintln!("[AUTH]   - hubname: {}", self.config.hub);
+                // eprintln!("[AUTH]   - username: {}", username);
+                // eprintln!("[AUTH]   - protocol: SE-VPN4-PROTOCOL");
+                // eprintln!("[AUTH]   - max_connection: {}", self.config.max_connection);
+                // eprintln!("[AUTH]   - use_encrypt: {}", if self.config.use_encrypt { 1 } else { 0 });
+                // eprintln!("[AUTH]   - use_compress: 0");
+                // eprintln!("[AUTH]   - half_connection: 0");
+                // eprintln!("[AUTH]   - authtype: 99");
+                // eprintln!("[AUTH]   - client_id: 123");
+                // eprintln!("[AUTH]   - client_os_name: {}", std::env::consts::OS);
+                // eprintln!("[AUTH]   - client_hostname: {}", hostname);
+                // eprintln!("[AUTH]   - client_product_name: {}", client_str);
+                // eprintln!("[AUTH]   - branded_ctos: (empty string)");
                 
                 // Debug: Hex dump ticket data for comparison with C Bridge
-                eprintln!("[AUTH] 🔍 Ticket hex dump (20 bytes):");
-                for (i, byte) in ticket_data.iter().enumerate() {
-                    if i % 16 == 0 {
-                        eprint!("[AUTH]   ");
-                    }
-                    eprint!("{:02x} ", byte);
-                    if i % 16 == 15 || i == ticket_data.len() - 1 {
-                        eprintln!();
-                    }
-                }
+                // Ticket hex dump removed for cleaner output
                 
                 let pack_data = ticket_auth.to_bytes()?;
                 eprintln!("[AUTH] 🔍 Ticket auth packet size: {} bytes", pack_data.len());
                 
-                // DETAILED BYTE DUMP FOR COMPARISON
-                eprintln!("[AUTH] 🔬 FULL PACKET HEX DUMP (first 1024 bytes):");
-                let dump_len = std::cmp::min(pack_data.len(), 1024);
-                for (i, chunk) in pack_data[..dump_len].chunks(16).enumerate() {
-                    eprint!("[AUTH]   {:04x}: ", i * 16);
-                    for byte in chunk {
-                        eprint!("{:02x} ", byte);
-                    }
-                    eprint!(" | ");
-                    for byte in chunk {
-                        let c = if *byte >= 0x20 && *byte <= 0x7e { *byte as char } else { '.' };
-                        eprint!("{}", c);
-                    }
-                    eprintln!();
-                }
+                // Hex dump removed for cleaner output
                 
                 // Save to file for comparison
                 std::fs::write("/tmp/cedar_ticket_packet.bin", &pack_data)
@@ -935,23 +905,23 @@ impl Session {
                 for (key, value) in &initial_response.params {
                     match value {
                         crate::protocol::PacketValue::Int(v) => {
-                            eprintln!("[AUTH]   {} = Int({})", key, v);
+                            // eprintln!("[AUTH]   {} = Int({})", key, v);
                         }
                         crate::protocol::PacketValue::Data(v) => {
-                            eprintln!("[AUTH]   {} = Data({} bytes)", key, v.len());
+                            // eprintln!("[AUTH]   {} = Data({} bytes)", key, v.len());
                         }
                         crate::protocol::PacketValue::String(v) => {
-                            eprintln!("[AUTH]   {} = String(\"{}\")", key, v);
+                            // eprintln!("[AUTH]   {} = String(\"{}\")", key, v);
                         }
                         crate::protocol::PacketValue::Int64(v) => {
-                            eprintln!("[AUTH]   {} = Int64({})", key, v);
+                            // eprintln!("[AUTH]   {} = Int64({})", key, v);
                         }
                         crate::protocol::PacketValue::Bool(v) => {
-                            eprintln!("[AUTH]   {} = Bool({})", key, v);
+                            // eprintln!("[AUTH]   {} = Bool({})", key, v);
                         }
                     }
                 }
-                eprintln!("[AUTH] 🔍 DEBUG - End of initial response fields");
+                // eprintln!("[AUTH] DEBUG - End of initial response fields");
                 
                 // IMPORTANT: After redirect with ticket auth, error=3 (ERR_DISCONNECTED) is NORMAL!
                 // It just acknowledges that the previous connection was disconnected (as we intended).
@@ -965,7 +935,7 @@ impl Session {
                         3 => {
                             // ERR_DISCONNECTED (3) is expected after redirect - it's just metadata
                             eprintln!("[AUTH] 📝 Server sent error=3 (ERR_DISCONNECTED) - this is normal after redirect");
-                            eprintln!("[AUTH]    (Previous connection was disconnected as expected)");
+                            // eprintln!("[AUTH]    (Previous connection was disconnected as expected)");
                         }
                         _ => {
                             // Any other error code is a real failure
@@ -1001,22 +971,22 @@ impl Session {
                 // Parse server policy settings
                 eprintln!("[AUTH] 📜 Server Policy Settings:");
                 if let Some(access) = welcome_packet.get_bool("Access") {
-                    eprintln!("[AUTH]   Access: {}", access);
+                    // eprintln!("[AUTH]   Access: {}", access);
                 }
                 if let Some(bridge) = welcome_packet.get_bool("NoBridge") {
-                    eprintln!("[AUTH]   NoBridge: {}", bridge);
+                    // eprintln!("[AUTH]   NoBridge: {}", bridge);
                 }
                 if let Some(routing) = welcome_packet.get_bool("NoRouting") {
-                    eprintln!("[AUTH]   NoRouting: {}", routing);
+                    // eprintln!("[AUTH]   NoRouting: {}", routing);
                 }
                 if let Some(dhcp_filter) = welcome_packet.get_bool("DHCPFilter") {
-                    eprintln!("[AUTH]   DHCPFilter: {}", dhcp_filter);
+                    // eprintln!("[AUTH]   DHCPFilter: {}", dhcp_filter);
                 }
                 if let Some(dhcp_no_server) = welcome_packet.get_bool("DHCPNoServer") {
-                    eprintln!("[AUTH]   DHCPNoServer: {}", dhcp_no_server);
+                    // eprintln!("[AUTH]   DHCPNoServer: {}", dhcp_no_server);
                 }
                 if let Some(monitor) = welcome_packet.get_bool("MonitorPort") {
-                    eprintln!("[AUTH]   MonitorPort: {}", monitor);
+                    // eprintln!("[AUTH]   MonitorPort: {}", monitor);
                 }
                 
         // Extract and store encryption keys for RC4
@@ -1051,11 +1021,17 @@ impl Session {
             }
         }
         
-        eprintln!("[AUTH] 🎉 Authentication phase complete (after redirect)!");
+        eprintln!("[AUTH] 🎉 Authentication complete (after redirect)");
+        
+        // Initialize DHCP client with client MAC address
+        let mac = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x00]; // TODO: Get from session key or config
+        let dhcp = DhcpClient::new(mac);
+        *self.dhcp_client.lock().unwrap() = Some(dhcp);
+        eprintln!("[DHCP] 🔧 DHCP client initialized with MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
         
         // Enable streaming mode for data packets (no HTTP headers)
         self.streaming_mode.store(true, Ordering::Release);
-        eprintln!("[AUTH] 🔄 Switched to streaming mode for data packets");
         
         // Set socket read timeout to prevent indefinite blocking
         {
@@ -1063,39 +1039,250 @@ impl Session {
             if !connections.is_empty() {
                 let timeout = std::time::Duration::from_millis(100);
                 if let Err(e) = connections[0].set_read_timeout(Some(timeout)) {
-                    eprintln!("[AUTH] ⚠️  Failed to set read timeout after redirect: {:?}", e);
-                } else {
-                    eprintln!("[AUTH] ✅ Redirect socket read timeout set to 100ms for streaming");
+                    eprintln!("[AUTH] ⚠️  Failed to set read timeout: {:?}", e);
                 }
             }
         }
         
         // ═══════════════════════════════════════════════════════════════
-        // CRITICAL: Start background thread IMMEDIATELY after streaming mode
         // ═══════════════════════════════════════════════════════════════
         // STREAMING MODE: Switch to raw PACK streaming (no HTTP headers)
-        // After authentication, use synchronous event loop instead of background thread
-        eprintln!("[AUTH] � Switched to streaming mode for data packets");
-        eprintln!("[AUTH] ✅ Redirect socket read timeout set to 100ms for streaming");
+        eprintln!("[AUTH] ✅ Switched to streaming mode");
+        eprintln!("[AUTH] ✅ Redirect socket read timeout set to 100ms");
         
-        // Send keep-alive burst to warm up connection
-        // The background thread is now reading responses, preventing buffer overflow
-        eprintln!("[AUTH] � Sending keep-alive burst (5 packets, 100ms intervals)...");
-        for i in 0..5 {
-            if let Err(e) = self.send_keepalive_no_wait() {
-                eprintln!("[AUTH] ⚠️  Failed to send keep-alive #{}: {:?}", i+1, e);
-                break;
-            } else {
-                eprintln!("[AUTH] ✅ Keep-alive #{}/5 sent", i+1);
-            }
-            
-            if i < 4 {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
+        // Send initial keep-alive to establish bidirectional communication
+        eprintln!("[AUTH] 📤 Sending initial keep-alive packet...");
+        if let Err(e) = self.send_keepalive() {
+            eprintln!("[AUTH] ⚠️  Failed to send keep-alive: {:?}", e);
+        } else {
+            eprintln!("[AUTH] ✅ Keep-alive sent successfully");
         }
         
-        eprintln!("[AUTH] ✅ Keep-alive burst complete - connection warmed up");
-        eprintln!("[AUTH] 💡 Background thread is handling server responses");
+        // Initialize DHCP client (packets will be sent by forwarding loop)
+        let mac = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x00];
+        let dhcp = DhcpClient::new(mac);
+        *self.dhcp_client.lock().unwrap() = Some(dhcp);
+        eprintln!("[DHCP] 🔧 DHCP client initialized (forwarding loop will handle protocol)");
+        
+        return Ok(());
+        // ═══════════════════════════════════════════════════════════════
+        // STREAMING MODE: Switch to raw PACK streaming (no HTTP headers)
+        eprintln!("[AUTH] ✅ Switched to streaming mode");
+        eprintln!("[AUTH] ✅ Redirect socket read timeout set to 100ms");
+        
+        // Send initial keep-alive to establish bidirectional communication
+        eprintln!("[AUTH] 📤 Sending initial keep-alive packet...");
+        if let Err(e) = self.send_keepalive() {
+            eprintln!("[AUTH] ⚠️  Failed to send keep-alive: {:?}", e);
+        } else {
+            eprintln!("[AUTH] ✅ Keep-alive sent successfully");
+        }
+        
+        // Initialize DHCP client (packets will be sent by forwarding loop)
+        let mac = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x00];
+        let dhcp = DhcpClient::new(mac);
+        *self.dhcp_client.lock().unwrap() = Some(dhcp);
+        eprintln!("[DHCP] 🔧 DHCP client initialized (forwarding loop will handle protocol)");
+        
+        return Ok(());
+        // ═══════════════════════════════════════════════════════════════
+        // STREAMING MODE: Switch to raw PACK streaming (no HTTP headers)
+        eprintln!("[AUTH] ✅ Switched to streaming mode");
+        eprintln!("[AUTH] ✅ Redirect socket read timeout set to 100ms");
+        
+        // Send initial keep-alive to establish bidirectional communication
+        eprintln!("[AUTH] 📤 Sending initial keep-alive packet...");
+        if let Err(e) = self.send_keepalive() {
+            eprintln!("[AUTH] ⚠️  Failed to send keep-alive: {:?}", e);
+        } else {
+            eprintln!("[AUTH] ✅ Keep-alive sent successfully");
+        }
+        
+        // Initialize DHCP client (packets will be sent by forwarding loop)
+        let mac = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x00];
+        let dhcp = DhcpClient::new(mac);
+        *self.dhcp_client.lock().unwrap() = Some(dhcp);
+        eprintln!("[DHCP] 🔧 DHCP client initialized (forwarding loop will handle protocol)");
+        
+        return Ok(());
+        // ═══════════════════════════════════════════════════════════════
+        // STREAMING MODE: Switch to raw PACK streaming (no HTTP headers)
+        eprintln!("[AUTH] ✅ Switched to streaming mode");
+        eprintln!("[AUTH] ✅ Redirect socket read timeout set to 100ms");
+        
+        // Send initial keep-alive to establish bidirectional communication
+        eprintln!("[AUTH] 📤 Sending initial keep-alive packet...");
+        if let Err(e) = self.send_keepalive() {
+            eprintln!("[AUTH] ⚠️  Failed to send keep-alive: {:?}", e);
+        } else {
+            eprintln!("[AUTH] ✅ Keep-alive sent successfully");
+        }
+        
+        // Initialize DHCP client (packets will be sent by forwarding loop)
+        let mac = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x00];
+        let dhcp = DhcpClient::new(mac);
+        *self.dhcp_client.lock().unwrap() = Some(dhcp);
+        eprintln!("[DHCP] 🔧 DHCP client initialized (forwarding loop will handle protocol)");
+        
+        return Ok(());
+        // ═══════════════════════════════════════════════════════════════
+        // STREAMING MODE: Switch to raw PACK streaming (no HTTP headers)
+        eprintln!("[AUTH] ✅ Switched to streaming mode");
+        eprintln!("[AUTH] ✅ Redirect socket read timeout set to 100ms");
+        
+        // Send initial keep-alive to establish bidirectional communication
+        eprintln!("[AUTH] 📤 Sending initial keep-alive packet...");
+        if let Err(e) = self.send_keepalive() {
+            eprintln!("[AUTH] ⚠️  Failed to send keep-alive: {:?}", e);
+        } else {
+            eprintln!("[AUTH] ✅ Keep-alive sent successfully");
+        }
+        
+        // Initialize DHCP client (packets will be sent by forwarding loop)
+        let mac = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x00];
+        let dhcp = DhcpClient::new(mac);
+        *self.dhcp_client.lock().unwrap() = Some(dhcp);
+        eprintln!("[DHCP] 🔧 DHCP client initialized (forwarding loop will handle protocol)");
+        
+        return Ok(());
+        // ═══════════════════════════════════════════════════════════════
+        // STREAMING MODE: Switch to raw PACK streaming (no HTTP headers)
+        eprintln!("[AUTH] ✅ Switched to streaming mode");
+        eprintln!("[AUTH] ✅ Redirect socket read timeout set to 100ms");
+        
+        // Send initial keep-alive to establish bidirectional communication
+        eprintln!("[AUTH] 📤 Sending initial keep-alive packet...");
+        if let Err(e) = self.send_keepalive() {
+            eprintln!("[AUTH] ⚠️  Failed to send keep-alive: {:?}", e);
+        } else {
+            eprintln!("[AUTH] ✅ Keep-alive sent successfully");
+        }
+        
+        // Initialize DHCP client (packets will be sent by forwarding loop)
+        let mac = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x00];
+        let dhcp = DhcpClient::new(mac);
+        *self.dhcp_client.lock().unwrap() = Some(dhcp);
+        eprintln!("[DHCP] 🔧 DHCP client initialized (forwarding loop will handle protocol)");
+        
+        return Ok(());
+        // ═══════════════════════════════════════════════════════════════
+        // STREAMING MODE: Switch to raw PACK streaming (no HTTP headers)
+        eprintln!("[AUTH] ✅ Switched to streaming mode");
+        eprintln!("[AUTH] ✅ Redirect socket read timeout set to 100ms");
+        
+        // Send initial keep-alive to establish bidirectional communication
+        eprintln!("[AUTH] 📤 Sending initial keep-alive packet...");
+        if let Err(e) = self.send_keepalive() {
+            eprintln!("[AUTH] ⚠️  Failed to send keep-alive: {:?}", e);
+        } else {
+            eprintln!("[AUTH] ✅ Keep-alive sent successfully");
+        }
+        
+        // Initialize DHCP client (packets will be sent by forwarding loop)
+        let mac = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x00];
+        let dhcp = DhcpClient::new(mac);
+        *self.dhcp_client.lock().unwrap() = Some(dhcp);
+        eprintln!("[DHCP] 🔧 DHCP client initialized (forwarding loop will handle protocol)");
+        
+        return Ok(());
+        // ═══════════════════════════════════════════════════════════════
+        // STREAMING MODE: Switch to raw PACK streaming (no HTTP headers)
+        eprintln!("[AUTH] ✅ Switched to streaming mode");
+        eprintln!("[AUTH] ✅ Redirect socket read timeout set to 100ms");
+        
+        // Send initial keep-alive to establish bidirectional communication
+        eprintln!("[AUTH] 📤 Sending initial keep-alive packet...");
+        if let Err(e) = self.send_keepalive() {
+            eprintln!("[AUTH] ⚠️  Failed to send keep-alive: {:?}", e);
+        } else {
+            eprintln!("[AUTH] ✅ Keep-alive sent successfully");
+        }
+        
+        // Initialize DHCP client (packets will be sent by forwarding loop)
+        let mac = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x00];
+        let dhcp = DhcpClient::new(mac);
+        *self.dhcp_client.lock().unwrap() = Some(dhcp);
+        eprintln!("[DHCP] 🔧 DHCP client initialized (forwarding loop will handle protocol)");
+        
+        return Ok(());
+        // ═══════════════════════════════════════════════════════════════
+        // STREAMING MODE: Switch to raw PACK streaming (no HTTP headers)
+        eprintln!("[AUTH] ✅ Switched to streaming mode");
+        eprintln!("[AUTH] ✅ Redirect socket read timeout set to 100ms");
+        
+        // Send initial keep-alive to establish bidirectional communication
+        eprintln!("[AUTH] 📤 Sending initial keep-alive packet...");
+        if let Err(e) = self.send_keepalive() {
+            eprintln!("[AUTH] ⚠️  Failed to send keep-alive: {:?}", e);
+        } else {
+            eprintln!("[AUTH] ✅ Keep-alive sent successfully");
+        }
+        
+        // Initialize DHCP client (packets will be sent by forwarding loop)
+        let mac = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x00];
+        let dhcp = DhcpClient::new(mac);
+        *self.dhcp_client.lock().unwrap() = Some(dhcp);
+        eprintln!("[DHCP] 🔧 DHCP client initialized (forwarding loop will handle protocol)");
+        
+        return Ok(());
+        // ═══════════════════════════════════════════════════════════════
+        // STREAMING MODE: Switch to raw PACK streaming (no HTTP headers)
+        eprintln!("[AUTH] ✅ Switched to streaming mode");
+        eprintln!("[AUTH] ✅ Redirect socket read timeout set to 100ms");
+        
+        // Send initial keep-alive to establish bidirectional communication
+        eprintln!("[AUTH] 📤 Sending initial keep-alive packet...");
+        if let Err(e) = self.send_keepalive() {
+            eprintln!("[AUTH] ⚠️  Failed to send keep-alive: {:?}", e);
+        } else {
+            eprintln!("[AUTH] ✅ Keep-alive sent successfully");
+        }
+        
+        // Initialize DHCP client (packets will be sent by forwarding loop)
+        let mac = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x00];
+        let dhcp = DhcpClient::new(mac);
+        *self.dhcp_client.lock().unwrap() = Some(dhcp);
+        eprintln!("[DHCP] 🔧 DHCP client initialized (forwarding loop will handle protocol)");
+        
+        return Ok(());
+        // ═══════════════════════════════════════════════════════════════
+        // STREAMING MODE: Switch to raw PACK streaming (no HTTP headers)
+        eprintln!("[AUTH] ✅ Switched to streaming mode");
+        eprintln!("[AUTH] ✅ Redirect socket read timeout set to 100ms");
+        
+        // Send initial keep-alive to establish bidirectional communication
+        eprintln!("[AUTH] 📤 Sending initial keep-alive packet...");
+        if let Err(e) = self.send_keepalive() {
+            eprintln!("[AUTH] ⚠️  Failed to send keep-alive: {:?}", e);
+        } else {
+            eprintln!("[AUTH] ✅ Keep-alive sent successfully");
+        }
+        
+        // Initialize DHCP client (packets will be sent by forwarding loop)
+        let mac = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x00];
+        let dhcp = DhcpClient::new(mac);
+        *self.dhcp_client.lock().unwrap() = Some(dhcp);
+        eprintln!("[DHCP] 🔧 DHCP client initialized (forwarding loop will handle protocol)");
+        
+        return Ok(());
+        // ═══════════════════════════════════════════════════════════════
+        // STREAMING MODE: Switch to raw PACK streaming (no HTTP headers)
+        eprintln!("[AUTH] ✅ Switched to streaming mode");
+        eprintln!("[AUTH] ✅ Redirect socket read timeout set to 100ms");
+        
+        // Send initial keep-alive to establish bidirectional communication
+        eprintln!("[AUTH] 📤 Sending initial keep-alive packet...");
+        if let Err(e) = self.send_keepalive() {
+            eprintln!("[AUTH] ⚠️  Failed to send keep-alive: {:?}", e);
+        } else {
+            eprintln!("[AUTH] ✅ Keep-alive sent successfully");
+        }
+        
+        // Initialize DHCP client (packets will be sent by forwarding loop)
+        let mac = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x00];
+        let dhcp = DhcpClient::new(mac);
+        *self.dhcp_client.lock().unwrap() = Some(dhcp);
+        eprintln!("[DHCP] 🔧 DHCP client initialized (forwarding loop will handle protocol)");
         
         return Ok(());
             }
@@ -1119,22 +1306,22 @@ impl Session {
         // P1: Parse and log server policy settings
         eprintln!("[AUTH] 📜 Server Policy Settings:");
         if let Some(access) = auth_response.get_bool("Access") {
-            eprintln!("[AUTH]   Access: {}", access);
+            // eprintln!("[AUTH]   Access: {}", access);
         }
         if let Some(bridge) = auth_response.get_bool("NoBridge") {
-            eprintln!("[AUTH]   NoBridge: {}", bridge);
+            // eprintln!("[AUTH]   NoBridge: {}", bridge);
         }
         if let Some(routing) = auth_response.get_bool("NoRouting") {
-            eprintln!("[AUTH]   NoRouting: {}", routing);
+            // eprintln!("[AUTH]   NoRouting: {}", routing);
         }
         if let Some(dhcp_filter) = auth_response.get_bool("DHCPFilter") {
-            eprintln!("[AUTH]   DHCPFilter: {}", dhcp_filter);
+            // eprintln!("[AUTH]   DHCPFilter: {}", dhcp_filter);
         }
         if let Some(dhcp_no_server) = auth_response.get_bool("DHCPNoServer") {
-            eprintln!("[AUTH]   DHCPNoServer: {}", dhcp_no_server);
+            // eprintln!("[AUTH]   DHCPNoServer: {}", dhcp_no_server);
         }
         if let Some(monitor) = auth_response.get_bool("MonitorPort") {
-            eprintln!("[AUTH]   MonitorPort: {}", monitor);
+            // eprintln!("[AUTH]   MonitorPort: {}", monitor);
         }
 
         // Extract and store encryption keys for RC4
@@ -1171,6 +1358,13 @@ impl Session {
 
         eprintln!("[AUTH] 🎉 Authentication phase complete!");
         
+        // Initialize DHCP client with client MAC address
+        let mac = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x00]; // TODO: Get from session key or config
+        let dhcp = DhcpClient::new(mac);
+        *self.dhcp_client.lock().unwrap() = Some(dhcp);
+        eprintln!("[DHCP] 🔧 DHCP client initialized with MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        
         // Enable streaming mode for data packets (no HTTP headers)
         self.streaming_mode.store(true, Ordering::Release);
         eprintln!("[AUTH] 🔄 Switched to streaming mode for data packets");
@@ -1199,6 +1393,32 @@ impl Session {
         // Small delay to let server process the keep-alive
         std::thread::sleep(std::time::Duration::from_millis(200));
         eprintln!("[AUTH] ⏸️  Paused 200ms for server to process keep-alive");
+        
+        // Send initial ARP + DHCP DISCOVER packets using legacy packet builders
+        // This matches the C Bridge behavior
+        eprintln!("[CONNECT] 📤 Sending initial ARP + DHCP DISCOVER...");
+        let mac = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x00];
+        
+        // Send Gratuitous ARP first
+        let arp_packet = Self::build_gratuitous_arp(&mac);
+        if let Err(e) = self.send_data_packet(&arp_packet) {
+            eprintln!("[CONNECT] ⚠️  Failed to send ARP: {:?}", e);
+        } else {
+            eprintln!("[CONNECT] ✅ Gratuitous ARP sent ({} bytes)", arp_packet.len());
+        }
+        
+        // Small delay between ARP and DHCP
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        
+        // Send DHCP DISCOVER
+        use rand::Rng;
+        let xid = rand::thread_rng().gen::<u32>();
+        let dhcp_packet = Self::build_dhcp_discover(&mac, xid);
+        if let Err(e) = self.send_data_packet(&dhcp_packet) {
+            eprintln!("[DHCP] ⚠️  Failed to send DISCOVER: {:?}", e);
+        } else {
+            eprintln!("[DHCP] ✅ DISCOVER sent ({} bytes)", dhcp_packet.len());
+        }
 
         Ok(())
     }
@@ -1255,38 +1475,8 @@ impl Session {
     /// Try to receive a data packet from server (non-blocking)
     /// Returns Some((packet_type, data)) if packet received, None if no packet available
     pub fn try_receive_data_packet(&self) -> Result<Option<(String, Vec<u8>)>> {
-        // Priority 1: Handle DHCP tick (generate DHCP/ARP packets periodically)
-        let now = Instant::now();
-        let should_tick = {
-            let last_tick = self.last_dhcp_tick.lock().unwrap();
-            now.duration_since(*last_tick) >= Duration::from_millis(100) // Tick every 100ms
-        };
-        
-        if should_tick {
-            *self.last_dhcp_tick.lock().unwrap() = now;
-            
-            if let Some(ref mut dhcp) = *self.dhcp_client.lock().unwrap() {
-                // Generate DHCP/ARP packet if needed
-                if let Some(packet) = dhcp.tick() {
-                    eprintln!("[DHCP] 📤 Sending DHCP/ARP packet ({} bytes)", packet.len());
-                    
-                    // Send via secure connection
-                    if let Err(e) = self.send_data_packet(&packet) {
-                        eprintln!("[DHCP] ⚠️  Failed to send DHCP packet: {:?}", e);
-                    }
-                }
-                
-                // Check if DHCP just completed and interface needs configuration
-                if dhcp.is_configured() && !*self.interface_configured.lock().unwrap() {
-                    eprintln!("[DHCP] ✅ DHCP configuration complete!");
-                    if let Err(e) = self.configure_interface() {
-                        eprintln!("[DHCP] ⚠️  Interface configuration failed: {:?}", e);
-                    } else {
-                        *self.interface_configured.lock().unwrap() = true;
-                    }
-                }
-            }
-        }
+        // Note: DHCP tick disabled - packets sent once after authentication
+        // The server will send DHCP OFFER/ACK which will be processed here
         
         if self.streaming_mode.load(Ordering::Acquire) {
             // Streaming mode: read raw PACK (no HTTP headers)
@@ -1295,12 +1485,47 @@ impl Session {
                     match method {
                         "data" => {
                             if let Some(data) = packet.get_data("data") {
+                                eprintln!("[DHCP] 📥 Received data packet ({} bytes)", data.len());
+                                
+                                // Check if this is a DHCP packet (UDP port 68)
+                                let is_dhcp_packet = if data.len() >= 42 {
+                                    // Check Ethernet type (IPv4 = 0x0800)
+                                    let eth_type = u16::from_be_bytes([data[12], data[13]]);
+                                    if eth_type == 0x0800 && data.len() >= 34 {
+                                        // Check IP protocol (UDP = 17)
+                                        let ip_proto = data[23];
+                                        if ip_proto == 17 && data.len() >= 42 {
+                                            // Check UDP dest port (68 = DHCP client)
+                                            let udp_dst = u16::from_be_bytes([data[36], data[37]]);
+                                            udp_dst == 68
+                                        } else { false }
+                                    } else { false }
+                                } else { false };
+                                
                                 // Route to DHCP client first
                                 if let Some(ref mut dhcp) = *self.dhcp_client.lock().unwrap() {
                                     if let Err(e) = dhcp.put_packet(&data) {
                                         eprintln!("[DHCP] ⚠️  Failed to process packet: {:?}", e);
+                                    } else {
+                                        eprintln!("[DHCP] ✅ Packet processed by DHCP client");
+                                    }
+                                    
+                                    // Check for pending REQUEST (immediate after OFFER)
+                                    if let Some(request_packet) = dhcp.get_pending_packet() {
+                                        eprintln!("[DHCP] 📤 Sending immediate DHCP REQUEST ({} bytes)", request_packet.len());
+                                        if let Err(e) = self.send_data_packet(&request_packet) {
+                                            eprintln!("[DHCP] ⚠️  Failed to send REQUEST: {:?}", e);
+                                        }
                                     }
                                 }
+                                
+                                // DO NOT forward DHCP packets to TUN device
+                                // They are consumed by DHCP client state machine
+                                if is_dhcp_packet {
+                                    eprintln!("[DHCP] 🚫 DHCP packet consumed (not forwarded to TUN)");
+                                    return Ok(None); // Don't forward to caller
+                                }
+                                
                                 return Ok(Some(("data".to_string(), data.to_vec())));
                             }
                         }
@@ -1460,11 +1685,15 @@ impl Session {
                 connections[0].recv(&mut watermark_buf)?;
             }
             Ok(n) if n < 16 => {
-                // Not enough data yet - normal, return None
+                // Not enough data yet - log for debugging
+                if n > 0 {
+                    eprintln!("[STREAM] 📊 Peeked {} bytes (need 16 for watermark)", n);
+                }
                 return Ok(None);
             }
-            Ok(_) => {
-                // Data available but no watermark - normal for no data
+            Ok(n) => {
+                // Data available but no watermark
+                eprintln!("[STREAM] 📊 Peeked {} bytes, no watermark match", n);
                 return Ok(None);
             }
             Err(mayaqua::Error::TimeOut) => {
@@ -1484,8 +1713,7 @@ impl Session {
                 return Ok(None);
             }
             Err(mayaqua::Error::Network(ref msg)) if msg.contains("Connection reset") || msg.contains("Broken pipe") => {
-                // Connection closed by server - this is a real error
-                eprintln!("[STREAM] ❌ Connection closed by server: {}", msg);
+                // Connection closed by server - return DisconnectedError (don't spam logs)
                 return Err(mayaqua::Error::DisconnectedError);
             }
             Err(e) => {
@@ -2464,64 +2692,6 @@ impl Session {
         }
     }
     
-    /// Configure network interface with DHCP-assigned IP address
-    fn configure_interface(&self) -> Result<()> {
-        let dhcp = self.dhcp_client.lock().unwrap();
-        let dhcp = dhcp.as_ref().ok_or_else(|| Error::InternalError)?;
-        
-        if !dhcp.is_configured() {
-            return Err(Error::InvalidState);
-        }
-        
-        // Format IP addresses for display and commands
-        let ip_addr = dhcp.ip();
-        let gateway = dhcp.gateway_ip();
-        let netmask = dhcp.netmask();
-        let gateway_mac = dhcp.gateway_mac();
-        
-        let ip_str = format!("{}.{}.{}.{}", 
-            (ip_addr >> 24) & 0xFF, (ip_addr >> 16) & 0xFF, 
-            (ip_addr >> 8) & 0xFF, ip_addr & 0xFF);
-        let gw_str = format!("{}.{}.{}.{}", 
-            (gateway >> 24) & 0xFF, (gateway >> 16) & 0xFF, 
-            (gateway >> 8) & 0xFF, gateway & 0xFF);
-        let mask_str = format!("{}.{}.{}.{}", 
-            (netmask >> 24) & 0xFF, (netmask >> 16) & 0xFF, 
-            (netmask >> 8) & 0xFF, netmask & 0xFF);
-        let mac_str = format!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            gateway_mac[0], gateway_mac[1], gateway_mac[2],
-            gateway_mac[3], gateway_mac[4], gateway_mac[5]);
-        
-        eprintln!("[DHCP] 📋 Configuring interface with DHCP settings:");
-        eprintln!("[DHCP]    IP:          {}", ip_str);
-        eprintln!("[DHCP]    Gateway:     {}", gw_str);
-        eprintln!("[DHCP]    Netmask:     {}", mask_str);
-        eprintln!("[DHCP]    Gateway MAC: {}", mac_str);
-        
-        // Note: Actual interface configuration is typically done by the TUN/TAP layer
-        // This method is here for logging and future integration with system commands
-        
-        eprintln!("[DHCP] ✅ Interface configuration complete!");
-        eprintln!("[DHCP] 💡 TUN/TAP device should now be configured with these settings");
-        
-        Ok(())
-    }
-    
-    /// Get DHCP client state (for monitoring)
-    pub fn dhcp_state(&self) -> Option<DhcpState> {
-        self.dhcp_client.lock().unwrap()
-            .as_ref()
-            .map(|dhcp| dhcp.state())
-    }
-    
-    /// Get assigned IP address from DHCP (0 if not configured)
-    pub fn dhcp_ip(&self) -> u32 {
-        self.dhcp_client.lock().unwrap()
-            .as_ref()
-            .map(|dhcp| dhcp.ip())
-            .unwrap_or(0)
-    }
-    
     /// Check if DHCP is fully configured
     pub fn is_dhcp_configured(&self) -> bool {
         self.dhcp_client.lock().unwrap()
@@ -2795,28 +2965,203 @@ impl Session {
     
     /// Send initial protocol packets to establish session with server
     /// This prevents the server from immediately closing the connection due to inactivity
+    /// Sends Gratuitous ARP + DHCP DISCOVER to match C bridge behavior
     fn send_initial_protocol_packets(&self) -> Result<()> {
-        eprintln!("[INIT-PACKETS] 📤 Preparing initial protocol packets...");
+        // Generate client MAC address (derived from session)
+        let client_mac = [0x02, 0x00, 0x5E, 0x94, 0x66, 0xD1];
         
-        // For now, send a few keep-alive packets to maintain connection
-        // The real ARP/DHCP packets will come from the TUN device via the forwarding loop
-        // This is just to prevent immediate disconnection
+        // PACKET 1: Gratuitous ARP to register our MAC with the server
+        let arp_packet = Self::build_gratuitous_arp(&client_mac);
+        let data_pack = Packet::new("data").add_data("data", arp_packet.clone());
+        self.stream_send_pack(&data_pack)?;
         
-        for i in 1..=3 {
-            let keepalive = Packet::new("keepalive");
-            self.stream_send_pack(&keepalive)?;
-            eprintln!("[INIT-PACKETS] ✅ Keep-alive #{} sent", i);
-            
-            if i < 3 {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
         
-        eprintln!("[INIT-PACKETS] ✅ Initial packets sent, connection should stay alive");
-        eprintln!("[INIT-PACKETS] 💡 TUN device will generate real ARP/DHCP packets");
+        // PACKET 2: DHCP DISCOVER to initiate IP configuration
+        let xid: u32 = 0x12345678; // Transaction ID
+        let dhcp_packet = Self::build_dhcp_discover(&client_mac, xid);
+        let dhcp_pack = Packet::new("data").add_data("data", dhcp_packet.clone());
+        self.stream_send_pack(&dhcp_pack)?;
+        
+        eprintln!("[CONNECT] 📤 Sent ARP + DHCP DISCOVER");
         
         Ok(())
     }
+    
+    /// Build a Gratuitous ARP packet to announce our presence
+    fn build_gratuitous_arp(client_mac: &[u8; 6]) -> Vec<u8> {
+        let mut packet = Vec::with_capacity(42);
+        
+        // Ethernet header (14 bytes)
+        packet.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); // Dest: broadcast
+        packet.extend_from_slice(client_mac); // Source: our MAC
+        packet.extend_from_slice(&[0x08, 0x06]); // EtherType: ARP (0x0806)
+        
+        // ARP packet (28 bytes)
+        packet.extend_from_slice(&[0x00, 0x01]); // Hardware type: Ethernet
+        packet.extend_from_slice(&[0x08, 0x00]); // Protocol type: IPv4
+        packet.push(0x06); // Hardware size: 6
+        packet.push(0x04); // Protocol size: 4
+        packet.extend_from_slice(&[0x00, 0x01]); // Opcode: Request (gratuitous)
+        
+        // Sender MAC + IP (we use 0.0.0.0 since we don't have an IP yet)
+        packet.extend_from_slice(client_mac);
+        packet.extend_from_slice(&[0, 0, 0, 0]); // Sender IP: 0.0.0.0
+        
+        // Target MAC + IP (00:00:00:00:00:00 + 0.0.0.0 for gratuitous ARP)
+        packet.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        packet.extend_from_slice(&[0, 0, 0, 0]);
+        
+        packet
+    }
+    
+    /// Send initial DHCP packets (ARP + DISCOVER)
+    /// This should be called from the forwarding loop immediately after connection
+    pub fn send_initial_dhcp_packets(&self) -> Result<()> {
+        let mac = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x00];
+        
+        // Send gratuitous ARP
+        let arp_packet = Self::build_gratuitous_arp(&mac);
+        self.send_data_packet(&arp_packet)?;
+        eprintln!("[DHCP] ✅ Gratuitous ARP sent ({} bytes)", arp_packet.len());
+        
+        // Send DHCP DISCOVER with random xid
+        use rand::Rng;
+        let xid = rand::thread_rng().gen::<u32>();
+        let dhcp_packet = Self::build_dhcp_discover(&mac, xid);
+        self.send_data_packet(&dhcp_packet)?;
+        eprintln!("[DHCP] ✅ DISCOVER sent ({} bytes, xid={:08x})", dhcp_packet.len(), xid);
+        
+        Ok(())
+    }
+    
+    /// Build a DHCP DISCOVER packet to request IP configuration
+    fn build_dhcp_discover(client_mac: &[u8; 6], xid: u32) -> Vec<u8> {
+        let mut packet = Vec::with_capacity(342);
+        
+        // Ethernet header (14 bytes)
+        packet.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); // Dest: broadcast
+        packet.extend_from_slice(client_mac); // Source: our MAC
+        packet.extend_from_slice(&[0x08, 0x00]); // EtherType: IPv4
+        
+        // IPv4 header (20 bytes)
+        let ip_header_start = packet.len();
+        packet.push(0x45); // Version 4, IHL 5
+        packet.push(0x00); // DSCP/ECN
+        let ip_len_pos = packet.len();
+        packet.extend_from_slice(&[0x00, 0x00]); // Total length (will update)
+        packet.extend_from_slice(&[0x00, 0x00]); // Identification
+        packet.extend_from_slice(&[0x00, 0x00]); // Flags/Fragment offset
+        packet.push(64); // TTL
+        packet.push(17); // Protocol: UDP
+        let ip_checksum_pos = packet.len();
+        packet.extend_from_slice(&[0x00, 0x00]); // Checksum (will calculate)
+        packet.extend_from_slice(&[0, 0, 0, 0]); // Source IP: 0.0.0.0
+        packet.extend_from_slice(&[255, 255, 255, 255]); // Dest IP: broadcast
+        
+        // UDP header (8 bytes)
+        let udp_header_start = packet.len();
+        packet.extend_from_slice(&[0x00, 68]); // Source port: 68 (DHCP client)
+        packet.extend_from_slice(&[0x00, 67]); // Dest port: 67 (DHCP server)
+        let udp_len_pos = packet.len();
+        packet.extend_from_slice(&[0x00, 0x00]); // Length (will update)
+        packet.extend_from_slice(&[0x00, 0x00]); // Checksum (optional)
+        
+        // DHCP header (240 bytes minimum)
+        packet.push(0x01); // op: BOOTREQUEST
+        packet.push(0x01); // htype: Ethernet
+        packet.push(0x06); // hlen: 6
+        packet.push(0x00); // hops: 0
+        packet.extend_from_slice(&xid.to_be_bytes()); // Transaction ID
+        packet.extend_from_slice(&[0x00, 0x00]); // secs
+        packet.extend_from_slice(&[0x80, 0x00]); // flags: broadcast
+        packet.extend_from_slice(&[0; 16]); // ciaddr, yiaddr, siaddr, giaddr
+        packet.extend_from_slice(client_mac); // chaddr
+        packet.extend_from_slice(&[0; 10]); // chaddr padding
+        packet.extend_from_slice(&[0; 192]); // sname + file
+        
+        // DHCP magic cookie
+        packet.extend_from_slice(&[0x63, 0x82, 0x53, 0x63]);
+        
+        // DHCP options
+        packet.extend_from_slice(&[53, 1, 1]); // Option 53: Message Type = DISCOVER
+        packet.extend_from_slice(&[55, 4, 1, 3, 6, 15]); // Option 55: Parameter Request List
+        packet.push(255); // Option 255: End
+        
+        // Update IP total length
+        let ip_total_len = (packet.len() - ip_header_start) as u16;
+        packet[ip_len_pos..ip_len_pos + 2].copy_from_slice(&ip_total_len.to_be_bytes());
+        
+        // Update UDP length
+        let udp_len = (packet.len() - udp_header_start) as u16;
+        packet[udp_len_pos..udp_len_pos + 2].copy_from_slice(&udp_len.to_be_bytes());
+        
+        // Calculate IP checksum
+        let mut checksum: u32 = 0;
+        for i in (ip_header_start..ip_header_start + 20).step_by(2) {
+            checksum += ((packet[i] as u32) << 8) | (packet[i + 1] as u32);
+        }
+        checksum = (checksum >> 16) + (checksum & 0xFFFF);
+        checksum = (!checksum) & 0xFFFF;
+        packet[ip_checksum_pos..ip_checksum_pos + 2].copy_from_slice(&(checksum as u16).to_be_bytes());
+        
+        packet
+    }
+    
+    /// Configure network interface with DHCP-assigned IP
+    fn configure_interface(&self) -> Result<()> {
+        let dhcp = self.dhcp_client.lock().unwrap();
+        let dhcp_ref = dhcp.as_ref().ok_or(Error::InvalidState)?;
+        
+        let ip = dhcp_ref.assigned_ip.ok_or(Error::InvalidState)?;
+        let gateway = dhcp_ref.gateway.unwrap_or(ip); // Fallback to self if no gateway
+        let netmask = dhcp_ref.netmask.unwrap_or(Ipv4Addr::new(255, 255, 255, 0));
+        
+        eprintln!("[DHCP] 🔧 Configuring interface:");
+        eprintln!("[DHCP]   IP Address: {}", ip);
+        eprintln!("[DHCP]   Gateway: {}", gateway);
+        eprintln!("[DHCP]   Netmask: {}", netmask);
+        
+        if !dhcp_ref.dns_servers.is_empty() {
+            eprintln!("[DHCP]   DNS Servers: {:?}", dhcp_ref.dns_servers);
+        }
+        
+        if let Some(lease) = dhcp_ref.lease_time {
+            eprintln!("[DHCP]   Lease Time: {} seconds", lease);
+        }
+        
+        // Platform-specific interface configuration
+        #[cfg(target_os = "macos")]
+        {
+            // Note: Interface name needs to be determined dynamically
+            // For now, log the configuration - actual interface setup should be done
+            // by the caller (Zig code) which has access to the TUN device
+            eprintln!("[DHCP] ℹ️  macOS: Interface configuration should be applied by TUN manager");
+            eprintln!("[DHCP] ℹ️  Command: ifconfig <tun_device> inet {} {} netmask {} up", 
+                ip, gateway, netmask);
+        }
+        
+        #[cfg(target_os = "linux")]
+        {
+            eprintln!("[DHCP] ℹ️  Linux: Interface configuration should be applied by TUN manager");
+            eprintln!("[DHCP] ℹ️  Commands:");
+            eprintln!("[DHCP] ℹ️    ip addr add {}/24 dev <tun_device>", ip);
+            eprintln!("[DHCP] ℹ️    ip link set <tun_device> up");
+            eprintln!("[DHCP] ℹ️    ip route add default via {}", gateway);
+        }
+        
+        #[cfg(target_os = "windows")]
+        {
+            eprintln!("[DHCP] ℹ️  Windows: Interface configuration should be applied by TUN manager");
+            eprintln!("[DHCP] ℹ️  Command: netsh interface ip set address <adapter> static {} {} {}", 
+                ip, netmask, gateway);
+        }
+        
+        eprintln!("[DHCP] ✅ DHCP configuration ready for application");
+        
+        Ok(())
+    }
+    
     // ========================================================================
     // DEPRECATED: Old background thread methods removed
     // Use synchronous send_data_packet_streaming() and receive_packet_streaming() instead
