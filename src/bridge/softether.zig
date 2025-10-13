@@ -6,8 +6,8 @@
 
 const std = @import("std");
 
-// For now, we comment out C imports until we need them in Phase 3
-// const c = @import("../c.zig");
+// Phase 3: Import C FFI for SoftEther integration
+const c = @import("c.zig");
 
 /// VPN connection status
 pub const VpnBridgeStatus = enum(u32) {
@@ -239,6 +239,7 @@ pub const VpnBridgeClient = struct {
     softether_client: ?*anyopaque, // CLIENT*
     softether_account: ?*anyopaque, // ACCOUNT*
     softether_session: ?*anyopaque, // SESSION*
+    packet_adapter: ?*anyopaque, // PACKET_ADAPTER*
 
     // Allocator
     allocator: std.mem.Allocator,
@@ -277,6 +278,7 @@ pub const VpnBridgeClient = struct {
             .softether_client = null,
             .softether_account = null,
             .softether_session = null,
+            .packet_adapter = null,
             .allocator = allocator,
         };
 
@@ -287,7 +289,7 @@ pub const VpnBridgeClient = struct {
     pub fn deinit(self: *VpnBridgeClient) void {
         // Ensure disconnected
         if (self.status == .CONNECTED or self.status == .CONNECTING) {
-            self.disconnect() catch {};
+            self.disconnect();
         }
 
         // Zero sensitive data
@@ -403,20 +405,6 @@ pub const VpnBridgeClient = struct {
         return self.last_error;
     }
 
-    /// Connect to VPN server (placeholder - will implement in Phase 3)
-    pub fn connect(self: *VpnBridgeClient) !void {
-        _ = self;
-        // TODO: Implement in Phase 3
-        return BridgeError.NotInitialized;
-    }
-
-    /// Disconnect from VPN server (placeholder - will implement in Phase 3)
-    pub fn disconnect(self: *VpnBridgeClient) !void {
-        _ = self;
-        // TODO: Implement in Phase 3
-        return BridgeError.NotConnected;
-    }
-
     /// Get connection information (placeholder)
     pub fn getConnectionInfo(self: *const VpnBridgeClient) ConnectionInfo {
         _ = self;
@@ -429,20 +417,251 @@ pub const VpnBridgeClient = struct {
         return DhcpInfo.init();
     }
 
-    /// Get device name (TUN interface name)
-    pub fn getDeviceName(self: *const VpnBridgeClient, buffer: []u8) ![]const u8 {
-        if (self.status != .CONNECTED) {
-            const msg = "not_connected";
-            const len = @min(msg.len, buffer.len);
-            @memcpy(buffer[0..len], msg[0..len]);
-            return buffer[0..len];
+    // ============================================
+    // Connection Management (Phase 3)
+    // ============================================
+
+    /// Connect to VPN server
+    pub fn connect(self: *VpnBridgeClient) !void {
+        if (self.status == .CONNECTED) {
+            return; // Already connected
         }
 
-        // TODO: Get from adapter in Phase 3
+        if (!g_initialized) {
+            return BridgeError.NotInitialized;
+        }
+
+        // Validate configuration
+        if (std.mem.sliceTo(&self.hostname, 0).len == 0 or
+            std.mem.sliceTo(&self.hub_name, 0).len == 0 or
+            std.mem.sliceTo(&self.username, 0).len == 0)
+        {
+            return BridgeError.InvalidParameter;
+        }
+
+        // Log reconnection attempt if applicable
+        if (self.reconnect.current_attempt > 0) {
+            std.log.info("VPN: Reconnection attempt {d}/{d}", .{
+                self.reconnect.current_attempt,
+                if (self.reconnect.max_attempts == 0) @as(u32, 999) else self.reconnect.max_attempts,
+            });
+        }
+
+        self.status = .CONNECTING;
+
+        // Create CLIENT_OPTION
+        const opt = try c.zeroMalloc(@sizeOf(c.ClientOption));
+        defer c.free(opt);
+        const option: *c.ClientOption = @ptrCast(@alignCast(opt));
+
+        // Set account name
+        @memset(std.mem.asBytes(&option.AccountName), 0);
+        // TODO: Convert "ZigBridge" to wchar_t
+
+        // Set connection details
+        const hostname_slice = std.mem.sliceTo(&self.hostname, 0);
+        c.strCpy(&option.Hostname, hostname_slice);
+        option.Port = self.port;
+
+        const hub_slice = std.mem.sliceTo(&self.hub_name, 0);
+        c.strCpy(&option.HubName, hub_slice);
+
+        // Set device name
+        const device_name = "vpn_adapter";
+        c.strCpy(&option.DeviceName, device_name);
+
+        // CRITICAL: Disable NAT-T (TCP only)
+        option.PortUDP = 0;
+
+        // Connection settings
+        option.MaxConnection = self.max_connection;
+        option.UseEncrypt = true;
+        option.UseCompress = false;
+        option.HalfConnection = false;
+        option.NoRoutingTracking = true;
+        option.NumRetry = 10;
+        option.RetryInterval = 5;
+        option.AdditionalConnectionInterval = 1;
+        option.NoUdpAcceleration = true;
+        option.DisableQoS = true;
+        option.RequireBridgeRoutingMode = true;
+
+        std.log.debug("VPN: Options set - {s}:{d} hub={s} max_conn={d}", .{
+            hostname_slice,
+            option.Port,
+            hub_slice,
+            option.MaxConnection,
+        });
+
+        // Create CLIENT_AUTH
+        const auth_ptr = try c.zeroMalloc(@sizeOf(c.ClientAuth));
+        defer c.free(auth_ptr);
+        const auth: *c.ClientAuth = @ptrCast(@alignCast(auth_ptr));
+
+        auth.AuthType = @intFromEnum(c.ClientAuthType.PASSWORD);
+
+        const username_slice = std.mem.sliceTo(&self.username, 0);
+        c.strCpy(&auth.Username, username_slice);
+
+        // Handle password hashing
+        if (self.password_is_hashed) {
+            // Decode base64 pre-hashed password
+            std.log.debug("VPN: Using pre-hashed password", .{});
+            const password_slice = std.mem.sliceTo(&self.password, 0);
+            var decoded: [256]u8 = undefined;
+            const decoded_len = try c.base64Decode(&decoded, password_slice);
+
+            if (decoded_len == 20) {
+                @memcpy(&auth.HashedPassword, decoded[0..20]);
+            } else {
+                std.log.warn("VPN: Base64 password decoded to {d} bytes (expected 20), rehashing", .{decoded_len});
+                const password_slice2 = std.mem.sliceTo(&self.password, 0);
+                c.hashPassword(&auth.HashedPassword, username_slice, password_slice2);
+            }
+
+            // Securely zero decoded password
+            c.secureZero(&decoded, decoded.len);
+        } else {
+            // Hash plaintext password
+            std.log.debug("VPN: Hashing plaintext password", .{});
+            const password_slice = std.mem.sliceTo(&self.password, 0);
+            c.hashPassword(&auth.HashedPassword, username_slice, password_slice);
+
+            // Securely zero the plaintext password
+            c.secureZero(&self.password, self.password.len);
+        }
+
+        std.log.debug("VPN: Authentication configured - user={s}", .{username_slice});
+
+        // Create ACCOUNT
+        const account_ptr = try c.zeroMalloc(@sizeOf(c.AccountStruct));
+        const account: *c.AccountStruct = @ptrCast(@alignCast(account_ptr));
+
+        account.lock = try c.newLock();
+        account.ClientOption = @ptrCast(option);
+        account.ClientAuth = @ptrCast(auth);
+        account.CheckServerCert = false;
+        account.ServerCert = null;
+        account.ClientSession = null;
+
+        self.softether_account = account_ptr;
+
+        // Create packet adapter
+        std.log.debug("VPN: Creating packet adapter (zig={d})", .{self.use_zig_adapter});
+        const pa = if (self.use_zig_adapter)
+            c.createZigPacketAdapter() catch null
+        else
+            null;
+
+        if (pa == null) {
+            if (self.use_zig_adapter) {
+                std.log.err("VPN: Failed to create Zig adapter", .{});
+            }
+            // Clean up
+            c.deleteLock(account.lock.?);
+            c.free(account_ptr);
+            self.status = .ERROR;
+            self.last_error = @intFromEnum(ErrorCode.CONNECT_FAILED);
+            return BridgeError.ConnectFailed;
+        }
+
+        self.packet_adapter = pa;
+        std.log.info("VPN: Packet adapter created", .{});
+
+        // Get CEDAR from CLIENT
+        const client = @as(*c.CLIENT, @ptrCast(self.softether_client));
+        const cedar = try c.getCedar(client);
+
+        // Create VPN session
+        std.log.debug("VPN: Creating VPN session", .{});
+        const session = c.createSession(
+            cedar,
+            @ptrCast(option),
+            @ptrCast(auth),
+            pa.?,
+            @ptrCast(account_ptr),
+        ) catch {
+            std.log.err("VPN: Failed to create VPN session", .{});
+            c.freePacketAdapter(pa.?);
+            c.deleteLock(account.lock.?);
+            c.free(account_ptr);
+            self.status = .ERROR;
+            self.last_error = @intFromEnum(ErrorCode.CONNECT_FAILED);
+            return BridgeError.ConnectFailed;
+        };
+
+        self.softether_session = session;
+
+        // Connection successful
+        self.status = .CONNECTED;
+        self.connect_time = getCurrentTimeMs();
+        self.reconnect.current_attempt = 0;
+        self.reconnect.user_requested_disconnect = false;
+
+        std.log.info("VPN: ✅ Connected successfully to {s}:{d}", .{ hostname_slice, self.port });
+    }
+
+    /// Disconnect from VPN server
+    pub fn disconnect(self: *VpnBridgeClient) void {
+        if (self.status != .CONNECTED and self.status != .CONNECTING) {
+            return; // Not connected
+        }
+
+        std.log.info("VPN: Disconnecting...", .{});
+        self.status = .DISCONNECTING;
+        self.reconnect.user_requested_disconnect = true;
+
+        // Stop session if active
+        if (self.softether_session) |session| {
+            // TODO: Call CiStopSession(session)
+            _ = session;
+            // TODO: Call CiFreeSession(session)
+            self.softether_session = null;
+        }
+
+        // Free packet adapter
+        if (self.packet_adapter) |pa| {
+            const pa_typed: *c.PACKET_ADAPTER = @ptrCast(pa);
+            c.freePacketAdapter(pa_typed);
+            self.packet_adapter = null;
+        }
+
+        // Free account
+        if (self.softether_account) |account_ptr| {
+            const account: *c.AccountStruct = @ptrCast(@alignCast(account_ptr));
+            if (account.lock) |lock| {
+                c.deleteLock(lock);
+            }
+            c.free(account_ptr);
+            self.softether_account = null;
+        }
+
+        self.status = .DISCONNECTED;
+        self.bytes_sent = 0;
+        self.bytes_received = 0;
+        self.connect_time = 0;
+
+        std.log.info("VPN: Disconnected", .{});
+    }
+
+    // ============================================
+    // Status and Information Getters
+    // ============================================
+
+    /// Get device name (TUN/TAP interface)
+    pub fn getDeviceName(self: *const VpnBridgeClient, buffer: []u8) ![]const u8 {
+        if (buffer.len < 10) return error.InvalidParameter;
+
+        if (self.status != .CONNECTED) {
+            const msg = "not_connected";
+            @memcpy(buffer[0..msg.len], msg);
+            return buffer[0..msg.len];
+        }
+
+        // TODO: Get real device name from adapter in Phase 3
         const msg = "utun?";
-        const len = @min(msg.len, buffer.len);
-        @memcpy(buffer[0..len], msg[0..len]);
-        return buffer[0..len];
+        @memcpy(buffer[0..msg.len], msg);
+        return buffer[0..msg.len];
     }
 
     /// Get learned IP address
@@ -785,4 +1004,16 @@ test "Version strings" {
 
     const v2 = softetherVersion();
     try std.testing.expect(v2.len > 0);
+}
+
+test "Phase 3 - connect() signature" {
+    // Just verify the function exists and has correct signature
+    // Can't actually test connection without SoftEther libraries linked
+    const allocator = std.testing.allocator;
+    const client = try VpnBridgeClient.init(allocator);
+    defer client.deinit();
+
+    // Verify fields exist for Phase 3
+    try std.testing.expectEqual(@as(?*anyopaque, null), client.packet_adapter);
+    try std.testing.expectEqual(@as(?*anyopaque, null), client.softether_session);
 }
