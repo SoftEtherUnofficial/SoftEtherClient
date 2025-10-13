@@ -65,14 +65,15 @@ SoftEtherZig is a complete rewrite of SoftEther VPN in pure Zig. While currently
 - ✅ **CLI Interface**: Command-line tool with secure credential handling
 - ✅ **Configuration System**: Type-safe JSON parsing with validation
 - ✅ **Test Coverage**: 122/126 tests passing (96.8%), zero memory leaks, zero warnings
-- ⏳ **Phase 4**: Additional protocols (SSTP, L2TP/IPsec, OpenVPN compatibility)
+- ⏳ **Phase 4**: Platform adapters (Linux/Windows TUN/TAP porting from C)
 
-**VPN Capabilities** (via SoftEther C core, being ported):
-- 🔒 **Secure**: SSL/TLS 1.3 encryption with SoftEther's proven security model
+**VPN Capabilities** (SoftEther SSL-VPN Protocol):
+- 🔒 **Secure**: SSL/TLS 1.3 encryption with SoftEther's proven SSL-VPN protocol
 - 🌐 **Cross-Platform**: Native support for macOS, Linux, Windows, Android, and iOS
-- ⚡ **UDP Acceleration**: Optimized network performance with SoftEther's R-UDP protocol
+- ⚡ **UDP Acceleration**: Optimized network performance with R-UDP protocol
 - 🌉 **Dual Mode Support**: SecureNAT (Layer 3) and Local Bridge (Layer 2) modes
 - 🔄 **Automatic Reconnection**: Exponential backoff with configurable retry limits
+- 📝 **Note**: This is **SoftEther's proprietary SSL-VPN**, not SSTP/OpenVPN/L2TP
 
 ## Quick Start
 

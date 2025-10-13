@@ -16,6 +16,9 @@ pub const CLIENT_AUTH = opaque {};
 pub const PACKET_ADAPTER = opaque {};
 pub const CEDAR = opaque {};
 pub const LOCK = opaque {};
+pub const IPC = opaque {};
+pub const DHCPV4_DATA = opaque {};
+pub const IP = opaque {};
 
 // ============================================
 // Authentication Types
@@ -49,8 +52,22 @@ extern "c" fn NewClientSessionEx(
 ) ?*SESSION;
 
 extern "c" fn CiGetSessionStatus(session: *SESSION, status: *c_uint) bool;
-extern "c" fn CiStopSession(session: *SESSION) void;
-extern "c" fn CiFreeSession(session: *SESSION) void;
+extern "c" fn StopSession(session: *SESSION) void;
+extern "c" fn ReleaseSession(session: *SESSION) void;
+
+// DHCP and IPC Functions
+extern "c" fn IPCSendDhcpRequest(
+    ipc: *IPC,
+    adapter: ?*anyopaque,
+    transaction_id: u32,
+    req: *anyopaque,
+    opcode: u32,
+    timeout: u32,
+    tube: ?*anyopaque,
+) ?*DHCPV4_DATA;
+extern "c" fn FreeDHCPv4Data(data: *DHCPV4_DATA) void;
+extern "c" fn IPToUINT(ip: *IP) u32;
+extern "c" fn UINTToIP(ip: *IP, value: u32) void;
 
 // Memory Management
 extern "c" fn ZeroMalloc(size: usize) ?*anyopaque;
@@ -77,6 +94,13 @@ extern "c" fn B64_Encode(dst: [*c]u8, src: [*c]const u8, src_size: c_uint) c_uin
 // Packet Adapter
 extern "c" fn NewZigPacketAdapter() ?*PACKET_ADAPTER;
 extern "c" fn FreePacketAdapter(pa: *PACKET_ADAPTER) void;
+
+// Zig Adapter Device Info
+extern "c" fn zig_adapter_get_device_name(
+    adapter: *anyopaque,
+    buffer: [*]u8,
+    buffer_size: usize,
+) usize;
 
 // Security (from security_utils.h)
 extern "c" fn secure_lock_memory(ptr: *anyopaque, size: usize) c_int;
@@ -144,6 +168,23 @@ pub const AccountStruct = extern struct {
 };
 
 // ============================================
+// DHCP Information Structure
+// ============================================
+
+/// DHCP information (must match C VpnBridgeDhcpInfo)
+pub const DhcpInfo = extern struct {
+    client_ip: u32, // Client IP address (network byte order)
+    subnet_mask: u32, // Subnet mask (network byte order)
+    gateway: u32, // Default gateway (network byte order)
+    dns_server1: u32, // Primary DNS server (network byte order)
+    dns_server2: u32, // Secondary DNS server (network byte order)
+    dhcp_server: u32, // DHCP server address (network byte order)
+    lease_time: u32, // Lease time in seconds
+    domain_name: [256]u8, // Domain name
+    valid: u32, // Whether DHCP info is valid (0 = FALSE, 1 = TRUE)
+};
+
+// ============================================
 // Zig Wrapper Functions
 // ============================================
 
@@ -174,6 +215,24 @@ pub fn createSession(
 ) !*SESSION {
     const session = NewClientSessionEx(cedar, option, auth, packet_adapter, account) orelse return error.SessionCreationFailed;
     return session;
+}
+
+/// Stop a VPN session (graceful shutdown)
+pub fn stopSession(session: *SESSION) void {
+    StopSession(session);
+}
+
+/// Release a VPN session (free resources)
+pub fn releaseSession(session: *SESSION) void {
+    ReleaseSession(session);
+}
+
+/// Get session status
+pub fn getSessionStatus(session: *SESSION) !u32 {
+    var status: c_uint = 0;
+    const success = CiGetSessionStatus(session, &status);
+    if (!success) return error.SessionStatusFailed;
+    return status;
 }
 
 /// Allocate zero-initialized memory
@@ -236,6 +295,11 @@ pub fn createZigPacketAdapter() !*PACKET_ADAPTER {
 /// Free packet adapter
 pub fn freePacketAdapter(pa: *PACKET_ADAPTER) void {
     FreePacketAdapter(pa);
+}
+
+/// Get device name from Zig adapter
+pub fn zigAdapterGetDeviceName(adapter: *anyopaque, buffer: []u8) usize {
+    return zig_adapter_get_device_name(adapter, buffer.ptr, buffer.len);
 }
 
 /// Lock memory (prevent swapping)

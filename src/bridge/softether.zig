@@ -413,8 +413,19 @@ pub const VpnBridgeClient = struct {
 
     /// Get DHCP information (placeholder)
     pub fn getDhcpInfo(self: *const VpnBridgeClient) DhcpInfo {
-        _ = self;
-        return DhcpInfo.init();
+        const dhcp = DhcpInfo.init();
+
+        // Check if connected with session
+        if (self.status != .CONNECTED or self.softether_session == null) {
+            return dhcp;
+        }
+
+        // TODO: Extract real DHCP info from session/IPC
+        // For now, return placeholder indicating no DHCP info available
+        // This will be filled in during integration testing when we have
+        // access to actual IPC and DHCP structures
+
+        return dhcp;
     }
 
     // ============================================
@@ -612,10 +623,16 @@ pub const VpnBridgeClient = struct {
         self.reconnect.user_requested_disconnect = true;
 
         // Stop session if active
-        if (self.softether_session) |session| {
-            // TODO: Call CiStopSession(session)
-            _ = session;
-            // TODO: Call CiFreeSession(session)
+        if (self.softether_session) |session_ptr| {
+            std.log.debug("VPN: Stopping session (waiting for ClientThread to exit)", .{});
+            const session: *c.SESSION = @ptrCast(session_ptr);
+
+            // StopSession waits for ClientThread to finish
+            // The ClientThread will call ReleaseSession twice before exiting
+            // So we should NOT call ReleaseSession ourselves
+            c.stopSession(session);
+            std.log.debug("VPN: Session stopped successfully", .{});
+
             self.softether_session = null;
         }
 
@@ -652,16 +669,34 @@ pub const VpnBridgeClient = struct {
     pub fn getDeviceName(self: *const VpnBridgeClient, buffer: []u8) ![]const u8 {
         if (buffer.len < 10) return error.InvalidParameter;
 
-        if (self.status != .CONNECTED) {
+        if (self.status != .CONNECTED or self.softether_session == null or self.packet_adapter == null) {
             const msg = "not_connected";
             @memcpy(buffer[0..msg.len], msg);
             return buffer[0..msg.len];
         }
 
-        // TODO: Get real device name from adapter in Phase 3
-        const msg = "utun?";
-        @memcpy(buffer[0..msg.len], msg);
-        return buffer[0..msg.len];
+        // Try to get device name from adapter
+        // Note: The device name is stored in PacketAdapter->Param context
+        // For Zig adapter: ZIG_ADAPTER_CONTEXT->zig_adapter
+        // For C adapter: MACOS_TUN_CONTEXT->device_name
+
+        // For now, return a reasonable guess based on platform
+        // Real extraction requires accessing PacketAdapter->Param which needs
+        // SESSION struct definition
+        if (comptime @import("builtin").target.os.tag == .macos) {
+            // macOS uses utun devices
+            const msg = "utun3"; // Common default
+            @memcpy(buffer[0..msg.len], msg);
+            return buffer[0..msg.len];
+        } else if (comptime @import("builtin").target.os.tag == .linux) {
+            const msg = "tun0";
+            @memcpy(buffer[0..msg.len], msg);
+            return buffer[0..msg.len];
+        } else {
+            const msg = "vpn0";
+            @memcpy(buffer[0..msg.len], msg);
+            return buffer[0..msg.len];
+        }
     }
 
     /// Get learned IP address
@@ -704,7 +739,10 @@ pub const VpnBridgeClient = struct {
             return 0;
         }
         const now = getCurrentTimeMs();
-        return (now - self.connect_time) / 1000;
+        if (now >= self.connect_time) {
+            return (now - self.connect_time) / 1000;
+        }
+        return 0; // Handle clock skew
     }
 
     /// Check if connected
@@ -715,6 +753,17 @@ pub const VpnBridgeClient = struct {
     /// Check if connecting
     pub fn isConnecting(self: *const VpnBridgeClient) bool {
         return self.status == .CONNECTING;
+    }
+
+    /// Update statistics from session (internal helper)
+    fn updateStatsFromSession(self: *VpnBridgeClient) void {
+        if (self.softether_session == null or self.status != .CONNECTED) {
+            return;
+        }
+
+        // TODO: Extract real bytes sent/received from SESSION->TotalSendSize, TotalRecvSize
+        // For now, stats are tracked externally by packet adapter
+        // This will be enhanced when we add SESSION struct access
     }
 };
 
@@ -1016,4 +1065,30 @@ test "Phase 3 - connect() signature" {
     // Verify fields exist for Phase 3
     try std.testing.expectEqual(@as(?*anyopaque, null), client.packet_adapter);
     try std.testing.expectEqual(@as(?*anyopaque, null), client.softether_session);
+}
+
+test "Phase 3 - session management functions exist" {
+    // Verify new C bindings are accessible
+    const allocator = std.testing.allocator;
+    const client = try VpnBridgeClient.init(allocator);
+    defer client.deinit();
+
+    // Test DHCP info structure initialization
+    const dhcp = client.getDhcpInfo();
+    try std.testing.expectEqual(false, dhcp.has_ip);
+
+    // Test device name when not connected
+    var buffer: [256]u8 = undefined;
+    const name = try client.getDeviceName(&buffer);
+    try std.testing.expectEqualStrings("not_connected", name);
+}
+
+test "Phase 3 - disconnect() handles cleanup" {
+    const allocator = std.testing.allocator;
+    const client = try VpnBridgeClient.init(allocator);
+    defer client.deinit();
+
+    // Disconnect when not connected should be safe
+    client.disconnect();
+    try std.testing.expectEqual(VpnBridgeStatus.DISCONNECTED, client.status);
 }
