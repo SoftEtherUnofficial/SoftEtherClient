@@ -3,8 +3,8 @@
 // Phase 2: Network Layer - Task 3
 
 const std = @import("std");
-const socket = @import("socket.zig");
-const http = @import("http.zig");
+const socket = @import("socket");
+const http = @import("http");
 const TcpSocket = socket.TcpSocket;
 const HttpClient = http.HttpClient;
 const HttpResponse = http.HttpResponse;

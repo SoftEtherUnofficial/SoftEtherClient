@@ -6,8 +6,8 @@ pub fn build(b: *std.Build) void {
     std.debug.print("╔══════════════════════════════════════════════════════════════╗\n", .{});
     std.debug.print("║           SoftEtherZig - Pure Zig VPN Client                ║\n", .{});
     std.debug.print("║              Progressive C to Zig Migration                 ║\n", .{});
-    std.debug.print("║           Phase 2: Network Layer - Complete ✅              ║\n", .{});
-    std.debug.print("║    Foundation ✓  Socket ✓  HTTP ✓  Connection ✓           ║\n", .{});
+    std.debug.print("║         Phase 3: Protocol Layer - In Progress 🔄            ║\n", .{});
+    std.debug.print("║   VPN Protocol ✓  Packet (next)  Crypto (next)  Client     ║\n", .{});
     std.debug.print("╚══════════════════════════════════════════════════════════════╝\n", .{});
     std.debug.print("\n", .{});
 
@@ -545,6 +545,44 @@ pub fn build(b: *std.Build) void {
 
     const run_connection_tests = b.addRunArtifact(connection_tests);
 
+    // Test for VPN protocol module
+    const vpn_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/protocol/vpn.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    // VPN protocol depends on network layer modules
+    // Reuse the same socket module for all network modules to avoid conflicts
+    const socket_mod_shared = b.createModule(.{
+        .root_source_file = b.path("src/net/socket.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    socket_mod_shared.addImport("mayaqua_collections", collections_mod);
+
+    const http_mod_shared = b.createModule(.{
+        .root_source_file = b.path("src/net/http.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    http_mod_shared.addImport("socket", socket_mod_shared);
+
+    const connection_mod_shared = b.createModule(.{
+        .root_source_file = b.path("src/net/connection.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    connection_mod_shared.addImport("socket", socket_mod_shared);
+    connection_mod_shared.addImport("http", http_mod_shared);
+
+    vpn_tests.root_module.addImport("socket", socket_mod_shared);
+    vpn_tests.root_module.addImport("http", http_mod_shared);
+    vpn_tests.root_module.addImport("connection", connection_mod_shared);
+
+    const run_vpn_tests = b.addRunArtifact(vpn_tests);
+
     // Test for macOS platform adapter
     const macos_adapter_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -565,6 +603,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_socket_tests.step);
     test_step.dependOn(&run_http_tests.step);
     test_step.dependOn(&run_connection_tests.step);
+    test_step.dependOn(&run_vpn_tests.step);
     test_step.dependOn(&run_macos_adapter_tests.step);
 
     // ============================================

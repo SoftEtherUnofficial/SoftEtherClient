@@ -3,7 +3,7 @@
 // Phase 2: Network Layer
 
 const std = @import("std");
-const socket = @import("socket.zig");
+const socket = @import("socket");
 const TcpSocket = socket.TcpSocket;
 const IpAddress = socket.IpAddress;
 
