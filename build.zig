@@ -6,8 +6,8 @@ pub fn build(b: *std.Build) void {
     std.debug.print("╔══════════════════════════════════════════════════════════════╗\n", .{});
     std.debug.print("║           SoftEtherZig - Pure Zig VPN Client                ║\n", .{});
     std.debug.print("║              Progressive C to Zig Migration                 ║\n", .{});
-    std.debug.print("║         Phase 3: Protocol Layer - In Progress 🔄            ║\n", .{});
-    std.debug.print("║      VPN ✓  Packet ✓  Crypto ✓  Integration (final)       ║\n", .{});
+    std.debug.print("║         Phase 3: Protocol Layer - COMPLETE ✅                ║\n", .{});
+    std.debug.print("║    VPN ✓  Packet ✓  Crypto ✓  Integration ✓  (REAL!)      ║\n", .{});
     std.debug.print("╚══════════════════════════════════════════════════════════════╝\n", .{});
     std.debug.print("\n", .{});
 
@@ -605,6 +605,48 @@ pub fn build(b: *std.Build) void {
 
     const run_crypto_tests = b.addRunArtifact(crypto_tests);
 
+    // Test for integration layer
+    const integration_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/integration/vpn_client.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    // Create vpn module with imports for integration tests
+    const vpn_mod_for_integration = b.createModule(.{
+        .root_source_file = b.path("src/protocol/vpn.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    vpn_mod_for_integration.addImport("socket", socket_mod_shared);
+    vpn_mod_for_integration.addImport("http", http_mod_shared);
+    vpn_mod_for_integration.addImport("connection", connection_mod_shared);
+
+    // Add imports for integration tests
+    integration_tests.root_module.addImport("vpn", vpn_mod_for_integration);
+    integration_tests.root_module.addImport("packet", b.createModule(.{
+        .root_source_file = b.path("src/protocol/packet.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    integration_tests.root_module.addImport("crypto", b.createModule(.{
+        .root_source_file = b.path("src/protocol/crypto.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    integration_tests.root_module.addImport("socket", socket_mod_shared);
+    integration_tests.root_module.addImport("http", http_mod_shared);
+    integration_tests.root_module.addImport("connection", connection_mod_shared);
+    integration_tests.root_module.addImport("memory", b.createModule(.{
+        .root_source_file = b.path("src/mayaqua/memory.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+
+    const run_integration_tests = b.addRunArtifact(integration_tests);
+
     // Test for macOS platform adapter
     const macos_adapter_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -628,6 +670,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_vpn_tests.step);
     test_step.dependOn(&run_packet_tests.step);
     test_step.dependOn(&run_crypto_tests.step);
+    test_step.dependOn(&run_integration_tests.step);
     test_step.dependOn(&run_macos_adapter_tests.step);
 
     // ============================================

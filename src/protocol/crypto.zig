@@ -416,42 +416,52 @@ pub const CryptoEngine = struct {
         const nonce = try self.encrypt_ctx.deriveNonce(self.allocator);
         defer self.allocator.free(nonce);
 
-        // Perform encryption (mock implementation)
-        // In production, use actual crypto library (std.crypto or OpenSSL)
+        // Perform real encryption using std.crypto.aead
         switch (algorithm) {
-            .aes_128_gcm, .aes_256_gcm => {
-                // Mock AES-GCM encryption
-                @memcpy(ciphertext, plaintext);
+            .aes_128_gcm => {
+                const Aes128Gcm = std.crypto.aead.aes_gcm.Aes128Gcm;
+                const key_bytes: *const [16]u8 = self.encrypt_ctx.key[0..16];
+                const nonce_bytes: *const [12]u8 = nonce[0..12];
+                const tag_bytes: *[16]u8 = tag[0..16];
 
-                // XOR with key (simple mock, not secure)
-                for (ciphertext, 0..) |*byte, i| {
-                    byte.* ^= self.encrypt_ctx.key[i % self.encrypt_ctx.key.len];
-                }
+                Aes128Gcm.encrypt(
+                    ciphertext,
+                    tag_bytes,
+                    plaintext,
+                    &[_]u8{}, // No additional data
+                    nonce_bytes.*,
+                    key_bytes.*,
+                );
+            },
+            .aes_256_gcm => {
+                const Aes256Gcm = std.crypto.aead.aes_gcm.Aes256Gcm;
+                const key_bytes: *const [32]u8 = self.encrypt_ctx.key[0..32];
+                const nonce_bytes: *const [12]u8 = nonce[0..12];
+                const tag_bytes: *[16]u8 = tag[0..16];
 
-                // Generate mock tag
-                var hash = std.hash.Crc32.init();
-                hash.update(ciphertext);
-                hash.update(nonce);
-                const crc = hash.final();
-                std.mem.writeInt(u32, tag[0..4], crc, .little);
-                @memset(tag[4..], 0);
+                Aes256Gcm.encrypt(
+                    ciphertext,
+                    tag_bytes,
+                    plaintext,
+                    &[_]u8{}, // No additional data
+                    nonce_bytes.*,
+                    key_bytes.*,
+                );
             },
             .chacha20_poly1305 => {
-                // Mock ChaCha20-Poly1305 encryption
-                @memcpy(ciphertext, plaintext);
+                const ChaCha20Poly1305 = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
+                const key_bytes: *const [32]u8 = self.encrypt_ctx.key[0..32];
+                const nonce_bytes: *const [12]u8 = nonce[0..12];
+                const tag_bytes: *[16]u8 = tag[0..16];
 
-                // XOR with key
-                for (ciphertext, 0..) |*byte, i| {
-                    byte.* ^= self.encrypt_ctx.key[i % self.encrypt_ctx.key.len];
-                    byte.* ^= nonce[i % nonce.len];
-                }
-
-                // Generate mock tag
-                var hash = std.hash.Crc32.init();
-                hash.update(ciphertext);
-                const crc = hash.final();
-                std.mem.writeInt(u32, tag[0..4], crc, .little);
-                @memset(tag[4..], 0);
+                ChaCha20Poly1305.encrypt(
+                    ciphertext,
+                    tag_bytes,
+                    plaintext,
+                    &[_]u8{}, // No additional data
+                    nonce_bytes.*,
+                    key_bytes.*,
+                );
             },
         }
 
@@ -477,41 +487,61 @@ pub const CryptoEngine = struct {
         const nonce = try self.decrypt_ctx.deriveNonce(self.allocator);
         defer self.allocator.free(nonce);
 
-        // Verify tag (mock implementation)
-        var hash = std.hash.Crc32.init();
-        hash.update(encrypted.ciphertext);
+        // Perform real decryption using std.crypto.aead
         switch (algorithm) {
-            .aes_128_gcm, .aes_256_gcm => {
-                hash.update(nonce);
+            .aes_128_gcm => {
+                const Aes128Gcm = std.crypto.aead.aes_gcm.Aes128Gcm;
+                const key_bytes: *const [16]u8 = self.decrypt_ctx.key[0..16];
+                const nonce_bytes: *const [12]u8 = nonce[0..12];
+                const tag_bytes: *const [16]u8 = encrypted.tag[0..16];
+
+                Aes128Gcm.decrypt(
+                    plaintext,
+                    encrypted.ciphertext,
+                    tag_bytes.*,
+                    &[_]u8{}, // No additional data
+                    nonce_bytes.*,
+                    key_bytes.*,
+                ) catch {
+                    self.allocator.free(plaintext);
+                    return error.AuthenticationFailed;
+                };
             },
-            .chacha20_poly1305 => {},
-        }
-        const expected_crc = hash.final();
-        const actual_crc = std.mem.readInt(u32, encrypted.tag[0..4], .little);
+            .aes_256_gcm => {
+                const Aes256Gcm = std.crypto.aead.aes_gcm.Aes256Gcm;
+                const key_bytes: *const [32]u8 = self.decrypt_ctx.key[0..32];
+                const nonce_bytes: *const [12]u8 = nonce[0..12];
+                const tag_bytes: *const [16]u8 = encrypted.tag[0..16];
 
-        if (expected_crc != actual_crc) {
-            self.allocator.free(plaintext);
-            return error.AuthenticationFailed;
-        }
-
-        // Perform decryption (mock implementation)
-        switch (algorithm) {
-            .aes_128_gcm, .aes_256_gcm => {
-                @memcpy(plaintext, encrypted.ciphertext);
-
-                // XOR with key (reverse of encryption)
-                for (plaintext, 0..) |*byte, i| {
-                    byte.* ^= self.decrypt_ctx.key[i % self.decrypt_ctx.key.len];
-                }
+                Aes256Gcm.decrypt(
+                    plaintext,
+                    encrypted.ciphertext,
+                    tag_bytes.*,
+                    &[_]u8{}, // No additional data
+                    nonce_bytes.*,
+                    key_bytes.*,
+                ) catch {
+                    self.allocator.free(plaintext);
+                    return error.AuthenticationFailed;
+                };
             },
             .chacha20_poly1305 => {
-                @memcpy(plaintext, encrypted.ciphertext);
+                const ChaCha20Poly1305 = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
+                const key_bytes: *const [32]u8 = self.decrypt_ctx.key[0..32];
+                const nonce_bytes: *const [12]u8 = nonce[0..12];
+                const tag_bytes: *const [16]u8 = encrypted.tag[0..16];
 
-                // XOR with key and nonce (reverse of encryption)
-                for (plaintext, 0..) |*byte, i| {
-                    byte.* ^= nonce[i % nonce.len];
-                    byte.* ^= self.decrypt_ctx.key[i % self.decrypt_ctx.key.len];
-                }
+                ChaCha20Poly1305.decrypt(
+                    plaintext,
+                    encrypted.ciphertext,
+                    tag_bytes.*,
+                    &[_]u8{}, // No additional data
+                    nonce_bytes.*,
+                    key_bytes.*,
+                ) catch {
+                    self.allocator.free(plaintext);
+                    return error.AuthenticationFailed;
+                };
             },
         }
 
