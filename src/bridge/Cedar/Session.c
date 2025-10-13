@@ -1466,55 +1466,31 @@ void ClientThread(THREAD *t, void *param)
 	CEDAR *cedar;
 	bool num_active_sessions_incremented = false;
 	
-	printf("[ClientThread] *** THREAD STARTED *** t=%p, param=%p\n", t, param);
-	fflush(stdout);
-	
 	// Validate arguments
 	if (t == NULL || param == NULL)
 	{
-		printf("[ClientThread] ERROR: NULL argument! t=%p param=%p\n", t, param);
-		fflush(stdout);
 		return;
 	}
 
 	Debug("ClientThread 0x%x Started.\n", t);
 
 	s = (SESSION *)param;
-	printf("[ClientThread] t=%p, t->ref=%p\n", t, t->ref);
-	if (t->ref) {
-		printf("[ClientThread] t->ref->c=%p\n", t->ref->c);
-	}
-	fflush(stdout);
-	printf("[ClientThread] About to AddRef(s->ref)...\n"); fflush(stdout);
 	AddRef(s->ref);
-	printf("[ClientThread] Setting s->Thread...\n"); fflush(stdout);
 	s->Thread = t;
-	printf("[ClientThread] About to AddRef(t->ref)...\n"); fflush(stdout);
 	AddRef(t->ref);
 
-	printf("[ClientThread] Checking LinkModeClient...\n"); fflush(stdout);
 	if (s->LinkModeClient == false)
 	{
-		printf("[ClientThread] Calling CiIncrementNumActiveSessions...\n"); fflush(stdout);
 		CiIncrementNumActiveSessions();
 		num_active_sessions_incremented = true;
 	}
 
-	printf("[ClientThread] About to call NoticeThreadInit...\n"); fflush(stdout);
 	NoticeThreadInit(t);
-	printf("[ClientThread] *** NoticeThreadInit CALLED! Thread initialization complete ***\n");
-	fflush(stdout);
 
-	printf("[ClientThread] About to access s->Cedar...\n"); fflush(stdout);
 	cedar = s->Cedar;
-	printf("[ClientThread] cedar=%p\n", cedar); fflush(stdout);
-
-	printf("[ClientThread] Setting ClientStatus to CONNECTING (session=%p)...\n", s); fflush(stdout);
 	s->ClientStatus = CLIENT_STATUS_CONNECTING;
-	printf("[ClientThread] ClientStatus set to %u (session=%p, &ClientStatus=%p)\n", s->ClientStatus, s, &s->ClientStatus); fflush(stdout);
 	s->RetryFlag = true;
 	s->CurrentRetryCount = 0;
-	printf("[ClientThread] Set CurrentRetryCount=0, reading back: %u\n", s->CurrentRetryCount); fflush(stdout);
 
 	Notify(s, CLIENT_NOTIFY_ACCOUNT_CHANGED);
 
@@ -1527,23 +1503,17 @@ void ClientThread(THREAD *t, void *param)
 	s->Win32HideNicInfoWindow = s->ClientOption->HideNicInfoWindow;
 
 
-	printf("[ClientThread] Entering main connection loop\n"); fflush(stdout);
 	while (true)
 	{
-		printf("[ClientThread] Loop iteration - checking connection conditions\n"); fflush(stdout);
 		Zero(&s->ServerIP_CacheForNextConnect, sizeof(IP));
 
-		printf("[ClientThread] s->Link=%p\n", s->Link); fflush(stdout);
 		if (s->Link != NULL && ((*s->Link->StopAllLinkFlag) || s->Link->Halting))
 		{
-			printf("[ClientThread] Link stop/halt condition met - breaking\n"); fflush(stdout);
 			s->Err = ERR_USER_CANCEL;
 			break;
 		}
 
-		printf("[ClientThread] Calling CLog for connection attempt\n"); fflush(stdout);
 		CLog(s->Cedar->Client, "LC_CONNECT_1", s->ClientOption->AccountName, s->CurrentRetryCount + 1);
-		printf("[ClientThread] CLog returned\n"); fflush(stdout);
 		if (s->LinkModeClient && s->Link != NULL)
 		{
 			HLog(s->Link->Hub, "LH_CONNECT_1", s->ClientOption->AccountName, s->CurrentRetryCount + 1);

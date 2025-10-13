@@ -5841,9 +5841,6 @@ REDIRECTED:
 		c->ServerVer, c->ServerStr, c->ServerBuild,
 		c->ClientVer, c->ClientStr, c->ClientBuild);
 
-	printf("[Protocol] Setting ClientStatus to CLIENT_STATUS_AUTH...\n");
-	fflush(stdout);
-
 	// During user authentication
 	c->Session->ClientStatus = CLIENT_STATUS_AUTH;
 

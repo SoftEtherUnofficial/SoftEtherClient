@@ -208,7 +208,7 @@ static bool ZigAdapterInit(SESSION* s) {
         .device_name_len = 4,  // MUST match device_name string length
     };
     
-    printf("[ZigAdapterInit] Creating Zig adapter with config: recv_q=%llu, send_q=%llu, pool=%llu, batch=%llu\n",
+    printf("[ZigAdapterInit] Creating Zig adapter with config: recv_q=%zu, send_q=%zu, pool=%zu, batch=%zu\n",
            config.recv_queue_size, config.send_queue_size, config.packet_pool_size, config.batch_size);
     
     // Create Zig adapter
@@ -711,14 +711,7 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                 UINT32 sender_ip = ((UINT32)pkt[28] << 24) | ((UINT32)pkt[29] << 16) |
                                    ((UINT32)pkt[30] << 8) | pkt[31];
                 
-                // DEBUG: Show all ARP replies
-                printf("[ZigAdapterPutPacket] 📨 ARP REPLY received from %u.%u.%u.%u (MAC: %02x:%02x:%02x:%02x:%02x:%02x)\n",
-                       (sender_ip >> 24) & 0xFF, (sender_ip >> 16) & 0xFF,
-                       (sender_ip >> 8) & 0xFF, sender_ip & 0xFF,
-                       pkt[22], pkt[23], pkt[24], pkt[25], pkt[26], pkt[27]);
-                printf("[ZigAdapterPutPacket]    Expected gateway: %u.%u.%u.%u (g_offered_gw=0x%08X)\n",
-                       (g_offered_gw >> 24) & 0xFF, (g_offered_gw >> 16) & 0xFF,
-                       (g_offered_gw >> 8) & 0xFF, g_offered_gw & 0xFF, g_offered_gw);
+                // Process ARP reply
                 
                 // If this is from the gateway (learned from DHCP), learn its MAC!
                 if (g_offered_gw != 0 && sender_ip == g_offered_gw) {
@@ -727,10 +720,6 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                     if (mac_changed || g_gateway_mac[0] == 0) {
                         // Copy gateway MAC from ARP reply (sender MAC at offset 22-27)
                         memcpy(g_gateway_mac, pkt + 22, 6);
-                        printf("[ZigAdapterPutPacket] 🎯 LEARNED GATEWAY MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
-                               g_gateway_mac[0], g_gateway_mac[1], g_gateway_mac[2],
-                               g_gateway_mac[3], g_gateway_mac[4], g_gateway_mac[5]);
-                        printf("[ZigAdapterPutPacket]    This enables bidirectional traffic routing!\n");
                         
                         // **CRITICAL**: Pass gateway MAC to Zig adapter for Ethernet header construction
                         zig_adapter_set_gateway_mac(ctx->zig_adapter, g_gateway_mac);
