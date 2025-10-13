@@ -135,95 +135,110 @@ pub fn build(b: *std.Build) void {
     std.debug.print("\n", .{});
 
     // Platform-specific packet adapter and timing files
-    const packet_adapter_file = switch (target_os) {
-        .ios => "src/bridge/ios/packet_adapter_ios.c",
-        .macos => "src/bridge/packet_adapter_macos.c",
-        .linux => "src/bridge/packet_adapter_linux.c",
-        .windows => "src/bridge/packet_adapter_windows.c",
-        else => "src/bridge/packet_adapter_linux.c", // fallback
+    const packet_adapter_src = switch (target.result.os.tag) {
+        .ios => "src/bridge/platform/packet_adapter_ios_stub.c",
+        .macos => "src/bridge/platform/packet_adapter_macos.c",
+        .linux => "src/bridge/platform/packet_adapter_linux.c",
+        .windows => "src/bridge/platform/packet_adapter_windows.c",
+        else => "src/bridge/platform/packet_adapter_linux.c", // fallback
     };
 
-    const tick64_file = switch (target_os) {
-        .macos, .ios => "src/bridge/tick64_macos.c",
-        .linux => "src/bridge/tick64_linux.c",
-        .windows => "src/bridge/tick64_windows.c",
-        else => "src/bridge/tick64_linux.c", // fallback
+    const tick64_src = switch (target.result.os.tag) {
+        .macos, .ios => "src/bridge/platform/tick64_macos.c",
+        .linux => "src/bridge/platform/tick64_linux.c",
+        .windows => "src/bridge/platform/tick64_windows.c",
+        else => "src/bridge/platform/tick64_linux.c", // fallback
     };
 
-    const c_sources = &[_][]const u8{
+    // ============================================
+    // C Source Files
+    // ============================================
+
+    // Full source list (includes server components)
+    const c_sources_full = &[_][]const u8{
+        // Bridge wrapper layer
         "src/bridge/softether_bridge.c",
         "src/bridge/unix_bridge.c",
-        tick64_file,
-        packet_adapter_file,
-        "src/bridge/zig_packet_adapter.c", // Zig adapter wrapper
-        "src/bridge/logging.c", // Phase 2: Log level system
-        "src/bridge/security_utils.c", // Phase 3: Secure password handling
-        "src/bridge/client_bridge.c", // NEW: Zig adapter bridge (replaces VLanGetPacketAdapter)
-        "src/bridge/zig_bridge.c", // NEW: C wrapper for Zig packet adapter
+        tick64_src,
+        packet_adapter_src,
+        "src/bridge/zig_packet_adapter.c",
+        "src/bridge/Mayaqua/logging.c",
+        "src/bridge/security_utils.c",
+        "src/bridge/Cedar/client_bridge.c",
+        "src/bridge/zig_bridge.c",
+
+        // Mayaqua layer (utility functions) - LOCAL COPIES
         "src/bridge/Mayaqua/Mayaqua.c",
         "src/bridge/Mayaqua/Memory.c",
-        "SoftEtherVPN_Stable/src/Mayaqua/Str.c",
+        "src/bridge/Mayaqua/Str.c",
         "src/bridge/Mayaqua/Object.c",
-        "SoftEtherVPN_Stable/src/Mayaqua/OS.c",
-        "SoftEtherVPN_Stable/src/Mayaqua/FileIO.c",
+        "src/bridge/Mayaqua/OS.c",
+        "src/bridge/Mayaqua/FileIO.c",
         "src/bridge/Mayaqua/Kernel.c",
-        "SoftEtherVPN_Stable/src/Mayaqua/Network.c",
-        "SoftEtherVPN_Stable/src/Mayaqua/TcpIp.c",
-        "SoftEtherVPN_Stable/src/Mayaqua/Encrypt.c",
-        "SoftEtherVPN_Stable/src/Mayaqua/Secure.c",
-        "SoftEtherVPN_Stable/src/Mayaqua/Pack.c",
-        "SoftEtherVPN_Stable/src/Mayaqua/Cfg.c",
-        "SoftEtherVPN_Stable/src/Mayaqua/Table.c",
-        "SoftEtherVPN_Stable/src/Mayaqua/Tracking.c",
-        "SoftEtherVPN_Stable/src/Mayaqua/Microsoft.c",
-        "SoftEtherVPN_Stable/src/Mayaqua/Internat.c",
-        "SoftEtherVPN_Stable/src/Cedar/Cedar.c",
+        "src/bridge/Mayaqua/Network.c",
+        "src/bridge/Mayaqua/TcpIp.c",
+        "src/bridge/Mayaqua/Encrypt.c",
+        "src/bridge/Mayaqua/Secure.c",
+        "src/bridge/Mayaqua/Pack.c",
+        "src/bridge/Mayaqua/Cfg.c",
+        "src/bridge/Mayaqua/Table.c",
+        "src/bridge/Mayaqua/Tracking.c",
+        "src/bridge/Mayaqua/Microsoft.c",
+        "src/bridge/Mayaqua/Internat.c",
+
+        // Cedar layer (VPN protocol) - LOCAL COPIES
+        "src/bridge/Cedar/Cedar.c",
         "src/bridge/Cedar/Client.c",
         "src/bridge/Cedar/Protocol.c",
-        "SoftEtherVPN_Stable/src/Cedar/Connection.c",
+        "src/bridge/Cedar/Connection.c",
         "src/bridge/Cedar/Session.c",
-        "SoftEtherVPN_Stable/src/Cedar/Account.c",
-        "SoftEtherVPN_Stable/src/Cedar/Admin.c",
-        "SoftEtherVPN_Stable/src/Cedar/Command.c",
-        "SoftEtherVPN_Stable/src/Cedar/Hub.c",
-        "SoftEtherVPN_Stable/src/Cedar/Listener.c",
-        "SoftEtherVPN_Stable/src/Cedar/Logging.c",
-        "SoftEtherVPN_Stable/src/Cedar/Sam.c",
-        "SoftEtherVPN_Stable/src/Cedar/Server.c",
-        "SoftEtherVPN_Stable/src/Cedar/Virtual.c",
-        "SoftEtherVPN_Stable/src/Cedar/Link.c",
-        "SoftEtherVPN_Stable/src/Cedar/SecureNAT.c",
-        "SoftEtherVPN_Stable/src/Cedar/NullLan.c",
-        "SoftEtherVPN_Stable/src/Cedar/Bridge.c",
-        "SoftEtherVPN_Stable/src/Cedar/BridgeUnix.c",
-        "SoftEtherVPN_Stable/src/Cedar/Nat.c",
-        "SoftEtherVPN_Stable/src/Cedar/UdpAccel.c",
-        "SoftEtherVPN_Stable/src/Cedar/Database.c",
-        "SoftEtherVPN_Stable/src/Cedar/Remote.c",
-        "SoftEtherVPN_Stable/src/Cedar/DDNS.c",
-        "SoftEtherVPN_Stable/src/Cedar/AzureClient.c",
-        "SoftEtherVPN_Stable/src/Cedar/AzureServer.c",
-        "SoftEtherVPN_Stable/src/Cedar/Radius.c",
-        "SoftEtherVPN_Stable/src/Cedar/Console.c",
-        "SoftEtherVPN_Stable/src/Cedar/Layer3.c",
-        "SoftEtherVPN_Stable/src/Cedar/Interop_OpenVPN.c",
-        "SoftEtherVPN_Stable/src/Cedar/Interop_SSTP.c",
-        "SoftEtherVPN_Stable/src/Cedar/IPsec.c",
-        "SoftEtherVPN_Stable/src/Cedar/IPsec_IKE.c",
-        "SoftEtherVPN_Stable/src/Cedar/IPsec_IkePacket.c",
-        "SoftEtherVPN_Stable/src/Cedar/IPsec_L2TP.c",
-        "SoftEtherVPN_Stable/src/Cedar/IPsec_PPP.c",
-        "SoftEtherVPN_Stable/src/Cedar/IPsec_EtherIP.c",
-        "SoftEtherVPN_Stable/src/Cedar/IPsec_IPC.c",
-        "SoftEtherVPN_Stable/src/Cedar/EtherLog.c",
-        "SoftEtherVPN_Stable/src/Cedar/WebUI.c",
-        "SoftEtherVPN_Stable/src/Cedar/WaterMark.c",
+        "src/bridge/Cedar/Account.c",
+        "src/bridge/Cedar/Admin.c",
+        "src/bridge/Cedar/Command.c",
+        "src/bridge/Cedar/Hub.c",
+        "src/bridge/Cedar/Listener.c",
+        "src/bridge/Cedar/Logging.c",
+        "src/bridge/Cedar/Sam.c",
+        "src/bridge/Cedar/Server.c",
+        "src/bridge/Cedar/Virtual.c",
+        "src/bridge/Cedar/Link.c",
+        "src/bridge/Cedar/SecureNAT.c",
+        "src/bridge/Cedar/NullLan.c",
+        "src/bridge/Cedar/Bridge.c",
+        "src/bridge/Cedar/BridgeUnix.c",
+        "src/bridge/Cedar/Nat.c",
+        "src/bridge/Cedar/UdpAccel.c",
+        "src/bridge/Cedar/Database.c",
+        "src/bridge/Cedar/Remote.c",
+        "src/bridge/Cedar/DDNS.c",
+        "src/bridge/Cedar/AzureClient.c",
+        "src/bridge/Cedar/AzureServer.c",
+        "src/bridge/Cedar/Radius.c",
+        "src/bridge/Cedar/Console.c",
+        "src/bridge/Cedar/Layer3.c",
+        "src/bridge/Cedar/Interop_OpenVPN.c",
+        "src/bridge/Cedar/Interop_SSTP.c",
+        "src/bridge/Cedar/IPsec.c",
+        "src/bridge/Cedar/IPsec_IKE.c",
+        "src/bridge/Cedar/IPsec_IkePacket.c",
+        "src/bridge/Cedar/IPsec_L2TP.c",
+        "src/bridge/Cedar/IPsec_PPP.c",
+        "src/bridge/Cedar/IPsec_EtherIP.c",
+        "src/bridge/Cedar/IPsec_IPC.c",
+        "src/bridge/Cedar/EtherLog.c",
+        "src/bridge/Cedar/WebUI.c",
+        "src/bridge/Cedar/WaterMark.c",
     };
+
+    // Use full source list - Client/server code is tightly coupled.
+    // Can't remove server files without breaking client functionality.
+    // Strategy: Keep all C code, port to Zig with proper separation.
+    const c_sources = c_sources_full;
 
     // NativeStack.c uses system() which is unavailable on iOS
     // It's only needed for server-side routing, not client VPN
     const native_stack_sources = &[_][]const u8{
-        "SoftEtherVPN_Stable/src/Cedar/NativeStack.c",
+        "src/bridge/Cedar/NativeStack.c",
     };
 
     // ============================================
@@ -270,9 +285,10 @@ pub fn build(b: *std.Build) void {
 
     cli.addIncludePath(b.path("src"));
     cli.addIncludePath(b.path("src/bridge"));
-    cli.addIncludePath(b.path("SoftEtherVPN_Stable/src"));
-    cli.addIncludePath(b.path("SoftEtherVPN_Stable/src/Mayaqua"));
-    cli.addIncludePath(b.path("SoftEtherVPN_Stable/src/Cedar"));
+    cli.addIncludePath(b.path("src/bridge/Mayaqua"));
+    cli.addIncludePath(b.path("src/bridge/Cedar"));
+    cli.addIncludePath(b.path("src/bridge/VGate"));
+    // NOTE: All C source files are in src/bridge/, no dependency on SoftEtherVPN_Stable!
 
     // Link OpenSSL (system or bundled)
     if (use_system_ssl) {

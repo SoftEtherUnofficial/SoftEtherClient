@@ -16,7 +16,7 @@ const taptun = @import("taptun");
 
 // C FFI for logging only
 const c = @cImport({
-    @cInclude("logging.h");
+    @cInclude("Mayaqua/logging.h");
 });
 
 // Logging wrapper functions (using C logging system)

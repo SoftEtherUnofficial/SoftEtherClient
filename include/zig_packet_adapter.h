@@ -5,8 +5,15 @@
 #define ZIG_PACKET_ADAPTER_H
 
 #include <stdint.h>
-#include <stdbool.h>
 #include <stddef.h>
+#include <sys/types.h>
+
+// Note: We don't include stdbool.h because SoftEther defines bool as UINT
+#ifndef bool
+typedef unsigned int bool;
+#define true 1
+#define false 0
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -40,6 +47,11 @@ static inline ZigAdapterConfig zig_adapter_default_config(void) {
         .send_queue_size = 128,  // Balanced for uploads
         .packet_pool_size = 256, // CRITICAL: Must be >= recv+send
         .batch_size = 128,       // Match queue size for throughput
+        .device_name = "utun",
+        .device_name_len = 4
+    };
+    return config;
+}
 
 // Lifecycle functions
 ZigPacketAdapter* zig_adapter_create(const ZigAdapterConfig *config);

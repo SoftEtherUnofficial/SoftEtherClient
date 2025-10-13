@@ -6,9 +6,10 @@
 #undef TARGET_OS_IPHONE
 #endif
 
-#include "zig_packet_adapter.h"
-#include "../../SoftEtherVPN_Stable/src/Mayaqua/Mayaqua.h"
-#include "../../SoftEtherVPN_Stable/src/Cedar/Cedar.h"
+#include "../../include/zig_packet_adapter.h"
+#include "zig_bridge.h"
+#include "Mayaqua/Mayaqua.h"
+#include "Cedar/Cedar.h"
 #include "logging.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +32,14 @@ typedef enum {
     DHCP_STATE_REQUEST_SENT = 4,
     DHCP_STATE_CONFIGURED = 5
 } DHCP_STATE;
+
+// Zig adapter context structure
+typedef struct ZIG_ADAPTER_CONTEXT {
+    SESSION *session;
+    ZigPacketAdapter *zig_adapter;
+    CANCEL *cancel;
+    bool halt;
+} ZIG_ADAPTER_CONTEXT;
 
 // DHCP state tracking
 static DHCP_STATE g_dhcp_state = DHCP_STATE_INIT;
