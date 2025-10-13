@@ -6,8 +6,8 @@ pub fn build(b: *std.Build) void {
     std.debug.print("╔══════════════════════════════════════════════════════════════╗\n", .{});
     std.debug.print("║           SoftEtherZig - Pure Zig VPN Client                ║\n", .{});
     std.debug.print("║              Progressive C to Zig Migration                 ║\n", .{});
-    std.debug.print("║          Phase 1: Foundation Layer - COMPLETE! ✅           ║\n", .{});
-    std.debug.print("║   Memory ✓  String ✓  Collections ✓  (91% reduction)      ║\n", .{});
+    std.debug.print("║         Phase 2: Network Layer - In Progress 🔄             ║\n", .{});
+    std.debug.print("║   Foundation ✓  Socket ✓  HTTP (next)  Connection (next)  ║\n", .{});
     std.debug.print("╚══════════════════════════════════════════════════════════════╝\n", .{});
     std.debug.print("\n", .{});
 
@@ -479,6 +479,22 @@ pub fn build(b: *std.Build) void {
 
     const run_collections_tests = b.addRunArtifact(collections_tests);
 
+    // Test for network socket module
+    const socket_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/net/socket.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    // Add collections module as dependency
+    const collections_mod = b.createModule(.{
+        .root_source_file = b.path("src/mayaqua/collections.zig"),
+    });
+    socket_tests.root_module.addImport("mayaqua_collections", collections_mod);
+
+    const run_socket_tests = b.addRunArtifact(socket_tests);
+
     // Test for macOS platform adapter
     const macos_adapter_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -496,6 +512,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_memory_tests.step);
     test_step.dependOn(&run_string_tests.step);
     test_step.dependOn(&run_collections_tests.step);
+    test_step.dependOn(&run_socket_tests.step);
     test_step.dependOn(&run_macos_adapter_tests.step);
 
     // ============================================

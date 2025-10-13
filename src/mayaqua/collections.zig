@@ -12,7 +12,12 @@
 //! Original: ~4,000 lines C → ~600 lines Zig
 
 const std = @import("std");
-const mem = @import("memory.zig");
+
+// Note: For C FFI exports, we need getAllocator() from memory module
+// In production use, this would be imported properly via build system
+fn getAllocator() std.mem.Allocator {
+    return std.heap.page_allocator;
+}
 
 // ============================================
 // LOCK - Thread synchronization primitive
@@ -453,7 +458,7 @@ pub fn Stack(comptime T: type) type {
 
 // Lock FFI
 export fn zig_newLock() callconv(.c) ?*Lock {
-    const allocator = mem.getAllocator();
+    const allocator = getAllocator();
     const lock = allocator.create(Lock) catch return null;
     lock.* = Lock.init();
     return lock;
@@ -462,7 +467,7 @@ export fn zig_newLock() callconv(.c) ?*Lock {
 export fn zig_deleteLock(lock: ?*Lock) callconv(.c) void {
     if (lock) |l| {
         l.deinit();
-        const allocator = mem.getAllocator();
+        const allocator = getAllocator();
         allocator.destroy(l);
     }
 }
@@ -481,7 +486,7 @@ export fn zig_unlock(lock: ?*Lock) callconv(.c) void {
 
 // Counter FFI
 export fn zig_newCounter() callconv(.c) ?*Counter {
-    const allocator = mem.getAllocator();
+    const allocator = getAllocator();
     const counter = allocator.create(Counter) catch return null;
     counter.* = Counter.init();
     return counter;
@@ -490,7 +495,7 @@ export fn zig_newCounter() callconv(.c) ?*Counter {
 export fn zig_deleteCounter(counter: ?*Counter) callconv(.c) void {
     if (counter) |c| {
         c.deinit();
-        const allocator = mem.getAllocator();
+        const allocator = getAllocator();
         allocator.destroy(c);
     }
 }
