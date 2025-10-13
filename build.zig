@@ -6,8 +6,8 @@ pub fn build(b: *std.Build) void {
     std.debug.print("╔══════════════════════════════════════════════════════════════╗\n", .{});
     std.debug.print("║           SoftEtherZig - Pure Zig VPN Client                ║\n", .{});
     std.debug.print("║              Progressive C to Zig Migration                 ║\n", .{});
-    std.debug.print("║         Phase 2: Network Layer - In Progress 🔄             ║\n", .{});
-    std.debug.print("║   Foundation ✓  Socket ✓  HTTP ✓  Connection (next)       ║\n", .{});
+    std.debug.print("║           Phase 2: Network Layer - Complete ✅              ║\n", .{});
+    std.debug.print("║    Foundation ✓  Socket ✓  HTTP ✓  Connection ✓           ║\n", .{});
     std.debug.print("╚══════════════════════════════════════════════════════════════╝\n", .{});
     std.debug.print("\n", .{});
 
@@ -516,6 +516,35 @@ pub fn build(b: *std.Build) void {
 
     const run_http_tests = b.addRunArtifact(http_tests);
 
+    // Test for connection management module
+    const connection_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/net/connection.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    // Connection module depends on socket and http modules
+    const socket_mod_for_conn = b.createModule(.{
+        .root_source_file = b.path("src/net/socket.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    socket_mod_for_conn.addImport("mayaqua_collections", collections_mod);
+
+    const http_mod_for_conn = b.createModule(.{
+        .root_source_file = b.path("src/net/http.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    http_mod_for_conn.addImport("socket", socket_mod_for_conn);
+
+    connection_tests.root_module.addImport("socket", socket_mod_for_conn);
+    connection_tests.root_module.addImport("http", http_mod_for_conn);
+    connection_tests.root_module.addImport("mayaqua_collections", collections_mod);
+
+    const run_connection_tests = b.addRunArtifact(connection_tests);
+
     // Test for macOS platform adapter
     const macos_adapter_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -535,6 +564,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_collections_tests.step);
     test_step.dependOn(&run_socket_tests.step);
     test_step.dependOn(&run_http_tests.step);
+    test_step.dependOn(&run_connection_tests.step);
     test_step.dependOn(&run_macos_adapter_tests.step);
 
     // ============================================
