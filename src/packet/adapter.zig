@@ -741,3 +741,17 @@ export fn zig_adapter_configure_routing(
     logInfo("✅ Routing configured: VPN gateway {}.{}.{}.{}", .{ gw[0], gw[1], gw[2], gw[3] });
     return true;
 }
+
+/// Close TUN device (WAVE 5 PHASE 1: added for C adapter compatibility)
+export fn zig_adapter_close(adapter: *ZigPacketAdapter) void {
+    // Note: TunAdapter close is handled in deinit()
+    logInfo("close() called (will be closed in destroy)", .{});
+    _ = adapter;
+}
+
+/// Write packet to TUN device (WAVE 5 PHASE 1: added for C adapter compatibility)
+/// Returns true on success, false on error
+export fn zig_adapter_write_packet(adapter: *ZigPacketAdapter, data: [*]const u8, len: u64) bool {
+    const slice = data[0..len];
+    return adapter.putPacket(slice);
+}
