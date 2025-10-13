@@ -13,6 +13,94 @@ pub const ACCOUNT = opaque {};
 pub const SESSION = opaque {};
 pub const CLIENT_OPTION = opaque {};
 pub const CLIENT_AUTH = opaque {};
+
+// Helper functions to get C struct sizes
+extern "c" fn sizeof_CLIENT_OPTION() usize;
+extern "c" fn sizeof_CLIENT_AUTH() usize;
+
+pub fn sizeofClientOption() usize {
+    return sizeof_CLIENT_OPTION();
+}
+
+pub fn sizeofClientAuth() usize {
+    return sizeof_CLIENT_AUTH();
+}
+
+// Helper functions to set string fields safely
+extern "c" fn set_client_option_hostname(opt: *anyopaque, hostname: [*:0]const u8) void;
+extern "c" fn set_client_option_hubname(opt: *anyopaque, hubname: [*:0]const u8) void;
+extern "c" fn set_client_option_devicename(opt: *anyopaque, devicename: [*:0]const u8) void;
+extern "c" fn set_client_auth_username(auth: *anyopaque, username: [*:0]const u8) void;
+
+// CLIENT_AUTH setters from session_helper.c
+extern "c" fn SetClientAuthType(auth: *CLIENT_AUTH, auth_type: c_uint) void;
+extern "c" fn SetClientAuthHashedPassword(auth: *CLIENT_AUTH, hashed_password: [*]const u8, len: c_uint) void;
+
+// CLIENT_OPTION setters from session_helper.c
+extern "c" fn SetClientOptionNumRetry(opt: *CLIENT_OPTION, num_retry: c_uint) void;
+extern "c" fn SetClientOptionRetryInterval(opt: *CLIENT_OPTION, interval: c_uint) void;
+extern "c" fn SetClientOptionPort(opt: *CLIENT_OPTION, port: c_uint) void;
+extern "c" fn SetClientOptionPortUDP(opt: *CLIENT_OPTION, port_udp: c_uint) void;
+extern "c" fn SetClientOptionMaxConnection(opt: *CLIENT_OPTION, max_conn: c_uint) void;
+extern "c" fn SetClientOptionFlags(opt: *CLIENT_OPTION, use_encrypt: bool, use_compress: bool, half_connection: bool, no_routing_tracking: bool, no_udp_accel: bool, disable_qos: bool, require_bridge_routing: bool) void;
+
+pub fn setClientOptionHostname(opt: *CLIENT_OPTION, hostname: []const u8) void {
+    // hostname should already be null-terminated from sliceTo
+    const hostname_z: [*:0]const u8 = @ptrCast(hostname.ptr);
+    set_client_option_hostname(opt, hostname_z);
+}
+
+pub fn setClientOptionHubname(opt: *CLIENT_OPTION, hubname: []const u8) void {
+    const hubname_z: [*:0]const u8 = @ptrCast(hubname.ptr);
+    set_client_option_hubname(opt, hubname_z);
+}
+
+pub fn setClientOptionDevicename(opt: *CLIENT_OPTION, devicename: []const u8) void {
+    const devicename_z: [*:0]const u8 = @ptrCast(devicename.ptr);
+    set_client_option_devicename(opt, devicename_z);
+}
+
+pub fn setClientAuthUsername(auth: *CLIENT_AUTH, username: []const u8) void {
+    const username_z: [*:0]const u8 = @ptrCast(username.ptr);
+    set_client_auth_username(auth, username_z);
+}
+
+// Wrapper functions for CLIENT_AUTH field setters
+pub fn setClientAuthType(auth: *CLIENT_AUTH, auth_type: u32) void {
+    SetClientAuthType(auth, auth_type);
+}
+
+pub fn setClientAuthHashedPassword(auth: *CLIENT_AUTH, hashed_password: []const u8) void {
+    if (hashed_password.len == 20) {
+        SetClientAuthHashedPassword(auth, hashed_password.ptr, 20);
+    }
+}
+
+// Wrapper functions for CLIENT_OPTION field setters
+pub fn setClientOptionNumRetry(opt: *CLIENT_OPTION, num_retry: u32) void {
+    SetClientOptionNumRetry(opt, num_retry);
+}
+
+pub fn setClientOptionRetryInterval(opt: *CLIENT_OPTION, interval: u32) void {
+    SetClientOptionRetryInterval(opt, interval);
+}
+
+pub fn setClientOptionPort(opt: *CLIENT_OPTION, port: u32) void {
+    SetClientOptionPort(opt, port);
+}
+
+pub fn setClientOptionPortUDP(opt: *CLIENT_OPTION, port_udp: u32) void {
+    SetClientOptionPortUDP(opt, port_udp);
+}
+
+pub fn setClientOptionMaxConnection(opt: *CLIENT_OPTION, max_conn: u32) void {
+    SetClientOptionMaxConnection(opt, max_conn);
+}
+
+pub fn setClientOptionFlags(opt: *CLIENT_OPTION, use_encrypt: bool, use_compress: bool, half_connection: bool, no_routing_tracking: bool, no_udp_accel: bool, disable_qos: bool, require_bridge_routing: bool) void {
+    SetClientOptionFlags(opt, use_encrypt, use_compress, half_connection, no_routing_tracking, no_udp_accel, disable_qos, require_bridge_routing);
+}
+
 pub const PACKET_ADAPTER = opaque {};
 pub const CEDAR = opaque {};
 pub const LOCK = opaque {};
@@ -24,13 +112,13 @@ pub const IP = opaque {};
 // Authentication Types
 // ============================================
 
-/// Client authentication type
+/// Client authentication type (matches Cedar.h CLIENT_AUTHTYPE_*)
 pub const ClientAuthType = enum(c_uint) {
-    PASSWORD = 0,
-    CERT = 1,
-    SECURE = 2,
-    RADIUS = 3,
-    NT = 4,
+    ANONYMOUS = 0,
+    PASSWORD = 1,
+    PLAIN_PASSWORD = 2,
+    CERT = 3,
+    SECURE = 4,
 };
 
 // ============================================
@@ -39,7 +127,7 @@ pub const ClientAuthType = enum(c_uint) {
 
 // Client Management
 extern "c" fn CiNewClient() ?*CLIENT;
-extern "c" fn CiFreeClient(client: *CLIENT) void;
+extern "c" fn CiCleanupClient(client: *CLIENT) void;
 extern "c" fn CiGetCedar(client: *CLIENT) ?*CEDAR;
 
 // Session Management
@@ -53,7 +141,13 @@ extern "c" fn NewClientSessionEx(
 
 extern "c" fn CiGetSessionStatus(session: *SESSION, status: *c_uint) bool;
 extern "c" fn StopSession(session: *SESSION) void;
+extern "c" fn StopSessionEx(session: *SESSION, no_wait: bool) void;
 extern "c" fn ReleaseSession(session: *SESSION) void;
+
+// Session helper functions (from session_helper.c)
+extern "c" fn GetSessionClientStatus(session: *SESSION) c_uint;
+extern "c" fn GetSessionHalt(session: *SESSION) bool;
+extern "c" fn IsSessionLockInitialized(session: *SESSION) bool;
 
 // DHCP and IPC Functions
 extern "c" fn IPCSendDhcpRequest(
@@ -195,8 +289,16 @@ pub fn createClient() !*CLIENT {
 }
 
 /// Free a SoftEther CLIENT
+/// Create a new CLIENT
+pub fn newClient() !*CLIENT {
+    const client = CiNewClient() orelse return error.ClientCreationFailed;
+    return client;
+}
+
+/// Free a CLIENT (cleanup first, then free memory)
 pub fn freeClient(client: *CLIENT) void {
-    CiFreeClient(client);
+    CiCleanupClient(client);
+    free(client);
 }
 
 /// Get CEDAR from CLIENT
@@ -222,17 +324,31 @@ pub fn stopSession(session: *SESSION) void {
     StopSession(session);
 }
 
+/// Stop a VPN session with optional no-wait flag
+pub fn stopSessionEx(session: *SESSION, no_wait: bool) void {
+    StopSessionEx(session, no_wait);
+}
+
 /// Release a VPN session (free resources)
 pub fn releaseSession(session: *SESSION) void {
     ReleaseSession(session);
 }
 
-/// Get session status
-pub fn getSessionStatus(session: *SESSION) !u32 {
-    var status: c_uint = 0;
-    const success = CiGetSessionStatus(session, &status);
-    if (!success) return error.SessionStatusFailed;
-    return status;
+/// Get session status (direct field access - safe during initialization)
+pub fn getSessionStatus(session: *SESSION) u32 {
+    // Use C helper function that properly accesses session->ClientStatus with lock
+    return GetSessionClientStatus(session);
+}
+
+/// Check if session should halt
+pub fn getSessionHalt(session: *SESSION) bool {
+    // Use C helper function that properly accesses session->Halt with lock
+    return GetSessionHalt(session);
+}
+
+/// Check if session lock is initialized (safe to access other fields)
+pub fn isSessionLockInitialized(session: *SESSION) bool {
+    return IsSessionLockInitialized(session);
 }
 
 /// Allocate zero-initialized memory
@@ -300,6 +416,38 @@ pub fn freePacketAdapter(pa: *PACKET_ADAPTER) void {
 /// Get device name from Zig adapter
 pub fn zigAdapterGetDeviceName(adapter: *anyopaque, buffer: []u8) usize {
     return zig_adapter_get_device_name(adapter, buffer.ptr, buffer.len);
+}
+
+// ============================================================================
+// SoftEther Initialization Functions
+// ============================================================================
+
+extern "c" fn MayaquaMinimalMode() void;
+extern "c" fn InitMayaqua(memcheck: bool, debug: bool, argc: c_int, argv: [*c][*c]u8) void;
+extern "c" fn InitCedar() void;
+extern "c" fn FreeCedar() void;
+extern "c" fn FreeMayaqua() void;
+
+pub fn setMinimalMode() void {
+    MayaquaMinimalMode();
+}
+
+pub fn initMayaqua(memcheck: bool, debug: bool) void {
+    // Provide a simple executable name
+    var fake_argv = [_][*c]u8{ @constCast("vpnclient".ptr), null };
+    InitMayaqua(memcheck, debug, 1, &fake_argv);
+}
+
+pub fn initCedar() void {
+    InitCedar();
+}
+
+pub fn freeCedar() void {
+    FreeCedar();
+}
+
+pub fn freeMayaqua() void {
+    FreeMayaqua();
 }
 
 /// Lock memory (prevent swapping)

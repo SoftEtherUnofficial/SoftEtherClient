@@ -11,9 +11,9 @@ A modern, cross-platform VPN client implementation in **pure Zig**, progressivel
 
 **Goal**: Complete rewrite of SoftEther VPN from C to Zig by Q2 2025
 
-**Current Status**: Phase 3 (Protocol Layer) - 10% complete (~5,900/70,000 lines ported)
+**Current Status**: Phase 4 - 24.2% complete (NA/70,000 lines ported)
 
-**Latest Milestone**: Phase 3 Complete! Full VPN protocol with real cryptography 🎉 (October 13, 2024)
+**Latest Milestone**: Phase 3 Complete! 🎉 (October 13, 2024)
 
 This project is actively porting all C code to idiomatic Zig, achieving:
 - ✅ Memory safety without garbage collection

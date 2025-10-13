@@ -1,14 +1,18 @@
+// VPN Client Wrapper - Bridges CLI to Zig VPN Implementation
+// Wave 4 Phase 4: Direct integration with src/bridge/softether.zig
+
 const std = @import("std");
-const c_mod = @import("c.zig");
-const c = c_mod.c;
 const errors = @import("errors.zig");
 const config = @import("config.zig");
 const types = @import("types.zig");
 
+// Import Zig VPN bridge implementation
+const bridge = @import("bridge/softether.zig");
+
 const VpnError = errors.VpnError;
 const ConnectionConfig = config.ConnectionConfig;
 
-/// Reconnection state information
+/// Reconnection state information for CLI
 pub const ReconnectInfo = struct {
     enabled: bool,
     should_reconnect: bool, // True if reconnection should be attempted
@@ -20,94 +24,60 @@ pub const ReconnectInfo = struct {
     last_disconnect_time: u64, // When connection was lost
 };
 
-/// VPN Client wrapper using the C bridge layer
+/// VPN Client wrapper - provides simplified interface for CLI
 pub const VpnClient = struct {
-    handle: ?*c_mod.VpnBridgeClient,
+    bridge_client: *bridge.VpnBridgeClient,
     allocator: std.mem.Allocator,
     config: ConnectionConfig,
 
     /// Initialize a new VPN client
     pub fn init(allocator: std.mem.Allocator, cfg: ConnectionConfig) !VpnClient {
-        // Initialize the bridge library (once per program)
-        // Note: BOOL in SoftEther is typedef'd as unsigned int (0 = FALSE, 1 = TRUE)
-        const init_result = c.vpn_bridge_init(0); // 0 = FALSE (debug off)
+        // Note: SoftEther library initialization is done in main() before this is called
 
-        if (init_result != c_mod.VPN_BRIDGE_SUCCESS) {
-            return VpnError.InitializationFailed;
-        }
-
-        // Create client instance
-        const client_handle = c.vpn_bridge_create_client() orelse {
-            return VpnError.ClientCreationFailed;
-        };
+        // Create Zig VPN bridge client
+        const bridge_client = try bridge.VpnBridgeClient.init(allocator);
+        errdefer bridge_client.deinit();
 
         // Configure the client
-        const host_z = try allocator.dupeZ(u8, cfg.server_name);
-        defer allocator.free(host_z);
-
-        const hub_z = try allocator.dupeZ(u8, cfg.hub_name);
-        defer allocator.free(hub_z);
-
-        // Extract username/password from auth
-        const username = switch (cfg.auth) {
-            .password => |p| p.username,
-            else => "anonymous",
-        };
-        const password = switch (cfg.auth) {
-            .password => |p| p.password,
-            else => "",
-        };
-        const is_hashed = switch (cfg.auth) {
-            .password => |p| p.is_hashed,
-            else => false,
-        };
-
-        const user_z = try allocator.dupeZ(u8, username);
-        defer allocator.free(user_z);
-
-        const pass_z = try allocator.dupeZ(u8, password);
-        defer allocator.free(pass_z);
-
-        const config_result = if (is_hashed)
-            c.vpn_bridge_configure_with_hash(
-                client_handle,
-                host_z.ptr,
-                cfg.server_port,
-                hub_z.ptr,
-                user_z.ptr,
-                pass_z.ptr,
-            )
-        else
-            c.vpn_bridge_configure(
-                client_handle,
-                host_z.ptr,
-                cfg.server_port,
-                hub_z.ptr,
-                user_z.ptr,
-                pass_z.ptr,
-            );
-
-        if (config_result != c_mod.VPN_BRIDGE_SUCCESS) {
-            c.vpn_bridge_free_client(client_handle);
-            return VpnError.ConfigurationError;
+        if (cfg.auth == .password) {
+            const auth = cfg.auth.password;
+            if (auth.is_hashed) {
+                try bridge_client.configureWithHash(
+                    cfg.server_name,
+                    cfg.server_port,
+                    cfg.hub_name,
+                    auth.username,
+                    auth.password,
+                );
+            } else {
+                try bridge_client.configure(
+                    cfg.server_name,
+                    cfg.server_port,
+                    cfg.hub_name,
+                    auth.username,
+                    auth.password,
+                );
+            }
+        } else {
+            return VpnError.InvalidParameter;
         }
 
         // Configure IP version
-        const ip_version_code: c_int = switch (cfg.ip_version) {
-            .auto => c_mod.VPN_IP_VERSION_AUTO,
-            .ipv4 => c_mod.VPN_IP_VERSION_IPV4,
-            .ipv6 => c_mod.VPN_IP_VERSION_IPV6,
-            .dual => c_mod.VPN_IP_VERSION_DUAL,
+        const ip_ver: bridge.IpVersion = switch (cfg.ip_version) {
+            .auto => .AUTO,
+            .ipv4 => .IPV4_ONLY,
+            .ipv6 => .IPV6_ONLY,
+            .dual => .AUTO, // Dual stack = auto
         };
-        _ = c.vpn_bridge_set_ip_version(client_handle, ip_version_code);
+        try bridge_client.setIpVersion(ip_ver);
 
         // Configure max connections
-        _ = c.vpn_bridge_set_max_connection(client_handle, @intCast(cfg.max_connection));
-
-        // Configure adapter type (Zig vs C adapter)
-        if (cfg.use_zig_adapter) {
-            _ = c.vpn_bridge_set_use_zig_adapter(client_handle, 1);
+        if (cfg.max_connection > 0) {
+            try bridge_client.setMaxConnection(cfg.max_connection);
         }
+
+        // Configure adapter type
+        bridge_client.use_zig_adapter = cfg.use_zig_adapter;
 
         // Configure static IP if provided
         if (cfg.static_ip) |sip| {
@@ -121,12 +91,26 @@ pub const VpnClient = struct {
                 const gw_z = if (sip.ipv4_gateway) |g| try allocator.dupeZ(u8, g) else null;
                 defer if (gw_z) |g| allocator.free(g);
 
-                _ = c.vpn_bridge_set_static_ipv4(
-                    client_handle,
-                    ipv4_z.ptr,
-                    if (mask_z) |m| m.ptr else null,
-                    if (gw_z) |g| g.ptr else null,
-                );
+                // Copy static IPv4 config into bridge client
+                if (ipv4_z.len < bridge_client.static_ipv4.len) {
+                    @memcpy(bridge_client.static_ipv4[0..ipv4_z.len], ipv4_z);
+                    bridge_client.static_ipv4[ipv4_z.len] = 0;
+                    bridge_client.use_static_ipv4 = true;
+                }
+
+                if (mask_z) |m| {
+                    if (m.len < bridge_client.static_ipv4_netmask.len) {
+                        @memcpy(bridge_client.static_ipv4_netmask[0..m.len], m);
+                        bridge_client.static_ipv4_netmask[m.len] = 0;
+                    }
+                }
+
+                if (gw_z) |g| {
+                    if (g.len < bridge_client.static_ipv4_gateway.len) {
+                        @memcpy(bridge_client.static_ipv4_gateway[0..g.len], g);
+                        bridge_client.static_ipv4_gateway[g.len] = 0;
+                    }
+                }
             }
 
             if (sip.ipv6_address) |ipv6| {
@@ -136,92 +120,70 @@ pub const VpnClient = struct {
                 const gw6_z = if (sip.ipv6_gateway) |g| try allocator.dupeZ(u8, g) else null;
                 defer if (gw6_z) |g| allocator.free(g);
 
-                _ = c.vpn_bridge_set_static_ipv6(
-                    client_handle,
-                    ipv6_z.ptr,
-                    sip.ipv6_prefix_len orelse 64,
-                    if (gw6_z) |g| g.ptr else null,
-                );
+                // Copy static IPv6 config into bridge client
+                if (ipv6_z.len < bridge_client.static_ipv6.len) {
+                    @memcpy(bridge_client.static_ipv6[0..ipv6_z.len], ipv6_z);
+                    bridge_client.static_ipv6[ipv6_z.len] = 0;
+                    bridge_client.use_static_ipv6 = true;
+                    bridge_client.static_ipv6_prefix = sip.ipv6_prefix_len orelse 64;
+                }
+
+                if (gw6_z) |g| {
+                    if (g.len < bridge_client.static_ipv6_gateway.len) {
+                        @memcpy(bridge_client.static_ipv6_gateway[0..g.len], g);
+                        bridge_client.static_ipv6_gateway[g.len] = 0;
+                    }
+                }
             }
 
             if (sip.dns_servers) |dns_list| {
-                // Allocate C string array
-                var dns_ptrs = try allocator.alloc([*c]const u8, dns_list.len);
-                defer allocator.free(dns_ptrs);
-
-                var dns_z_list = try allocator.alloc([]const u8, dns_list.len);
-                defer {
-                    for (dns_z_list) |dns_z| {
-                        allocator.free(dns_z);
-                    }
-                    allocator.free(dns_z_list);
-                }
-
                 for (dns_list, 0..) |dns, i| {
-                    dns_z_list[i] = try allocator.dupeZ(u8, dns);
-                    dns_ptrs[i] = @ptrCast(dns_z_list[i].ptr);
-                }
+                    if (i >= bridge_client.dns_servers.len) break;
 
-                _ = c.vpn_bridge_set_dns_servers(
-                    client_handle,
-                    @ptrCast(dns_ptrs.ptr),
-                    @intCast(dns_list.len),
-                );
+                    const dns_z = try allocator.dupeZ(u8, dns);
+                    defer allocator.free(dns_z);
+
+                    if (dns_z.len < bridge_client.dns_servers[i].len) {
+                        @memcpy(bridge_client.dns_servers[i][0..dns_z.len], dns_z);
+                        bridge_client.dns_servers[i][dns_z.len] = 0;
+                        bridge_client.dns_server_count += 1;
+                    }
+                }
             }
         }
 
-        const client = VpnClient{
-            .handle = client_handle,
+        return VpnClient{
+            .bridge_client = bridge_client,
             .allocator = allocator,
             .config = cfg,
         };
-        return client;
     }
 
     /// Clean up and free resources
     pub fn deinit(self: *VpnClient) void {
-        if (self.handle) |handle| {
-            c.vpn_bridge_free_client(handle);
-            self.handle = null;
-        }
+        self.bridge_client.deinit();
+        bridge.deinit(); // Cleanup SoftEther library
     }
 
     /// Connect to VPN server
     pub fn connect(self: *VpnClient) !void {
-        const handle = self.handle orelse return VpnError.InitializationFailed;
-
-        const result = c.vpn_bridge_connect(handle);
-        if (result != c_mod.VPN_BRIDGE_SUCCESS) {
-            return switch (result) {
-                c_mod.VPN_BRIDGE_ERROR_CONNECT_FAILED => VpnError.ConnectionFailed,
-                c_mod.VPN_BRIDGE_ERROR_AUTH_FAILED => VpnError.AuthenticationFailed,
-                c_mod.VPN_BRIDGE_ERROR_INVALID_PARAM => VpnError.InvalidParameter,
-                else => VpnError.OperationFailed,
-            };
-        }
+        try self.bridge_client.connect();
     }
 
     /// Disconnect from VPN server
     pub fn disconnect(self: *VpnClient) !void {
-        const handle = self.handle orelse return VpnError.InitializationFailed;
-
-        const result = c.vpn_bridge_disconnect(handle);
-        if (result != c_mod.VPN_BRIDGE_SUCCESS) {
-            return VpnError.OperationFailed;
-        }
+        self.bridge_client.disconnect();
     }
 
     /// Get current connection status
     pub fn getStatus(self: *const VpnClient) types.ConnectionStatus {
-        const handle = self.handle orelse return .error_state;
-
-        const status = c.vpn_bridge_get_status(handle);
+        const status = self.bridge_client.getStatus();
         return switch (status) {
-            c_mod.VPN_STATUS_DISCONNECTED => .disconnected,
-            c_mod.VPN_STATUS_CONNECTING => .connecting,
-            c_mod.VPN_STATUS_CONNECTED => .connected,
-            c_mod.VPN_STATUS_ERROR => .error_state,
-            else => .error_state,
+            .DISCONNECTED => .disconnected,
+            .CONNECTING => .connecting,
+            .CONNECTED => .connected,
+            .DISCONNECTING => .disconnected, // Treat as disconnected
+            .ERROR => .error_state,
         };
     }
 
@@ -236,163 +198,131 @@ pub const VpnClient = struct {
         bytes_received: u64,
         connected_seconds: u64,
     } {
-        const handle = self.handle orelse return VpnError.InitializationFailed;
-
-        var bytes_sent: u64 = 0;
-        var bytes_received: u64 = 0;
-        var connected_time: u64 = 0;
-
-        const result = c.vpn_bridge_get_connection_info(
-            handle,
-            &bytes_sent,
-            &bytes_received,
-            &connected_time,
-        );
-
-        if (result != c_mod.VPN_BRIDGE_SUCCESS) {
-            return VpnError.OperationFailed;
-        }
+        const info = self.bridge_client.getConnectionInfo();
+        const uptime = self.bridge_client.getUptime();
 
         return .{
-            .bytes_sent = bytes_sent,
-            .bytes_received = bytes_received,
-            .connected_seconds = connected_time,
+            .bytes_sent = info.bytes_sent,
+            .bytes_received = info.bytes_received,
+            .connected_seconds = uptime,
         };
     }
 
-    /// Get TUN device name (e.g., "utun6")
+    /// Get TUN device name (e.g., "utun3")
     pub fn getDeviceName(self: *const VpnClient) ![64]u8 {
-        const handle = self.handle orelse return VpnError.InitializationFailed;
-
         var device_name: [64]u8 = undefined;
-        const result = c.vpn_bridge_get_device_name(
-            handle,
-            &device_name,
-            device_name.len,
-        );
+        const name_slice = try self.bridge_client.getDeviceName(&device_name);
 
-        if (result != c_mod.VPN_BRIDGE_SUCCESS) {
-            return VpnError.OperationFailed;
-        }
+        // Copy to fixed-size array and null-terminate
+        var result: [64]u8 = std.mem.zeroes([64]u8);
+        const copy_len = @min(name_slice.len, result.len - 1);
+        @memcpy(result[0..copy_len], name_slice[0..copy_len]);
+        result[copy_len] = 0;
 
-        return device_name;
+        return result;
     }
 
     /// Get learned IP address (0 if not yet learned)
     pub fn getLearnedIp(self: *const VpnClient) !u32 {
-        const handle = self.handle orelse return VpnError.InitializationFailed;
+        var ip_buf: [64]u8 = undefined;
+        const ip_str = self.bridge_client.getLearnedIp(&ip_buf) catch {
+            return 0; // Not yet learned
+        };
 
-        var ip: u32 = 0;
-        const result = c.vpn_bridge_get_learned_ip(handle, &ip);
-
-        if (result != c_mod.VPN_BRIDGE_SUCCESS) {
-            return VpnError.OperationFailed;
+        // Parse IP string (e.g., "10.21.0.2") to u32
+        var octets: [4]u8 = .{ 0, 0, 0, 0 };
+        var iter = std.mem.splitScalar(u8, ip_str, '.');
+        var i: usize = 0;
+        while (iter.next()) |octet_str| : (i += 1) {
+            if (i >= 4) break;
+            octets[i] = std.fmt.parseInt(u8, octet_str, 10) catch 0;
         }
 
-        return ip;
+        // Convert to u32 (network byte order)
+        return (@as(u32, octets[0]) << 24) |
+            (@as(u32, octets[1]) << 16) |
+            (@as(u32, octets[2]) << 8) |
+            @as(u32, octets[3]);
     }
 
     /// Get learned gateway MAC address
     pub fn getGatewayMac(self: *const VpnClient) !?[6]u8 {
-        const handle = self.handle orelse return VpnError.InitializationFailed;
+        var mac_buf: [64]u8 = undefined;
+        const mac_str = self.bridge_client.getGatewayMac(&mac_buf) catch {
+            return null; // Not yet learned
+        };
 
-        var mac: [6]u8 = undefined;
-        var has_mac: u32 = 0;
-        const result = c.vpn_bridge_get_gateway_mac(handle, &mac, &has_mac);
-
-        if (result != c_mod.VPN_BRIDGE_SUCCESS) {
-            return VpnError.OperationFailed;
+        // Parse MAC string (e.g., "00:11:22:33:44:55")
+        var mac: [6]u8 = .{ 0, 0, 0, 0, 0, 0 };
+        var iter = std.mem.splitScalar(u8, mac_str, ':');
+        var i: usize = 0;
+        while (iter.next()) |byte_str| : (i += 1) {
+            if (i >= 6) break;
+            mac[i] = std.fmt.parseInt(u8, byte_str, 16) catch 0;
         }
 
-        if (has_mac != 0) {
-            return mac;
-        }
-        return null;
+        // Check if MAC is valid (not all zeros)
+        const is_valid = for (mac) |byte| {
+            if (byte != 0) break true;
+        } else false;
+
+        return if (is_valid) mac else null;
     }
 
     // ============================================
     // Reconnection Management
     // ============================================
 
-    /// Enable automatic reconnection with specified parameters.
+    /// Enable automatic reconnection with specified parameters
     pub fn enableReconnect(
         self: *VpnClient,
         max_attempts: u32,
         min_backoff: u32,
         max_backoff: u32,
     ) !void {
-        const handle = self.handle orelse return VpnError.InitializationFailed;
-
-        const result = c.vpn_bridge_enable_reconnect(
-            handle,
-            max_attempts,
-            min_backoff,
-            max_backoff,
-        );
-
-        if (result != 0) {
-            return VpnError.ConnectionFailed;
-        }
+        self.bridge_client.reconnect.enabled = true;
+        self.bridge_client.reconnect.max_attempts = max_attempts;
+        self.bridge_client.reconnect.min_backoff_seconds = min_backoff;
+        self.bridge_client.reconnect.max_backoff_seconds = max_backoff;
     }
 
-    /// Disable automatic reconnection.
+    /// Disable automatic reconnection
     pub fn disableReconnect(self: *VpnClient) !void {
-        const handle = self.handle orelse return VpnError.InitializationFailed;
-
-        const result = c.vpn_bridge_disable_reconnect(handle);
-
-        if (result != 0) {
-            return VpnError.ConnectionFailed;
-        }
+        self.bridge_client.disableReconnect();
     }
 
-    /// Get current reconnection state and determine if reconnection should occur.
+    /// Get current reconnection state and determine if reconnection should occur
     pub fn getReconnectInfo(self: *const VpnClient) !ReconnectInfo {
-        const handle = self.handle orelse return VpnError.InitializationFailed;
+        const rc = &self.bridge_client.reconnect;
+        const status = self.bridge_client.getStatus();
 
-        var enabled: u8 = 0;
-        var attempt: u32 = 0;
-        var max_attempts: u32 = 0;
-        var current_backoff: u32 = 0;
-        var next_retry_time: u64 = 0;
-        var consecutive_failures: u32 = 0;
-        var last_disconnect_time: u64 = 0;
+        // Determine if we should reconnect
+        const should_reconnect = rc.enabled and
+            status == .DISCONNECTED and
+            !rc.user_requested_disconnect and
+            (rc.max_attempts == 0 or rc.current_attempt < rc.max_attempts);
 
-        const result = c.vpn_bridge_get_reconnect_info(
-            handle,
-            &enabled,
-            &attempt,
-            &max_attempts,
-            &current_backoff,
-            &next_retry_time,
-            &consecutive_failures,
-            &last_disconnect_time,
-        );
+        // Calculate backoff delay
+        const backoff = rc.calculateBackoff();
 
-        if (result < 0) {
-            return VpnError.ConnectionFailed;
-        }
+        // Calculate next retry time (approximation)
+        const now: u64 = @intCast(std.time.milliTimestamp());
+        const next_retry = now + (@as(u64, backoff) * 1000);
 
         return ReconnectInfo{
-            .enabled = enabled != 0,
-            .should_reconnect = result == 1,
-            .attempt = attempt,
-            .max_attempts = max_attempts,
-            .current_backoff = current_backoff,
-            .next_retry_time = next_retry_time,
-            .consecutive_failures = consecutive_failures,
-            .last_disconnect_time = last_disconnect_time,
+            .enabled = rc.enabled,
+            .should_reconnect = should_reconnect,
+            .attempt = rc.current_attempt,
+            .max_attempts = rc.max_attempts,
+            .current_backoff = backoff,
+            .next_retry_time = next_retry,
+            .consecutive_failures = rc.current_attempt,
+            .last_disconnect_time = rc.last_connect_time,
         };
     }
 
-    /// Mark current disconnect as user-requested (prevents reconnection).
+    /// Mark current disconnect as user-requested (prevents reconnection)
     pub fn markUserDisconnect(self: *VpnClient) !void {
-        const handle = self.handle orelse return VpnError.InitializationFailed;
-
-        const result = c.vpn_bridge_mark_user_disconnect(handle);
-
-        if (result != 0) {
-            return VpnError.ConnectionFailed;
-        }
+        self.bridge_client.markUserDisconnect();
     }
 };

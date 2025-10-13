@@ -1505,11 +1505,16 @@ void ClientThread(THREAD *t, void *param)
 	printf("[ClientThread] *** NoticeThreadInit CALLED! Thread initialization complete ***\n");
 	fflush(stdout);
 
+	printf("[ClientThread] About to access s->Cedar...\n"); fflush(stdout);
 	cedar = s->Cedar;
+	printf("[ClientThread] cedar=%p\n", cedar); fflush(stdout);
 
+	printf("[ClientThread] Setting ClientStatus to CONNECTING (session=%p)...\n", s); fflush(stdout);
 	s->ClientStatus = CLIENT_STATUS_CONNECTING;
+	printf("[ClientThread] ClientStatus set to %u (session=%p, &ClientStatus=%p)\n", s->ClientStatus, s, &s->ClientStatus); fflush(stdout);
 	s->RetryFlag = true;
 	s->CurrentRetryCount = 0;
+	printf("[ClientThread] Set CurrentRetryCount=0, reading back: %u\n", s->CurrentRetryCount); fflush(stdout);
 
 	Notify(s, CLIENT_NOTIFY_ACCOUNT_CHANGED);
 
@@ -1522,17 +1527,23 @@ void ClientThread(THREAD *t, void *param)
 	s->Win32HideNicInfoWindow = s->ClientOption->HideNicInfoWindow;
 
 
+	printf("[ClientThread] Entering main connection loop\n"); fflush(stdout);
 	while (true)
 	{
+		printf("[ClientThread] Loop iteration - checking connection conditions\n"); fflush(stdout);
 		Zero(&s->ServerIP_CacheForNextConnect, sizeof(IP));
 
+		printf("[ClientThread] s->Link=%p\n", s->Link); fflush(stdout);
 		if (s->Link != NULL && ((*s->Link->StopAllLinkFlag) || s->Link->Halting))
 		{
+			printf("[ClientThread] Link stop/halt condition met - breaking\n"); fflush(stdout);
 			s->Err = ERR_USER_CANCEL;
 			break;
 		}
 
+		printf("[ClientThread] Calling CLog for connection attempt\n"); fflush(stdout);
 		CLog(s->Cedar->Client, "LC_CONNECT_1", s->ClientOption->AccountName, s->CurrentRetryCount + 1);
+		printf("[ClientThread] CLog returned\n"); fflush(stdout);
 		if (s->LinkModeClient && s->Link != NULL)
 		{
 			HLog(s->Link->Hub, "LH_CONNECT_1", s->ClientOption->AccountName, s->CurrentRetryCount + 1);
@@ -1547,9 +1558,12 @@ void ClientThread(THREAD *t, void *param)
 		s->NextConnectionTime = 0;
 
 		// Connect
+		printf("[ClientThread] About to call SessionConnect\n"); fflush(stdout);
 		s->ClientStatus = CLIENT_STATUS_CONNECTING;
 		s->Halt = false;
 		SessionConnect(s);
+		printf("[ClientThread] SessionConnect returned, s->ConnectSucceed=%d, s->Err=%u\n", 
+			s->ConnectSucceed, s->Err); fflush(stdout);
 		if (s->UserCanceled)
 		{
 			s->Err = ERR_USER_CANCEL;
@@ -1574,8 +1588,11 @@ void ClientThread(THREAD *t, void *param)
 			((LINK *)s->Link)->LastError = s->Err;
 		}
 
+		printf("[ClientThread] s->Halt=%d, s->RetryFlag=%d, s->ForceStopFlag=%d, s->Err=%u\n", 
+			s->Halt, s->RetryFlag, s->ForceStopFlag, s->Err); fflush(stdout);
 		if (s->Halt && (s->RetryFlag == false) || s->ForceStopFlag)
 		{
+			printf("[ClientThread] Halt/ForceStop condition met - breaking from loop\n"); fflush(stdout);
 			// Must be aborted
 			if (s->Err == ERR_DEVICE_DRIVER_ERROR)
 			{
@@ -1637,6 +1654,8 @@ void ClientThread(THREAD *t, void *param)
 			if (s->CurrentRetryCount >= s->ClientOption->NumRetry)
 			{
 				// Retry count excess
+				printf("[ClientThread] CurrentRetryCount=%u >= NumRetry=%u - breaking!\n", 
+					s->CurrentRetryCount, s->ClientOption->NumRetry); fflush(stdout);
 
 #ifndef	OS_WIN32
 
@@ -1854,9 +1873,17 @@ void ClientThread(THREAD *t, void *param)
 
 SKIP:
 		// Increase the number of retries
+		printf("[ClientThread] SKIP label - about to check ConnectSucceed=%d\n", s->ConnectSucceed); fflush(stdout);
 		if (s->ConnectSucceed == false)
 		{
+			printf("[ClientThread] Connection failed, incrementing CurrentRetryCount from %u to %u\n", 
+				s->CurrentRetryCount, s->CurrentRetryCount + 1); fflush(stdout);
 			s->CurrentRetryCount++;
+			printf("[ClientThread] CurrentRetryCount now = %u\n", s->CurrentRetryCount); fflush(stdout);
+		}
+		else
+		{
+			printf("[ClientThread] Connection SUCCEEDED! Not incrementing retry count\n"); fflush(stdout);
 		}
 
 		if (s->ForceStopFlag)
@@ -1867,7 +1894,9 @@ SKIP:
 
 	Debug("Session Halt.\n");
 
+	printf("[ClientThread] Setting ClientStatus to IDLE (session ended)\n"); fflush(stdout);
 	s->ClientStatus = CLIENT_STATUS_IDLE;
+	printf("[ClientThread] ClientStatus set to IDLE=%u\n", s->ClientStatus); fflush(stdout);
 
 	// Regard as that the session is ended here
 	if (s->Account != NULL)
@@ -1995,6 +2024,7 @@ SESSION *NewClientSessionEx(CEDAR *cedar, CLIENT_OPTION *option, CLIENT_AUTH *au
 {
 	SESSION *s;
 	THREAD *t;
+	printf("[NewClientSessionEx] ENTRY: option=%p, option->DeviceName='%s' (len=%zu)\n", option, option->DeviceName, strlen(option->DeviceName));
 	// Validate arguments
 	if (cedar == NULL || option == NULL || auth == NULL || pa == NULL ||
 		(auth->AuthType == CLIENT_AUTHTYPE_SECURE && auth->SecureSignProc == NULL))
@@ -2059,8 +2089,13 @@ SESSION *NewClientSessionEx(CEDAR *cedar, CLIENT_OPTION *option, CLIENT_AUTH *au
 	if (StrLen(option->DeviceName) == 0)
 	{
 		// NAT mode
+		printf("[NewClientSessionEx] DeviceName is empty - enabling VirtualHost mode\n");
 		s->ClientModeAndUseVLan = false;
 		s->VirtualHost = true;
+	}
+	else
+	{
+		printf("[NewClientSessionEx] DeviceName='%s' - NOT using VirtualHost mode\n", option->DeviceName);
 	}
 
 	if (OS_IS_WINDOWS_9X(GetOsInfo()->OsType))
@@ -2106,6 +2141,8 @@ SESSION *NewClientSessionEx(CEDAR *cedar, CLIENT_OPTION *option, CLIENT_AUTH *au
 	{
 		VH *v = (VH *)s->PacketAdapter->Param;
 
+		printf("[NewClientSessionEx] VirtualHost mode: v=%p, Param=%p\n", v, s->PacketAdapter->Param);
+		
 		// Add the session object to VH
 		v->Session = s;
 		AddRef(s->ref);

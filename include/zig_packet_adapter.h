@@ -80,6 +80,14 @@ bool zig_adapter_configure_routing(ZigPacketAdapter *adapter, uint32_t vpn_gatew
 ssize_t zig_adapter_read_sync(ZigPacketAdapter *adapter, uint8_t *buffer, size_t buffer_len);
 ssize_t zig_adapter_write_sync(ZigPacketAdapter *adapter);
 
+// Helper functions for Zig FFI
+size_t sizeof_CLIENT_OPTION(void);
+size_t sizeof_CLIENT_AUTH(void);
+void set_client_option_hostname(void *opt, const char *hostname);
+void set_client_option_hubname(void *opt, const char *hubname);
+void set_client_option_devicename(void *opt, const char *devicename);
+void set_client_auth_username(void *auth, const char *username);
+
 #ifdef __cplusplus
 }
 #endif

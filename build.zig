@@ -153,11 +153,12 @@ pub fn build(b: *std.Build) void {
     // Full source list (includes server components)
     const c_sources_full = &[_][]const u8{
         // Bridge wrapper layer
-        "src/bridge/softether_bridge.c",
+        // NOTE: softether_bridge.c REMOVED - fully replaced by src/bridge/softether.zig
         "src/bridge/unix_bridge.c", // Stub/compatibility layer for C code dependencies
         "src/bridge/tick64_macos.c", // Time functions - compatibility shim
         "src/bridge/security_utils.c", // Security functions - compatibility shim
         "src/bridge/packet_utils.c", // Packet builders - compatibility shim
+        "src/bridge/session_helper.c", // Session field access helpers
         // Note: Core implementations in src/platform/*.zig (pure Zig)
         packet_adapter_src,
         "src/bridge/zig_packet_adapter.c",

@@ -711,6 +711,15 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                 UINT32 sender_ip = ((UINT32)pkt[28] << 24) | ((UINT32)pkt[29] << 16) |
                                    ((UINT32)pkt[30] << 8) | pkt[31];
                 
+                // DEBUG: Show all ARP replies
+                printf("[ZigAdapterPutPacket] 📨 ARP REPLY received from %u.%u.%u.%u (MAC: %02x:%02x:%02x:%02x:%02x:%02x)\n",
+                       (sender_ip >> 24) & 0xFF, (sender_ip >> 16) & 0xFF,
+                       (sender_ip >> 8) & 0xFF, sender_ip & 0xFF,
+                       pkt[22], pkt[23], pkt[24], pkt[25], pkt[26], pkt[27]);
+                printf("[ZigAdapterPutPacket]    Expected gateway: %u.%u.%u.%u (g_offered_gw=0x%08X)\n",
+                       (g_offered_gw >> 24) & 0xFF, (g_offered_gw >> 16) & 0xFF,
+                       (g_offered_gw >> 8) & 0xFF, g_offered_gw & 0xFF, g_offered_gw);
+                
                 // If this is from the gateway (learned from DHCP), learn its MAC!
                 if (g_offered_gw != 0 && sender_ip == g_offered_gw) {
                     // Check if MAC changed or is being learned for first time
@@ -880,4 +889,52 @@ static void ZigAdapterFree(SESSION* s) {
     printf("[ZigAdapterFree] Context freed successfully\n");
     
     printf("[ZigAdapterFree] ✅ Cleanup complete\n");
+}
+
+// Helper function to get CEDAR from CLIENT
+// Exported for use by Zig FFI layer
+CEDAR* CiGetCedar(CLIENT *client)
+{
+    if (client == NULL) {
+        return NULL;
+    }
+    return client->Cedar;
+}
+
+// Helper functions for Zig to get C structure sizes
+size_t sizeof_CLIENT_OPTION(void) {
+    return sizeof(CLIENT_OPTION);
+}
+
+size_t sizeof_CLIENT_AUTH(void) {
+    return sizeof(CLIENT_AUTH);
+}
+
+// Helper functions to safely set string fields in CLIENT_OPTION
+void set_client_option_hostname(void *opt_ptr, const char *hostname) {
+    CLIENT_OPTION *opt = (CLIENT_OPTION *)opt_ptr;
+    if (opt && hostname) {
+        StrCpy(opt->Hostname, sizeof(opt->Hostname), hostname);
+    }
+}
+
+void set_client_option_hubname(void *opt_ptr, const char *hubname) {
+    CLIENT_OPTION *opt = (CLIENT_OPTION *)opt_ptr;
+    if (opt && hubname) {
+        StrCpy(opt->HubName, sizeof(opt->HubName), hubname);
+    }
+}
+
+void set_client_option_devicename(void *opt_ptr, const char *devicename) {
+    CLIENT_OPTION *opt = (CLIENT_OPTION *)opt_ptr;
+    if (opt && devicename) {
+        StrCpy(opt->DeviceName, sizeof(opt->DeviceName), devicename);
+    }
+}
+
+void set_client_auth_username(void *auth_ptr, const char *username) {
+    CLIENT_AUTH *auth = (CLIENT_AUTH *)auth_ptr;
+    if (auth && username) {
+        StrCpy(auth->Username, sizeof(auth->Username), username);
+    }
 }

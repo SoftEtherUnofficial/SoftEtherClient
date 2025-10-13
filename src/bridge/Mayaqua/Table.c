@@ -130,6 +130,7 @@ void InitTable()
 	if (MayaquaIsMinimalMode())
 	{
 		// Not to load in case of minimum mode
+		printf("[InitTable] Minimal mode enabled - skipping hamcore load\n"); fflush(stdout);
 		return;
 	}
 

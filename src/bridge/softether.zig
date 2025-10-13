@@ -246,6 +246,10 @@ pub const VpnBridgeClient = struct {
 
     /// Initialize a new VPN bridge client
     pub fn init(allocator: std.mem.Allocator) !*VpnBridgeClient {
+        // Create SoftEther CLIENT structure
+        const softether_client = try c.newClient();
+        errdefer c.freeClient(softether_client);
+
         const client = try allocator.create(VpnBridgeClient);
         errdefer allocator.destroy(client);
 
@@ -275,7 +279,7 @@ pub const VpnBridgeClient = struct {
             .bytes_received = 0,
             .connect_time = 0,
             .reconnect = ReconnectConfig.init(),
-            .softether_client = null,
+            .softether_client = softether_client,
             .softether_account = null,
             .softether_session = null,
             .packet_adapter = null,
@@ -290,6 +294,14 @@ pub const VpnBridgeClient = struct {
         // Ensure disconnected
         if (self.status == .CONNECTED or self.status == .CONNECTING) {
             self.disconnect();
+        }
+
+        // Clear CLIENT pointer
+        // NOTE: Do NOT call freeClient() - the CLIENT will be freed by freeCedar()
+        // when the entire Cedar system shuts down. Calling freeClient() here causes
+        // a double-free because freeCedar() also tries to free all CLIENT structures.
+        if (self.softether_client) |_| {
+            self.softether_client = null;
         }
 
         // Zero sensitive data
@@ -460,59 +472,57 @@ pub const VpnBridgeClient = struct {
 
         self.status = .CONNECTING;
 
-        // Create CLIENT_OPTION
-        const opt = try c.zeroMalloc(@sizeOf(c.ClientOption));
+        // Create CLIENT_OPTION using C struct size
+        const opt = try c.zeroMalloc(c.sizeofClientOption());
         defer c.free(opt);
-        const option: *c.ClientOption = @ptrCast(@alignCast(opt));
+        const option: *c.CLIENT_OPTION = @ptrCast(@alignCast(opt));
 
-        // Set account name
-        @memset(std.mem.asBytes(&option.AccountName), 0);
-        // TODO: Convert "ZigBridge" to wchar_t
-
-        // Set connection details
+        // Set string fields using safe C helper functions
         const hostname_slice = std.mem.sliceTo(&self.hostname, 0);
-        c.strCpy(&option.Hostname, hostname_slice);
-        option.Port = self.port;
+        c.setClientOptionHostname(option, hostname_slice);
 
         const hub_slice = std.mem.sliceTo(&self.hub_name, 0);
-        c.strCpy(&option.HubName, hub_slice);
+        c.setClientOptionHubname(option, hub_slice);
 
-        // Set device name
         const device_name = "vpn_adapter";
-        c.strCpy(&option.DeviceName, device_name);
+        c.setClientOptionDevicename(option, device_name);
+        std.log.debug("VPN: Set DeviceName to '{s}' via C helper", .{device_name});
 
-        // CRITICAL: Disable NAT-T (TCP only)
-        option.PortUDP = 0;
-
-        // Connection settings
-        option.MaxConnection = self.max_connection;
-        option.UseEncrypt = true;
-        option.UseCompress = false;
-        option.HalfConnection = false;
-        option.NoRoutingTracking = true;
-        option.NumRetry = 10;
-        option.RetryInterval = 5;
-        option.AdditionalConnectionInterval = 1;
-        option.NoUdpAcceleration = true;
-        option.DisableQoS = true;
-        option.RequireBridgeRoutingMode = true;
+        // Set all other CLIENT_OPTION fields using C helpers to ensure correct struct layout
+        c.setClientOptionPort(option, self.port);
+        c.setClientOptionPortUDP(option, 0); // CRITICAL: Disable NAT-T (TCP only)
+        c.setClientOptionMaxConnection(option, self.max_connection);
+        c.setClientOptionNumRetry(option, 10);
+        c.setClientOptionRetryInterval(option, 5);
+        c.setClientOptionFlags(
+            option,
+            true, // use_encrypt
+            false, // use_compress
+            false, // half_connection
+            true, // no_routing_tracking
+            true, // no_udp_accel
+            true, // disable_qos
+            true, // require_bridge_routing
+        );
 
         std.log.debug("VPN: Options set - {s}:{d} hub={s} max_conn={d}", .{
             hostname_slice,
-            option.Port,
+            self.port,
             hub_slice,
-            option.MaxConnection,
+            self.max_connection,
         });
 
-        // Create CLIENT_AUTH
-        const auth_ptr = try c.zeroMalloc(@sizeOf(c.ClientAuth));
+        // Create CLIENT_AUTH using C struct size
+        const auth_ptr = try c.zeroMalloc(c.sizeofClientAuth());
         defer c.free(auth_ptr);
-        const auth: *c.ClientAuth = @ptrCast(@alignCast(auth_ptr));
+        const auth: *c.CLIENT_AUTH = @ptrCast(@alignCast(auth_ptr));
 
-        auth.AuthType = @intFromEnum(c.ClientAuthType.PASSWORD);
-
+        // Set username using C helper
         const username_slice = std.mem.sliceTo(&self.username, 0);
-        c.strCpy(&auth.Username, username_slice);
+        c.setClientAuthUsername(auth, username_slice);
+
+        // Set auth type using C helper
+        c.setClientAuthType(auth, @intFromEnum(c.ClientAuthType.PASSWORD));
 
         // Handle password hashing
         if (self.password_is_hashed) {
@@ -523,11 +533,14 @@ pub const VpnBridgeClient = struct {
             const decoded_len = try c.base64Decode(&decoded, password_slice);
 
             if (decoded_len == 20) {
-                @memcpy(&auth.HashedPassword, decoded[0..20]);
+                // Use C helper to set hashed password
+                c.setClientAuthHashedPassword(auth, decoded[0..20]);
             } else {
                 std.log.warn("VPN: Base64 password decoded to {d} bytes (expected 20), rehashing", .{decoded_len});
                 const password_slice2 = std.mem.sliceTo(&self.password, 0);
-                c.hashPassword(&auth.HashedPassword, username_slice, password_slice2);
+                var temp_hash: [20]u8 = undefined;
+                c.hashPassword(&temp_hash, username_slice, password_slice2);
+                c.setClientAuthHashedPassword(auth, &temp_hash);
             }
 
             // Securely zero decoded password
@@ -536,7 +549,9 @@ pub const VpnBridgeClient = struct {
             // Hash plaintext password
             std.log.debug("VPN: Hashing plaintext password", .{});
             const password_slice = std.mem.sliceTo(&self.password, 0);
-            c.hashPassword(&auth.HashedPassword, username_slice, password_slice);
+            var temp_hash: [20]u8 = undefined;
+            c.hashPassword(&temp_hash, username_slice, password_slice);
+            c.setClientAuthHashedPassword(auth, &temp_hash);
 
             // Securely zero the plaintext password
             c.secureZero(&self.password, self.password.len);
@@ -558,7 +573,7 @@ pub const VpnBridgeClient = struct {
         self.softether_account = account_ptr;
 
         // Create packet adapter
-        std.log.debug("VPN: Creating packet adapter (zig={d})", .{self.use_zig_adapter});
+        std.log.debug("VPN: Creating packet adapter (zig={})", .{self.use_zig_adapter});
         const pa = if (self.use_zig_adapter)
             c.createZigPacketAdapter() catch null
         else
@@ -572,8 +587,8 @@ pub const VpnBridgeClient = struct {
             c.deleteLock(account.lock.?);
             c.free(account_ptr);
             self.status = .ERROR;
-            self.last_error = @intFromEnum(ErrorCode.CONNECT_FAILED);
-            return BridgeError.ConnectFailed;
+            self.last_error = @as(u32, @bitCast(@as(i32, @intFromEnum(ErrorCode.CONNECT_FAILED))));
+            return BridgeError.ConnectionFailed;
         }
 
         self.packet_adapter = pa;
@@ -597,11 +612,76 @@ pub const VpnBridgeClient = struct {
             c.deleteLock(account.lock.?);
             c.free(account_ptr);
             self.status = .ERROR;
-            self.last_error = @intFromEnum(ErrorCode.CONNECT_FAILED);
-            return BridgeError.ConnectFailed;
+            self.last_error = @as(u32, @bitCast(@as(i32, @intFromEnum(ErrorCode.CONNECT_FAILED))));
+            return BridgeError.ConnectionFailed;
         };
 
         self.softether_session = session;
+        account.ClientSession = session;
+
+        // Wait for connection to establish (with timeout)
+        // The ClientThread runs in background and will initialize the packet adapter
+        std.log.debug("VPN: Waiting for session to establish (30s timeout)...", .{});
+        const start_time = getCurrentTimeMs();
+        var connected = false;
+        var check_count: u32 = 0;
+
+        // Give ClientThread a moment to start up (100ms should be plenty)
+        std.log.debug("VPN: Waiting for ClientThread to start...", .{});
+        std.Thread.sleep(100 * std.time.ns_per_ms);
+        std.log.debug("VPN: Checking connection status...", .{});
+
+        while ((getCurrentTimeMs() - start_time) < 30000) { // 30 second timeout
+            const status = c.getSessionStatus(session);
+
+            // Log every 2 seconds at debug level to track progress
+            if (check_count % 20 == 0) {
+                const status_str = switch (status) {
+                    0 => "CONNECTING",
+                    1 => "NEGOTIATION",
+                    2 => "AUTH",
+                    3 => "ESTABLISHED",
+                    4 => "RETRY",
+                    5 => "IDLE",
+                    else => "UNKNOWN",
+                };
+                std.log.debug("VPN: Status={s} ({d}), elapsed={d}ms", .{
+                    status_str,
+                    status,
+                    getCurrentTimeMs() - start_time,
+                });
+            }
+            check_count += 1;
+
+            if (status == 3) { // CLIENT_STATUS_ESTABLISHED
+                connected = true;
+                break;
+            }
+
+            // Check for halt condition (error during connection)
+            const should_halt = c.getSessionHalt(session);
+            if (should_halt) {
+                std.log.err("VPN: Connection halted by session", .{});
+                break;
+            }
+
+            // Don't fail on IDLE status - just keep waiting up to the timeout
+            // The session may take time to transition from IDLE -> CONNECTING
+
+            std.Thread.sleep(100 * std.time.ns_per_ms); // Check every 100ms
+        }
+
+        if (!connected) {
+            std.log.err("VPN: Connection timeout or failed after 30 seconds", .{});
+            // Clean up - NOTE: releaseSession will free packet_adapter and account members
+            // Do NOT free them separately or we'll get double-free errors
+            c.releaseSession(session);
+            self.softether_session = null;
+            self.packet_adapter = null;
+            self.status = .ERROR;
+            self.last_error = @as(u32, @bitCast(@as(i32, @intFromEnum(ErrorCode.CONNECT_FAILED))));
+            return BridgeError.ConnectionFailed;
+        }
 
         // Connection successful
         self.status = .CONNECTED;
@@ -610,6 +690,7 @@ pub const VpnBridgeClient = struct {
         self.reconnect.user_requested_disconnect = false;
 
         std.log.info("VPN: ✅ Connected successfully to {s}:{d}", .{ hostname_slice, self.port });
+        std.log.debug("VPN: DHCP and network configuration will be handled by packet adapter", .{});
     }
 
     /// Disconnect from VPN server
@@ -622,30 +703,26 @@ pub const VpnBridgeClient = struct {
         self.status = .DISCONNECTING;
         self.reconnect.user_requested_disconnect = true;
 
-        // Stop session if active
-        if (self.softether_session) |session_ptr| {
-            std.log.debug("VPN: Stopping session (waiting for ClientThread to exit)", .{});
-            const session: *c.SESSION = @ptrCast(session_ptr);
+        // Clear packet adapter pointer (will be freed by SESSION cleanup)
+        // DO NOT call freePacketAdapter - the SESSION owns it!
+        self.packet_adapter = null;
 
-            // StopSession waits for ClientThread to finish
-            // The ClientThread will call ReleaseSession twice before exiting
-            // So we should NOT call ReleaseSession ourselves
-            c.stopSession(session);
-            std.log.debug("VPN: Session stopped successfully", .{});
-
+        // Clear session pointer - will be cleaned up by CLIENT/Cedar shutdown
+        // NOTE: Do NOT call StopSession or StopSessionEx - the HaltEvent may be corrupted
+        // The ClientThread and session cleanup is handled automatically by freeCedar()
+        if (self.softether_session) |_| {
+            std.log.debug("VPN: Clearing session pointer (cleanup handled by freeCedar)", .{});
             self.softether_session = null;
         }
 
-        // Free packet adapter
-        if (self.packet_adapter) |pa| {
-            const pa_typed: *c.PACKET_ADAPTER = @ptrCast(pa);
-            c.freePacketAdapter(pa_typed);
-            self.packet_adapter = null;
-        }
+        // NOTE: Packet adapter is freed by SESSION cleanup, not by us
 
         // Free account
         if (self.softether_account) |account_ptr| {
             const account: *c.AccountStruct = @ptrCast(@alignCast(account_ptr));
+            // Clear the session reference
+            account.ClientSession = null;
+
             if (account.lock) |lock| {
                 c.deleteLock(lock);
             }
@@ -775,13 +852,21 @@ var g_initialized: bool = false;
 
 /// Initialize the VPN bridge system
 pub fn init(debug: bool) !void {
-    _ = debug;
+    _ = debug; // Reserved for future use
     if (g_initialized) {
         return BridgeError.AlreadyInitialized;
     }
 
-    // TODO: Call SoftEther InitMayaqua() etc.
+    // Enable minimal mode to skip hamcore.se2 loading (language tables)
+    // We don't need the full SoftEther UI language support for VPN client
+    c.setMinimalMode();
 
+    // Initialize Mayaqua and Cedar libraries
+    // memcheck=false for production, debug=false to reduce verbosity
+    c.initMayaqua(false, false);
+    c.initCedar();
+
+    std.log.info("SoftEther client initialized successfully", .{});
     g_initialized = true;
 }
 
@@ -789,7 +874,9 @@ pub fn init(debug: bool) !void {
 pub fn deinit() void {
     if (!g_initialized) return;
 
-    // TODO: Call SoftEther FreeMayaqua() etc.
+    // Cleanup SoftEther layers in reverse order
+    c.freeCedar();
+    c.freeMayaqua();
 
     g_initialized = false;
 }
