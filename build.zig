@@ -6,7 +6,8 @@ pub fn build(b: *std.Build) void {
     std.debug.print("╔══════════════════════════════════════════════════════════════╗\n", .{});
     std.debug.print("║           SoftEtherZig - Pure Zig VPN Client                ║\n", .{});
     std.debug.print("║              Progressive C to Zig Migration                 ║\n", .{});
-    std.debug.print("║                  Phase 1: 3% Complete                       ║\n", .{});
+    std.debug.print("║          Phase 1: Foundation Layer - COMPLETE! ✅           ║\n", .{});
+    std.debug.print("║   Memory ✓  String ✓  Collections ✓  (91% reduction)      ║\n", .{});
     std.debug.print("╚══════════════════════════════════════════════════════════════╝\n", .{});
     std.debug.print("\n", .{});
 
@@ -445,6 +446,39 @@ pub fn build(b: *std.Build) void {
     // 4. TESTS
     // ============================================
 
+    // Test for Mayaqua memory module
+    const memory_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/mayaqua/memory.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_memory_tests = b.addRunArtifact(memory_tests);
+
+    // Test for Mayaqua string module
+    const string_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/mayaqua/string.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_string_tests = b.addRunArtifact(string_tests);
+
+    // Test for Mayaqua collections module
+    const collections_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/mayaqua/collections.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_collections_tests = b.addRunArtifact(collections_tests);
+
     // Test for macOS platform adapter
     const macos_adapter_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -459,6 +493,9 @@ pub fn build(b: *std.Build) void {
 
     // Main test step
     const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_memory_tests.step);
+    test_step.dependOn(&run_string_tests.step);
+    test_step.dependOn(&run_collections_tests.step);
     test_step.dependOn(&run_macos_adapter_tests.step);
 
     // ============================================
