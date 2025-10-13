@@ -6,6 +6,7 @@ pub const errors = @import("errors.zig");
 pub const types = @import("types.zig");
 pub const client = @import("client.zig");
 pub const config = @import("config.zig");
+pub const log = @import("log.zig");
 
 // Re-export commonly used types
 pub const VpnClient = client.VpnClient;
@@ -34,6 +35,6 @@ test "version string" {
     const allocator = std.testing.allocator;
     const ver = try versionString(allocator);
     defer allocator.free(ver);
-    
+
     try std.testing.expectEqualStrings("0.1.0-dev", ver);
 }

@@ -75,3 +75,6 @@ void TickToTime(void *time_struct, UINT64 tick) {
 void FreeTick64(void) {
     // Nothing to free
 }
+// ARCHIVED: Mon Oct 13 20:13:30 IST 2025
+// Ported to: src/platform/time.zig
+// Commit: ece3b36

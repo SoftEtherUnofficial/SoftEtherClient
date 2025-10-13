@@ -144,12 +144,7 @@ pub fn build(b: *std.Build) void {
         else => "src/bridge/platform/packet_adapter_linux.c", // fallback
     };
 
-    const tick64_src = switch (target.result.os.tag) {
-        .macos, .ios => "src/bridge/platform/tick64_macos.c",
-        .linux => "src/bridge/platform/tick64_linux.c",
-        .windows => "src/bridge/platform/tick64_windows.c",
-        else => "src/bridge/platform/tick64_linux.c", // fallback
-    };
+    // Note: tick64 now implemented in src/platform/time.zig (pure Zig)
 
     // ============================================
     // C Source Files
@@ -159,12 +154,15 @@ pub fn build(b: *std.Build) void {
     const c_sources_full = &[_][]const u8{
         // Bridge wrapper layer
         "src/bridge/softether_bridge.c",
-        "src/bridge/unix_bridge.c",
-        tick64_src,
+        "src/bridge/unix_bridge.c", // Stub/compatibility layer for C code dependencies
+        "src/bridge/tick64_macos.c", // Time functions - compatibility shim
+        "src/bridge/security_utils.c", // Security functions - compatibility shim
+        "src/bridge/packet_utils.c", // Packet builders - compatibility shim
+        // Note: Core implementations in src/platform/*.zig (pure Zig)
         packet_adapter_src,
         "src/bridge/zig_packet_adapter.c",
         "src/bridge/Mayaqua/logging.c",
-        "src/bridge/security_utils.c",
+        // Note: security_utils now in src/security/utils.zig (pure Zig)
         "src/bridge/Cedar/client_bridge.c",
         "src/bridge/zig_bridge.c",
 

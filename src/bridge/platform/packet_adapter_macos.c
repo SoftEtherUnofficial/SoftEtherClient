@@ -520,7 +520,7 @@ static UCHAR *BuildNeighborAdvertisement(UCHAR *my_mac, UINT *out_size)
 // Build Gratuitous ARP packet (ARP Announcement)
 // CRITICAL: This registers our MAC address in SoftEther's bridge MAC/IP learning table!
 // Without this, the bridge won't forward unicast packets to us (including DHCP responses)
-UCHAR *BuildGratuitousArp(UCHAR *my_mac, UINT32 my_ip, UINT *out_size)
+static UCHAR *BuildGratuitousArp_C(UCHAR *my_mac, UINT32 my_ip, UINT *out_size)
 {
     static UCHAR packet[1024];
     UINT pos = 0;
@@ -582,7 +582,7 @@ UCHAR *BuildGratuitousArp(UCHAR *my_mac, UINT32 my_ip, UINT *out_size)
 // Build ARP Reply packet (responds to ARP requests for our IP)
 // CRITICAL: When DHCP server or router sends ARP request checking if our IP is alive,
 // we MUST respond or they'll think the IP is unused and won't complete DHCP!
-UCHAR *BuildArpReply(UCHAR *my_mac, UINT32 my_ip, UCHAR *target_mac, UINT32 target_ip, UINT *out_size)
+static UCHAR *BuildArpReply_C(UCHAR *my_mac, UINT32 my_ip, UCHAR *target_mac, UINT32 target_ip, UINT *out_size)
 {
     static UCHAR packet[1024];
     UINT pos = 0;
@@ -640,7 +640,7 @@ UCHAR *BuildArpReply(UCHAR *my_mac, UINT32 my_ip, UCHAR *target_mac, UINT32 targ
 // Build ARP Request packet (asks "who has target_ip?")
 // Used to resolve gateway MAC address - CRITICAL for MAC/IP table population!
 // **NON-STATIC**: Exported so zig_packet_adapter.c can use it
-UCHAR *BuildArpRequest(UCHAR *my_mac, UINT32 my_ip, UINT32 target_ip, UINT *out_size)
+static UCHAR *BuildArpRequest_C(UCHAR *my_mac, UINT32 my_ip, UINT32 target_ip, UINT *out_size)
 {
     static UCHAR packet[1024];
     UINT pos = 0;
@@ -761,7 +761,7 @@ static UCHAR *BuildArpProbe(UCHAR *my_mac, UINT32 target_ip, UINT *out_size)
 }
 
 // Build DHCP DISCOVER packet
-UCHAR *BuildDhcpDiscover(UCHAR *my_mac, UINT32 xid, UINT *out_size)
+static UCHAR *BuildDhcpDiscover_C(UCHAR *my_mac, UINT32 xid, UINT *out_size)
 {
     static UCHAR packet[1024];
     UINT pos = 0;
@@ -1218,7 +1218,7 @@ static bool ParseDhcpOffer(UCHAR *data, UINT size, UINT32 expected_xid, UINT32 *
 }
 
 // Build DHCP REQUEST packet
-UCHAR *BuildDhcpRequest(UCHAR *my_mac, UINT32 xid, UINT32 requested_ip, UINT32 server_ip, UINT *out_size)
+static UCHAR *BuildDhcpRequest_C(UCHAR *my_mac, UINT32 xid, UINT32 requested_ip, UINT32 server_ip, UINT *out_size)
 {
     static UCHAR packet[1024];
     UINT pos = 0;
@@ -1736,7 +1736,7 @@ bool MacOsTunInit(SESSION *s)
 
     // **PACKET 1**: DHCP DISCOVER (FIRST! - matching SSTP Connect line 253)
     UINT dhcp_size = 0;
-    UCHAR *dhcp_discover = BuildDhcpDiscover(g_my_mac, g_dhcp_xid, &dhcp_size);
+    UCHAR *dhcp_discover = BuildDhcpDiscover_C(g_my_mac, g_dhcp_xid, &dhcp_size);
     if (dhcp_discover && dhcp_size > 0)
     {
         TUN_PACKET *pkt_dhcp = Malloc(sizeof(TUN_PACKET));
@@ -1782,7 +1782,7 @@ bool MacOsTunInit(SESSION *s)
 
     // **PACKET 4**: Gratuitous ARP (register MAC without claiming IP)
     UINT garp_size = 0;
-    UCHAR *garp = BuildGratuitousArp(g_my_mac, 0, &garp_size); // 0 = 0.0.0.0
+    UCHAR *garp = BuildGratuitousArp_C(g_my_mac, 0, &garp_size); // 0 = 0.0.0.0
     if (garp && garp_size > 0)
     {
         TUN_PACKET *pkt_garp = Malloc(sizeof(TUN_PACKET));
@@ -1868,7 +1868,7 @@ UINT MacOsTunGetNextPacket(SESSION *s, void **data)
     {
         UINT pkt_size;
         UINT32 zero_ip = 0x00000000; // 0.0.0.0 - no IP claimed yet
-        UCHAR *pkt = BuildGratuitousArp(g_my_mac, zero_ip, &pkt_size);
+        UCHAR *pkt = BuildGratuitousArp_C(g_my_mac, zero_ip, &pkt_size);
         if (pkt_size > 0 && pkt != NULL)
         {
             LOG_TUN_DEBUG("⏰ Tunnel established for %llu ms\n", time_since_start);
@@ -1892,7 +1892,7 @@ UINT MacOsTunGetNextPacket(SESSION *s, void **data)
         UINT pkt_size;
         // Reply with: 1) learned IP, 2) DHCP offered IP, or 3) 0.0.0.0 if neither known
         UINT32 our_ip = (g_our_ip != 0) ? g_our_ip : ((g_offered_ip != 0) ? g_offered_ip : 0x00000000);
-        UCHAR *pkt = BuildArpReply(g_my_mac, our_ip, g_arp_reply_to_mac, g_arp_reply_to_ip, &pkt_size);
+        UCHAR *pkt = BuildArpReply_C(g_my_mac, our_ip, g_arp_reply_to_mac, g_arp_reply_to_ip, &pkt_size);
         if (pkt_size > 0 && pkt != NULL)
         {
             // Only log gateway ARP replies or during setup
@@ -1988,7 +1988,7 @@ UINT MacOsTunGetNextPacket(SESSION *s, void **data)
         if (should_send)
         {
             UINT dhcp_size;
-            UCHAR *dhcp_pkt = BuildDhcpDiscover(g_my_mac, g_dhcp_xid, &dhcp_size);
+            UCHAR *dhcp_pkt = BuildDhcpDiscover_C(g_my_mac, g_dhcp_xid, &dhcp_size);
             if (dhcp_size > 0 && dhcp_pkt != NULL)
             {
                 printf("[MacOsTunGetNextPacket] 📡 Sending DHCP DISCOVER #%u (xid=0x%08x, size=%u)\n",
@@ -2014,7 +2014,7 @@ UINT MacOsTunGetNextPacket(SESSION *s, void **data)
     if (g_dhcp_state == DHCP_STATE_OFFER_RECEIVED)
     {
         UINT dhcp_size;
-        UCHAR *dhcp_pkt = BuildDhcpRequest(g_my_mac, g_dhcp_xid, g_offered_ip, g_dhcp_server_ip, &dhcp_size);
+        UCHAR *dhcp_pkt = BuildDhcpRequest_C(g_my_mac, g_dhcp_xid, g_offered_ip, g_dhcp_server_ip, &dhcp_size);
         if (dhcp_size > 0 && dhcp_pkt != NULL)
         {
             LOG_DHCP_INFO("📤 Sending DHCP REQUEST for IP (xid=0x%08x, size=%u)\n", g_dhcp_xid, dhcp_size);
@@ -2033,7 +2033,7 @@ UINT MacOsTunGetNextPacket(SESSION *s, void **data)
     if (g_need_gateway_arp && g_our_ip != 0 && g_gateway_ip != 0)
     {
         UINT pkt_size;
-        UCHAR *pkt = BuildArpRequest(g_my_mac, g_our_ip, g_gateway_ip, &pkt_size);
+        UCHAR *pkt = BuildArpRequest_C(g_my_mac, g_our_ip, g_gateway_ip, &pkt_size);
         if (pkt_size > 0 && pkt != NULL)
         {
             printf("[MacOsTunGetNextPacket] 🔍 Resolving gateway MAC address for %u.%u.%u.%u\n",
@@ -2063,7 +2063,7 @@ UINT MacOsTunGetNextPacket(SESSION *s, void **data)
         if ((now - g_last_keepalive_time) >= KEEPALIVE_INTERVAL_MS)
         {
             UINT pkt_size;
-            UCHAR *pkt = BuildGratuitousArp(g_my_mac, g_our_ip, &pkt_size);
+            UCHAR *pkt = BuildGratuitousArp_C(g_my_mac, g_our_ip, &pkt_size);
             if (pkt_size > 0 && pkt != NULL)
             {
                 UCHAR *pkt_copy = Malloc(pkt_size);
