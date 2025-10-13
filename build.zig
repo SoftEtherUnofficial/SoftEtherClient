@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
     std.debug.print("║           SoftEtherZig - Pure Zig VPN Client                ║\n", .{});
     std.debug.print("║              Progressive C to Zig Migration                 ║\n", .{});
     std.debug.print("║         Phase 3: Protocol Layer - In Progress 🔄            ║\n", .{});
-    std.debug.print("║   VPN Protocol ✓  Packet (next)  Crypto (next)  Client     ║\n", .{});
+    std.debug.print("║   VPN ✓  Packet ✓  Crypto (next)  Integration (final)     ║\n", .{});
     std.debug.print("╚══════════════════════════════════════════════════════════════╝\n", .{});
     std.debug.print("\n", .{});
 
@@ -583,6 +583,17 @@ pub fn build(b: *std.Build) void {
 
     const run_vpn_tests = b.addRunArtifact(vpn_tests);
 
+    // Test for packet protocol
+    const packet_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/protocol/packet.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_packet_tests = b.addRunArtifact(packet_tests);
+
     // Test for macOS platform adapter
     const macos_adapter_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -604,6 +615,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_http_tests.step);
     test_step.dependOn(&run_connection_tests.step);
     test_step.dependOn(&run_vpn_tests.step);
+    test_step.dependOn(&run_packet_tests.step);
     test_step.dependOn(&run_macos_adapter_tests.step);
 
     // ============================================
