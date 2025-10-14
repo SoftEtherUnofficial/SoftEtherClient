@@ -65,7 +65,7 @@ git clone https://github.com/yourusername/SoftEtherZig.git
 cd SoftEtherZig
 
 # Build the client
-zig build -Doptimize=ReleaseFast
+zig build
 
 # Generate password hash (recommended for security)
 ./zig-out/bin/vpnclient --gen-hash username password
