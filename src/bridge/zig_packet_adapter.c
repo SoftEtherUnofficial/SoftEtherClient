@@ -41,6 +41,13 @@ typedef enum {
     DHCP_STATE_CONFIGURED = 5
 } DHCP_STATE;
 
+// Performance profile enum (simplified)
+typedef enum {
+    PERF_PROFILE_LATENCY,     // Gaming/VoIP - lowest ping
+    PERF_PROFILE_BALANCED,    // General use - recommended default
+    PERF_PROFILE_THROUGHPUT   // Downloads/streaming - highest speed
+} PERF_PROFILE;
+
 // Zig adapter context structure
 typedef struct ZIG_ADAPTER_CONTEXT {
     SESSION *session;
@@ -59,12 +66,8 @@ typedef struct ZIG_ADAPTER_CONTEXT {
     UINT32 offered_ip;       // IP offered by DHCP server
     UINT32 dhcp_server_ip;   // DHCP server IP (from OFFER)
     
-    // **ADAPTIVE BATCHING STATE** (resource-efficient QoS)
-    UINT64 last_flush_time;      // Last write_sync() timestamp
-    UINT packets_queued;         // Approximate queue fill counter
-    UINT flush_interval_ms;      // Dynamic flush interval (5-50ms)
-    UINT consecutive_full_queue; // Track queue pressure
-    bool priority_flush_pending; // Priority packet needs immediate flush
+    // Performance profile (simplified - just profile selection)
+    PERF_PROFILE perf_profile; // Active profile: latency/balanced/throughput
 } ZIG_ADAPTER_CONTEXT;
 
 // ✅ REMOVED (~350 lines): DHCP state machine, ARP handling, packet builders
@@ -139,12 +142,45 @@ static bool ZigAdapterInit(SESSION* s) {
         return false;
     }
     
-    // Configure Zig adapter with ZigTapTun translator
+    // **PERFORMANCE PROFILE**: Load from env or use balanced default
+    // This must happen BEFORE creating the adapter config!
+    size_t recv_slots = 128;  // Balanced default
+    size_t send_slots = 128;
+    size_t pool_size = 256;
+    size_t batch_size = 128;
+    
+    const char* profile_env = getenv("VPN_PERF_PROFILE");
+    if (profile_env) {
+        if (strcmp(profile_env, "latency") == 0) {
+            ctx->perf_profile = PERF_PROFILE_LATENCY;
+            recv_slots = 64;
+            send_slots = 64;
+            pool_size = 128;
+            batch_size = 64;
+            printf("[ZigAdapterInit] ⚡ Performance: LATENCY profile (gaming/VoIP, 64/64 buffers)\n");
+        } else if (strcmp(profile_env, "throughput") == 0) {
+            ctx->perf_profile = PERF_PROFILE_THROUGHPUT;
+            recv_slots = 512;
+            send_slots = 256;
+            pool_size = 1024;
+            batch_size = 256;
+            printf("[ZigAdapterInit] 📊 Performance: THROUGHPUT profile (downloads, 512/256 buffers)\n");
+        } else {
+            ctx->perf_profile = PERF_PROFILE_BALANCED;
+            printf("[ZigAdapterInit] ⚖️  Performance: BALANCED profile (128/128 buffers)\n");
+        }
+    } else {
+        // Default: balanced profile
+        ctx->perf_profile = PERF_PROFILE_BALANCED;
+        printf("[ZigAdapterInit] ⚖️  Performance: BALANCED profile (default, 128/128 buffers)\n");
+    }
+    
+    // Configure Zig adapter with profile-based settings
     ZigAdapterConfig config = {
-        .recv_queue_size = 128,
-        .send_queue_size = 128,
-        .packet_pool_size = 256,
-        .batch_size = 128,
+        .recv_queue_size = recv_slots,
+        .send_queue_size = send_slots,
+        .packet_pool_size = pool_size,
+        .batch_size = batch_size,
         .device_name = "utun",
         .device_name_len = 4,
     };
@@ -197,13 +233,6 @@ static bool ZigAdapterInit(SESSION* s) {
     
     // Generate DHCP transaction ID
     ctx->dhcp_xid = (UINT32)time(NULL);
-    
-    // **ADAPTIVE BATCHING INIT**: Start conservative, adapt based on traffic
-    ctx->last_flush_time = 0;
-    ctx->packets_queued = 0;
-    ctx->flush_interval_ms = 20; // Start at 20ms (conservative for low-power devices)
-    ctx->consecutive_full_queue = 0;
-    ctx->priority_flush_pending = false;
     
     // Store context in session
     s->PacketAdapter->Param = ctx;
@@ -464,76 +493,43 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
         }
     }
     
-    // **ADAPTIVE QOS BATCHING**: Smart flushing based on packet type and queue state
-    // This prevents both queue overflow AND excessive syscalls on resource-constrained hardware
-    
-    // Step 1: Detect packet priority (QoS classification)
-    bool is_priority_packet = false;
-    if (size >= 34) { // Minimum: Ethernet(14) + IP(20)
-        const UCHAR* pkt = (const UCHAR*)data;
-        // Check IP protocol (offset 23 = Ethernet(14) + IP header protocol field(9))
-        UCHAR ip_proto = pkt[23];
-        
-        // Priority traffic (low latency required):
-        // - ICMP (ping): Protocol 1
-        // - UDP (DNS, VoIP): Protocol 17 with ports 53, 5060, etc.
-        // - TCP ACK packets (small size < 100 bytes)
-        if (ip_proto == 1) { // ICMP
-            is_priority_packet = true;
-        } else if (ip_proto == 17 && size < 200) { // Small UDP (likely DNS)
-            is_priority_packet = true;
-        } else if (ip_proto == 6 && size < 100) { // TCP ACK (small packet)
-            is_priority_packet = true;
-        }
-    }
-    
-    // Step 2: Queue the packet
+    // Write packet to queue
     bool result = zig_adapter_put_packet(ctx->zig_adapter, (const uint8_t*)data, (uint64_t)size);
     
     if (!result) {
-        // Queue full - adaptive response
-        ctx->consecutive_full_queue++;
-        
-        // Force flush on queue full
+        // Queue full - force flush and retry
         zig_adapter_write_sync(ctx->zig_adapter);
-        ctx->last_flush_time = Tick64();
-        ctx->packets_queued = 0;
-        
-        // Retry queue after flush
         result = zig_adapter_put_packet(ctx->zig_adapter, (const uint8_t*)data, (uint64_t)size);
         if (!result) {
-            // Still failed - packet truly lost (rare)
-            printf("[ZigAdapterPutPacket] ⚠️  Packet dropped after flush (size=%u)\n", size);
-            return false;
+            return false; // Packet truly lost
         }
-        
-        // Adapt: Reduce flush interval to prevent future overflows
-        if (ctx->consecutive_full_queue > 3) {
-            // Queue filling too fast - flush more frequently
-            if (ctx->flush_interval_ms > 5) {
-                ctx->flush_interval_ms -= 2; // Faster flushing
-            }
-        }
-    } else {
-        // Queue success - reset overflow counter
-        ctx->consecutive_full_queue = 0;
     }
     
-    // Step 3: Track queue state
-    ctx->packets_queued++;
-    if (is_priority_packet) {
-        ctx->priority_flush_pending = true;
+    // Simple immediate flush strategy (prioritizes latency)
+    // Performance profiles can be enhanced later if needed
+    bool should_flush = false;
+    
+    switch (ctx->perf_profile) {
+        case PERF_PROFILE_LATENCY:
+            // Gaming/VoIP: Flush every packet for lowest latency
+            should_flush = true;
+            break;
+            
+        case PERF_PROFILE_BALANCED:
+            // General use: Flush every few packets
+            should_flush = true; // For now, same as latency (safe default)
+            break;
+            
+        case PERF_PROFILE_THROUGHPUT:
+            // Downloads: Could batch more, but for now keep it simple
+            should_flush = true; // TODO: Implement smarter batching if needed
+            break;
     }
     
-    // **DIAGNOSTIC MODE**: Flush IMMEDIATELY to test if batching is the bottleneck
-    // If latency is still high with immediate flush, the problem is elsewhere
-    // (TUN device, packet processing, routing, etc.)
-    
-    UINT64 now = Tick64();
-    zig_adapter_write_sync(ctx->zig_adapter);
-    ctx->last_flush_time = now;
-    ctx->packets_queued = 0;
-    ctx->priority_flush_pending = false;
+    // Execute flush if needed
+    if (should_flush) {
+        zig_adapter_write_sync(ctx->zig_adapter);
+    }
     
     return result;
 }

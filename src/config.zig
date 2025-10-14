@@ -240,6 +240,7 @@ pub const JsonConfig = struct {
     min_backoff: ?u32 = null,
     max_backoff: ?u32 = null,
     performance: ?struct {
+        profile: ?[]const u8 = null,
         recv_buffer_slots: ?u16 = null,
         send_buffer_slots: ?u16 = null,
     } = null,

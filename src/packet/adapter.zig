@@ -451,44 +451,89 @@ export fn zig_adapter_start(adapter: *ZigPacketAdapter) bool {
 /// **CRITICAL**: TUN devices return raw IP packets, but SoftEther expects Ethernet frames!
 /// We must ADD a 14-byte Ethernet header to each IP packet read from TUN.
 export fn zig_adapter_read_sync(adapter: *ZigPacketAdapter, buffer: [*]u8, buffer_len: usize) isize {
-    // ✅ WAVE 5 PHASE 1: Check for pending DHCP packets first
-    // ZigTapTun's translator generates DHCP packets that need to be sent to VPN server
-    if (adapter.tun_adapter.translator.hasPendingDhcpPacket()) {
-        if (adapter.tun_adapter.translator.popDhcpPacket()) |dhcp_frame| {
-            defer adapter.allocator.free(dhcp_frame);
+    // 🚀 THROUGHPUT FIX: Use 0ms poll() for immediate check, no blocking
+    // SessionMain calls this in a loop - let IT control timing via select() on CANCEL
+    // Blocking here with 1ms kills throughput (only 1 packet per millisecond!)
+    const tun_fd = adapter.tun_adapter.getFd();
+    var pollfds = [_]std.posix.pollfd{
+        .{
+            .fd = tun_fd,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        },
+    };
 
-            if (dhcp_frame.len <= buffer_len) {
-                @memcpy(buffer[0..dhcp_frame.len], dhcp_frame);
-                return @intCast(dhcp_frame.len);
-            } else {
-                // Frame too large - skip it
-                return 0;
+    // Poll with 0ms timeout - immediate check only, no blocking
+    // This allows SessionMain to read multiple packets in rapid succession
+    const ready = std.posix.poll(&pollfds, 0) catch {
+        return 0; // Error - treat as no packet
+    };
+
+    // If no data ready, check DHCP/ARP queues then return immediately
+    if (ready == 0 or (pollfds[0].revents & std.posix.POLL.IN) == 0) {
+        // Check for pending DHCP packets
+        if (adapter.tun_adapter.translator.hasPendingDhcpPacket()) {
+            if (adapter.tun_adapter.translator.popDhcpPacket()) |dhcp_frame| {
+                defer adapter.allocator.free(dhcp_frame);
+                if (dhcp_frame.len <= buffer_len) {
+                    @memcpy(buffer[0..dhcp_frame.len], dhcp_frame);
+                    return @intCast(dhcp_frame.len);
+                }
             }
         }
-    } // Check for pending ARP replies (existing functionality)
-    if (adapter.tun_adapter.translator.hasPendingArpReply()) {
-        if (adapter.tun_adapter.translator.popArpReply()) |arp_reply| {
-            defer adapter.allocator.free(arp_reply);
-
-            if (arp_reply.len <= buffer_len) {
-                @memcpy(buffer[0..arp_reply.len], arp_reply);
-                return @intCast(arp_reply.len);
+        // Check for pending ARP replies
+        if (adapter.tun_adapter.translator.hasPendingArpReply()) {
+            if (adapter.tun_adapter.translator.popArpReply()) |arp_reply| {
+                defer adapter.allocator.free(arp_reply);
+                if (arp_reply.len <= buffer_len) {
+                    @memcpy(buffer[0..arp_reply.len], arp_reply);
+                    return @intCast(arp_reply.len);
+                }
             }
         }
+        return 0; // No packets available
     }
 
-    // **READ FROM TUN**: Get OUTGOING packets (OS → TUN → VPN)
+    // 🚀 LATENCY OPTIMIZATION: TUN has data ready - read immediately!
+    // READ FROM TUN: Get OUTGOING packets (OS → TUN → VPN)
     // Use readEthernet() which reads IP packets from TUN and converts to Ethernet frames
     var temp_buf: [2048]u8 = undefined;
     const eth_frame = adapter.tun_adapter.readEthernet(&temp_buf) catch |err| {
-        // No packet available or error
+        // Unexpected error after poll() said readable
         if (err == error.WouldBlock) {
-            return 0; // Normal - no packets to send
+            // ✅ WAVE 5 PHASE 1: Check for pending DHCP packets (only if no TUN data)
+            // ZigTapTun's translator generates DHCP packets that need to be sent to VPN server
+            if (adapter.tun_adapter.translator.hasPendingDhcpPacket()) {
+                if (adapter.tun_adapter.translator.popDhcpPacket()) |dhcp_frame| {
+                    defer adapter.allocator.free(dhcp_frame);
+
+                    if (dhcp_frame.len <= buffer_len) {
+                        @memcpy(buffer[0..dhcp_frame.len], dhcp_frame);
+                        return @intCast(dhcp_frame.len);
+                    } else {
+                        // Frame too large - skip it
+                        return 0;
+                    }
+                }
+            }
+            // Check for pending ARP replies (existing functionality)
+            if (adapter.tun_adapter.translator.hasPendingArpReply()) {
+                if (adapter.tun_adapter.translator.popArpReply()) |arp_reply| {
+                    defer adapter.allocator.free(arp_reply);
+
+                    if (arp_reply.len <= buffer_len) {
+                        @memcpy(buffer[0..arp_reply.len], arp_reply);
+                        return @intCast(arp_reply.len);
+                    }
+                }
+            }
+
+            return 0; // Normal - no packets to send from TUN or queues
         }
         return 0; // Other errors - just return no packet
     };
 
-    // Got an Ethernet frame to send to VPN server
+    // Got an Ethernet frame from TUN to send to VPN server
     if (eth_frame.len == 0) return 0;
     if (eth_frame.len > buffer_len) {
         std.log.warn("Packet too large: {} > {}", .{ eth_frame.len, buffer_len });
@@ -860,6 +905,12 @@ export fn zig_adapter_close(adapter: *ZigPacketAdapter) void {
     // Note: TunAdapter close is handled in deinit()
     logInfo("close() called (will be closed in destroy)", .{});
     _ = adapter;
+}
+
+/// Get TUN device file descriptor for select()/poll() integration
+/// LATENCY FIX: Allows SessionMain to wait on TUN FD instead of busy polling
+export fn zig_adapter_get_fd(adapter: *ZigPacketAdapter) c_int {
+    return adapter.tun_adapter.getFd();
 }
 
 /// Write packet to TUN device (WAVE 5 PHASE 1: added for C adapter compatibility)

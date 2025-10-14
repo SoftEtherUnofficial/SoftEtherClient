@@ -14,6 +14,9 @@ const ConnectionConfig = config.ConnectionConfig;
 const AuthMethod = config.AuthMethod;
 const VpnError = errors.VpnError;
 
+// External C function for setenv
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+
 const VERSION = "1.0.0";
 
 // Global client pointer for signal handler
@@ -376,8 +379,13 @@ pub fn main() !void {
     }
 
     // Performance configuration (defaults from config.PerformanceConfig)
+    // Default: balanced profile (128/128)
     var final_recv_buffer_slots: u16 = 128;
-    var final_send_buffer_slots: u16 = 64;
+    var final_send_buffer_slots: u16 = 128;
+
+    // Compression and encryption settings (defaults from CliArgs)
+    var final_use_compress: bool = args.use_compress;
+    var final_use_encrypt: bool = args.use_encrypt;
 
     if (config_path) |path| {
         std.debug.print("[●] Loading configuration from: {s}\n", .{path});
@@ -466,20 +474,60 @@ pub fn main() !void {
         }
 
         // Load compression setting (CLI > env > config > default)
-        if (!args.use_compress) {
-            // CLI explicitly disabled compression
-        } else if (getEnvVar("SOFTETHER_COMPRESS")) |compress_str| {
+        // Check if CLI explicitly disabled compression (--no-compress flag would set to false)
+        // Otherwise, check env var, then config file
+        if (getEnvVar("SOFTETHER_COMPRESS")) |compress_str| {
             if (std.mem.eql(u8, compress_str, "false") or std.mem.eql(u8, compress_str, "0")) {
-                // Env var explicitly disables compression
-                // Note: This modifies args which is used later
+                final_use_compress = false;
+            } else if (std.mem.eql(u8, compress_str, "true") or std.mem.eql(u8, compress_str, "1")) {
+                final_use_compress = true;
             }
         } else if (file_config.use_compress) |compress| {
-            // Config file value (will be used by config.mergeConfigs)
-            _ = compress;
+            // Apply config file value if no CLI override
+            final_use_compress = compress;
+        }
+
+        // Load encryption setting similarly
+        if (getEnvVar("SOFTETHER_ENCRYPT")) |encrypt_str| {
+            if (std.mem.eql(u8, encrypt_str, "false") or std.mem.eql(u8, encrypt_str, "0")) {
+                final_use_encrypt = false;
+            } else if (std.mem.eql(u8, encrypt_str, "true") or std.mem.eql(u8, encrypt_str, "1")) {
+                final_use_encrypt = true;
+            }
+        } else if (file_config.use_encrypt) |encrypt| {
+            final_use_encrypt = encrypt;
         }
 
         // Load performance configuration
         if (file_config.performance) |perf| {
+            // Apply profile first (if specified)
+            if (perf.profile) |profile| {
+                // Set environment variable for C bridge layer
+                const profile_z = try allocator.dupeZ(u8, profile);
+                defer allocator.free(profile_z);
+                _ = setenv("VPN_PERF_PROFILE", profile_z, 1);
+
+                if (std.mem.eql(u8, profile, "latency")) {
+                    // Latency profile: Minimal buffers for lowest ping
+                    final_recv_buffer_slots = 64;
+                    final_send_buffer_slots = 64;
+                    std.debug.print("[⚡] Performance Profile: LATENCY (optimized for gaming/VoIP)\n", .{});
+                } else if (std.mem.eql(u8, profile, "throughput")) {
+                    // Throughput profile: Large buffers for max speed
+                    final_recv_buffer_slots = 512;
+                    final_send_buffer_slots = 256;
+                    std.debug.print("[📊] Performance Profile: THROUGHPUT (optimized for downloads)\n", .{});
+                } else if (std.mem.eql(u8, profile, "balanced")) {
+                    // Balanced profile: Default settings
+                    final_recv_buffer_slots = 128;
+                    final_send_buffer_slots = 128;
+                    std.debug.print("[⚖️] Performance Profile: BALANCED (general use)\n", .{});
+                } else {
+                    std.debug.print("[⚠️] Unknown performance profile '{s}', using balanced\n", .{profile});
+                }
+            }
+
+            // Explicit buffer settings override profile
             if (perf.recv_buffer_slots) |slots| {
                 final_recv_buffer_slots = slots;
             }
@@ -595,8 +643,8 @@ pub fn main() !void {
             .password = password,
             .is_hashed = use_password_hash,
         } },
-        .use_encrypt = args.use_encrypt,
-        .use_compress = args.use_compress,
+        .use_encrypt = final_use_encrypt,
+        .use_compress = final_use_compress,
         .max_connection = args.max_connection,
         .ip_version = ip_version,
         .static_ip = static_ip,
@@ -613,14 +661,15 @@ pub fn main() !void {
     std.debug.print("Connecting to: {s}:{d}\n", .{ server, final_port });
     std.debug.print("Virtual Hub:   {s}\n", .{hub});
     std.debug.print("User:          {s}\n", .{username});
-    std.debug.print("Encryption:    {s}\n", .{if (args.use_encrypt) "Enabled" else "Disabled"});
-    std.debug.print("Compression:   {s}\n", .{if (args.use_compress) "Enabled" else "Disabled"});
+    std.debug.print("Encryption:    {s}\n", .{if (final_use_encrypt) "Enabled" else "Disabled"});
+    std.debug.print("Compression:   {s}\n", .{if (final_use_compress) "Enabled" else "Disabled"});
     if (args.max_connection == 0) {
         std.debug.print("Max Connections: Server Policy\n", .{});
     } else {
         std.debug.print("Max Connections: {d}\n", .{args.max_connection});
     }
     std.debug.print("IP Version:    {s}\n", .{args.ip_version});
+    std.debug.print("Buffer Sizes:  RX={d} TX={d} slots\n", .{ final_recv_buffer_slots, final_send_buffer_slots });
 
     if (static_ip) |sip| {
         if (sip.ipv4_address) |ipv4| {

@@ -81,6 +81,9 @@ bool zig_adapter_configure_routes(ZigPacketAdapter *adapter, uint32_t vpn_gatewa
 ssize_t zig_adapter_read_sync(ZigPacketAdapter *adapter, uint8_t *buffer, size_t buffer_len);
 ssize_t zig_adapter_write_sync(ZigPacketAdapter *adapter);
 
+// LATENCY FIX: Get TUN device FD for select()/poll() integration
+int zig_adapter_get_fd(ZigPacketAdapter *adapter);
+
 // Helper functions for Zig FFI
 size_t sizeof_CLIENT_OPTION(void);
 size_t sizeof_CLIENT_AUTH(void);
