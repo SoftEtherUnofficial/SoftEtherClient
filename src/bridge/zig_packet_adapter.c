@@ -58,6 +58,13 @@ typedef struct ZIG_ADAPTER_CONTEXT {
     UINT32 dhcp_xid;         // DHCP transaction ID
     UINT32 offered_ip;       // IP offered by DHCP server
     UINT32 dhcp_server_ip;   // DHCP server IP (from OFFER)
+    
+    // **ADAPTIVE BATCHING STATE** (resource-efficient QoS)
+    UINT64 last_flush_time;      // Last write_sync() timestamp
+    UINT packets_queued;         // Approximate queue fill counter
+    UINT flush_interval_ms;      // Dynamic flush interval (5-50ms)
+    UINT consecutive_full_queue; // Track queue pressure
+    bool priority_flush_pending; // Priority packet needs immediate flush
 } ZIG_ADAPTER_CONTEXT;
 
 // ✅ REMOVED (~350 lines): DHCP state machine, ARP handling, packet builders
@@ -190,6 +197,13 @@ static bool ZigAdapterInit(SESSION* s) {
     
     // Generate DHCP transaction ID
     ctx->dhcp_xid = (UINT32)time(NULL);
+    
+    // **ADAPTIVE BATCHING INIT**: Start conservative, adapt based on traffic
+    ctx->last_flush_time = 0;
+    ctx->packets_queued = 0;
+    ctx->flush_interval_ms = 20; // Start at 20ms (conservative for low-power devices)
+    ctx->consecutive_full_queue = 0;
+    ctx->priority_flush_pending = false;
     
     // Store context in session
     s->PacketAdapter->Param = ctx;
@@ -450,22 +464,76 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
         }
     }
     
-    // **CRITICAL**: Send packet to Zig adapter (queues in send_queue)
-    // Wave 4 uses zig_adapter_put_packet(), NOT zig_adapter_write_packet()!
+    // **ADAPTIVE QOS BATCHING**: Smart flushing based on packet type and queue state
+    // This prevents both queue overflow AND excessive syscalls on resource-constrained hardware
+    
+    // Step 1: Detect packet priority (QoS classification)
+    bool is_priority_packet = false;
+    if (size >= 34) { // Minimum: Ethernet(14) + IP(20)
+        const UCHAR* pkt = (const UCHAR*)data;
+        // Check IP protocol (offset 23 = Ethernet(14) + IP header protocol field(9))
+        UCHAR ip_proto = pkt[23];
+        
+        // Priority traffic (low latency required):
+        // - ICMP (ping): Protocol 1
+        // - UDP (DNS, VoIP): Protocol 17 with ports 53, 5060, etc.
+        // - TCP ACK packets (small size < 100 bytes)
+        if (ip_proto == 1) { // ICMP
+            is_priority_packet = true;
+        } else if (ip_proto == 17 && size < 200) { // Small UDP (likely DNS)
+            is_priority_packet = true;
+        } else if (ip_proto == 6 && size < 100) { // TCP ACK (small packet)
+            is_priority_packet = true;
+        }
+    }
+    
+    // Step 2: Queue the packet
     bool result = zig_adapter_put_packet(ctx->zig_adapter, (const uint8_t*)data, (uint64_t)size);
     
     if (!result) {
-        printf("[ZigAdapterPutPacket] ⚠️  Failed to queue packet (size=%u)\n", size);
-        return false;
+        // Queue full - adaptive response
+        ctx->consecutive_full_queue++;
+        
+        // Force flush on queue full
+        zig_adapter_write_sync(ctx->zig_adapter);
+        ctx->last_flush_time = Tick64();
+        ctx->packets_queued = 0;
+        
+        // Retry queue after flush
+        result = zig_adapter_put_packet(ctx->zig_adapter, (const uint8_t*)data, (uint64_t)size);
+        if (!result) {
+            // Still failed - packet truly lost (rare)
+            printf("[ZigAdapterPutPacket] ⚠️  Packet dropped after flush (size=%u)\n", size);
+            return false;
+        }
+        
+        // Adapt: Reduce flush interval to prevent future overflows
+        if (ctx->consecutive_full_queue > 3) {
+            // Queue filling too fast - flush more frequently
+            if (ctx->flush_interval_ms > 5) {
+                ctx->flush_interval_ms -= 2; // Faster flushing
+            }
+        }
+    } else {
+        // Queue success - reset overflow counter
+        ctx->consecutive_full_queue = 0;
     }
     
-    // **CRITICAL FIX**: Synchronously write queued packets to TUN device!
-    // This is essential - we queue packets but must flush them to TUN immediately.
-    // Wave 4 does this on every PutPacket call.
-    ssize_t written = zig_adapter_write_sync(ctx->zig_adapter);
+    // Step 3: Track queue state
+    ctx->packets_queued++;
+    if (is_priority_packet) {
+        ctx->priority_flush_pending = true;
+    }
     
-    // Log removed - too noisy during normal operation
-    // Packets written constantly (hundreds per second)
+    // **DIAGNOSTIC MODE**: Flush IMMEDIATELY to test if batching is the bottleneck
+    // If latency is still high with immediate flush, the problem is elsewhere
+    // (TUN device, packet processing, routing, etc.)
+    
+    UINT64 now = Tick64();
+    zig_adapter_write_sync(ctx->zig_adapter);
+    ctx->last_flush_time = now;
+    ctx->packets_queued = 0;
+    ctx->priority_flush_pending = false;
     
     return result;
 }

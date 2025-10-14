@@ -225,9 +225,6 @@ pub const ZigPacketAdapter = struct {
 
         const xid = @as(u32, @truncate(seed));
 
-        std.debug.print("[DEBUG] ZigPacketAdapter.init: allocated adapter at {*}\n", .{self});
-        std.debug.print("[DEBUG] ZigPacketAdapter.init: tun_adapter pointer to assign = {*}\n", .{tun_adapter});
-
         self.* = .{
             .allocator = allocator,
             .config = config,
@@ -250,8 +247,6 @@ pub const ZigPacketAdapter = struct {
             .halt = false,
             .debug_read_count = 0,
         };
-
-        std.debug.print("[DEBUG] ZigPacketAdapter.init: after assignment, self.tun_adapter = {*}\n", .{self.tun_adapter});
 
         logInfo("🔄 DHCP initialized: xid=0x{x:0>8}, MAC={x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}", .{
             xid, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
@@ -336,7 +331,6 @@ pub const ZigPacketAdapter = struct {
                     const udp_dest_port = (@as(u16, data[14 + 20 + 2]) << 8) | data[14 + 20 + 3];
                     if (udp_dest_port == 68) { // DHCP client port
                         // This is a DHCP packet! Process it
-                        logInfo("📬 Received DHCP packet from VPN server, len={d} bytes", .{data.len});
                         self.tun_adapter.translator.processDhcpPacket(data) catch |err| {
                             logInfo("⚠️  DHCP processing error: {}", .{err});
                         };
@@ -344,14 +338,6 @@ pub const ZigPacketAdapter = struct {
                         return true;
                     }
                 }
-            }
-        }
-
-        // Log ALL incoming packets for debugging
-        if (data.len >= 34) {
-            const ip_proto = data[14 + 9]; // IP protocol at offset 23 (14 Ethernet + 9 IP header)
-            if (ip_proto == 1) { // ICMP
-                logInfo("📥 putPacket: RECEIVED ICMP packet from SoftEther, len={d} bytes", .{data.len});
             }
         }
 
@@ -371,14 +357,6 @@ pub const ZigPacketAdapter = struct {
             .len = data.len,
             .timestamp = @intCast(std.time.nanoTimestamp()),
         };
-
-        // Log ICMP packets being queued
-        if (data.len >= 14 + 20) {
-            const ip_proto = data[14 + 9];
-            if (ip_proto == 1) {
-                logInfo("📬 putPacket: Queuing ICMP packet for TUN write, len={d} bytes", .{data.len});
-            }
-        }
 
         if (!self.send_queue.push(pkt)) {
             _ = self.stats.send_queue_drops.fetchAdd(1, .monotonic);
@@ -739,10 +717,10 @@ export fn zig_adapter_get_gateway_mac(adapter: *ZigPacketAdapter, out_mac: [*]u8
     return false;
 }
 
-/// Set gateway IP and MAC in translator (for learning gateway MAC from ARP)
+/// Set gateway IP in translator (for learning gateway MAC from ARP)
 /// ip_network_order: Gateway IP in network byte order (big-endian)
 export fn zig_adapter_set_gateway(adapter: *ZigPacketAdapter, ip_network_order: u32) void {
-    adapter.tun_adapter.translator.setGateway(ip_network_order, [_]u8{0} ** 6);
+    adapter.tun_adapter.translator.setGateway(ip_network_order);
 }
 
 /// Set gateway MAC address (called from C when gateway MAC is learned via ARP)
@@ -750,11 +728,6 @@ export fn zig_adapter_set_gateway_mac(adapter: *ZigPacketAdapter, mac: [*c]const
     var mac_array: [6]u8 = undefined;
     @memcpy(&mac_array, mac[0..6]);
     adapter.tun_adapter.translator.gateway_mac = mac_array;
-
-    logInfo("[L2L3] 🎯 setGatewayMAC: {X:0>2}:{X:0>2}:{X:0>2}:{X:0>2}:{X:0>2}:{X:0>2}", .{
-        mac_array[0], mac_array[1], mac_array[2],
-        mac_array[3], mac_array[4], mac_array[5],
-    });
 }
 
 /// Configure VPN routing (replace default gateway with VPN gateway)
@@ -777,12 +750,6 @@ export fn zig_adapter_configure_routes(adapter: *ZigPacketAdapter, vpn_gateway_i
             return false;
         };
 
-        logInfo("✅ Routes configured: all traffic now goes through VPN gateway {d}.{d}.{d}.{d}", .{
-            vpn_gw[0],
-            vpn_gw[1],
-            vpn_gw[2],
-            vpn_gw[3],
-        });
         return true;
     }
 
