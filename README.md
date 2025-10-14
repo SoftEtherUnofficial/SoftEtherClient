@@ -4,25 +4,7 @@ A modern, cross-platform VPN client implementation in **pure Zig**, progressivel
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Zig Version](https://img.shields.io/badge/zig-0.15.1+-blue)](https://ziglang.org/)
-[![Zig Porting](https://img.shields.io/badge/Zig%20Port-10%25-yellow)](docs/ZIG_PORTING_ROADMAP.md)
-[![Phase 3](https://img.shields.io/badge/Phase%203-Complete-brightgreen)](PHASE3_COMPLETE.md)
 
-## 🎯 Project Vision: 100% Pure Zig
-
-**Goal**: Complete rewrite of SoftEther VPN from C to Zig by Q2 2025
-
-**Current Status**: Phase 4 - 24.2% complete (NA/70,000 lines ported)
-
-**Latest Milestone**: Phase 3 Complete! 🎉 (October 13, 2024)
-
-This project is actively porting all C code to idiomatic Zig, achieving:
-- ✅ Memory safety without garbage collection
-- ✅ Zero-cost abstractions and compile-time guarantees
-- ✅ 20-30% code reduction compared to C
-- ✅ Native cross-compilation to all platforms
-
-**📖 Read the full roadmap**: [Zig Porting Roadmap](docs/ZIG_PORTING_ROADMAP.md)  
-**📊 Track progress**: [Porting Progress Tracker](docs/ZIG_PORTING_PROGRESS.md)
 
 ## 🔒 Security Notice
 
