@@ -854,7 +854,6 @@ void ListenerThread(THREAD *thread, void *param)
 }
 
 // Shutdown the Listener
-#ifndef VPN_CLIENT_ONLY
 void StopListener(LISTENER *r)
 {
 	UINT port;
@@ -923,7 +922,6 @@ void StopListener(LISTENER *r)
 		SLog(r->Cedar, "LS_LISTENER_STOP_2", port);
 	}
 }
-#endif // VPN_CLIENT_ONLY
 
 // Cleanup the listener
 void CleanupListener(LISTENER *r)

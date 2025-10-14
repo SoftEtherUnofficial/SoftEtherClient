@@ -104,12 +104,6 @@
 
 #include "CedarPch.h"
 
-// ============================================================================
-// VPN_CLIENT_ONLY: Disable all NAT code in client builds
-// NAT provides network address translation (server-side only)
-// ============================================================================
-#ifndef VPN_CLIENT_ONLY
-
 static LOCK *nat_lock = NULL;
 static NAT *nat = NULL;
 
@@ -1724,7 +1718,6 @@ bool NiLoadConfig(NAT *n, FOLDER *root)
 	return true;
 }
 
-
 // Write the configuration to a file
 void NiWriteConfig(NAT *n)
 {
@@ -1919,7 +1912,6 @@ void NtFree()
 	}
 
 	DeleteLock(nat_lock);
-        nat_lock = NULL;
+	nat_lock = NULL;
 }
 
-#endif // VPN_CLIENT_ONLY

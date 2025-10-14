@@ -104,12 +104,6 @@
 
 #include "CedarPch.h"
 
-// ============================================================================
-// VPN_CLIENT_ONLY: Disable all SecureNAT code in client builds
-// SecureNAT provides virtual DHCP/NAT server functionality (server-side only)
-// ============================================================================
-#ifndef VPN_CLIENT_ONLY
-
 // SecureNAT server-side thread
 void SnSecureNATThread(THREAD *t, void *param)
 {
@@ -248,6 +242,4 @@ SNAT *SnNewSecureNAT(HUB *h, VH_OPTION *o)
 
 	return s;
 }
-
-#endif // VPN_CLIENT_ONLY
 

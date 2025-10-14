@@ -104,11 +104,6 @@
 
 #include "CedarPch.h"
 
-// ============================================================================
-// VPN_CLIENT_ONLY: Disable Interop_OpenVPN in client builds (server protocol gateway)
-// ============================================================================
-#ifndef VPN_CLIENT_ONLY
-
 
 static bool g_no_openvpn_tcp = false;
 static bool g_no_openvpn_udp = false;
@@ -3133,5 +3128,3 @@ bool OvsPerformTcpServer(CEDAR *cedar, SOCK *sock)
 
 
 
-
-#endif // VPN_CLIENT_ONLY

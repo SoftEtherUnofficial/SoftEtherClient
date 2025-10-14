@@ -104,11 +104,6 @@
 
 #include "CedarPch.h"
 
-// ============================================================================
-// VPN_CLIENT_ONLY: Disable IPsec_IKE in client builds (server protocol gateway)
-// ============================================================================
-#ifndef VPN_CLIENT_ONLY
-
 //#define	RAW_DEBUG
 
 // Processing of IKE received packet
@@ -6044,5 +6039,3 @@ IKE_SERVER *NewIKEServer(CEDAR *cedar, IPSEC_SERVER *ipsec)
 
 
 
-
-#endif // VPN_CLIENT_ONLY

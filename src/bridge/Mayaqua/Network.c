@@ -22829,20 +22829,12 @@ PACK *HttpClientRecv(SOCK *s)
 	h = RecvHttpHeader(s);
 	if (h == NULL)
 	{
-		printf("[HttpClientRecv] RecvHttpHeader returned NULL\n");
-		fflush(stdout);
 		return NULL;
 	}
-
-	printf("[HttpClientRecv] Received header - Method='%s', Target='%s'\n", 
-		h->Method ? h->Method : "(null)", h->Target ? h->Target : "(null)");
-	fflush(stdout);
 
 	if (StrCmpi(h->Method, "HTTP/1.1") != 0 ||
 		StrCmpi(h->Target, "200") != 0)
 	{
-		printf("[HttpClientRecv] Method or status check failed\n");
-		fflush(stdout);
 		FreeHttpHeader(h);
 		return NULL;
 	}
@@ -22850,9 +22842,6 @@ PACK *HttpClientRecv(SOCK *s)
 	v = GetHttpValue(h, "Content-Type");
 	if (v == NULL || StrCmpi(v->Data, HTTP_CONTENT_TYPE2) != 0)
 	{
-		printf("[HttpClientRecv] Content-Type check failed - got '%s', expected '%s'\n",
-			(v && v->Data) ? v->Data : "(null)", HTTP_CONTENT_TYPE2);
-		fflush(stdout);
 		FreeHttpHeader(h);
 		return NULL;
 	}

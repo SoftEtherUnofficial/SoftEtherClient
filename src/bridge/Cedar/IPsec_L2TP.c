@@ -104,11 +104,6 @@
 
 #include "CedarPch.h"
 
-// ============================================================================
-// VPN_CLIENT_ONLY: Disable IPsec_L2TP in client builds (server protocol gateway)
-// ============================================================================
-#ifndef VPN_CLIENT_ONLY
-
 // Release the L2TP AVP value
 void FreeL2TPAVP(L2TP_AVP *a)
 {
@@ -2711,5 +2706,3 @@ void SetL2TPServerSockEvent(L2TP_SERVER *l2tp, SOCK_EVENT *e)
 	l2tp->SockEvent = e;
 }
 
-
-#endif // VPN_CLIENT_ONLY

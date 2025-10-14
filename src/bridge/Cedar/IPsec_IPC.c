@@ -104,11 +104,6 @@
 
 #include "CedarPch.h"
 
-// ============================================================================
-// VPN_CLIENT_ONLY: Disable IPsec_IPC in client builds (server protocol gateway)
-// ============================================================================
-#ifndef VPN_CLIENT_ONLY
-
 // Extract the MS-CHAP v2 authentication information by parsing the password string
 bool ParseAndExtractMsChapV2InfoFromPassword(IPC_MSCHAP_V2_AUTHINFO *d, char *password)
 {
@@ -2147,5 +2142,3 @@ BLOCK *IPCRecvL2(IPC *ipc)
 
 
 
-
-#endif // VPN_CLIENT_ONLY

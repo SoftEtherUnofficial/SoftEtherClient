@@ -104,11 +104,6 @@
 
 #include "CedarPch.h"
 
-// ============================================================================
-// VPN_CLIENT_ONLY: Disable IPsec_EtherIP in client builds (server protocol gateway)
-// ============================================================================
-#ifndef VPN_CLIENT_ONLY
-
 // IPC connection processing thread
 void EtherIPIpcConnectThread(THREAD *t, void *p)
 {
@@ -559,5 +554,3 @@ UINT CalcEtherIPTcpMss(ETHERIP_SERVER *s)
 
 	return ret;
 }
-
-#endif // VPN_CLIENT_ONLY

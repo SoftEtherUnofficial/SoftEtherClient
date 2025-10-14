@@ -6408,7 +6408,6 @@ SESSION *SearchSessionByUniqueId(HUB *h, UINT id)
 }
 
 // Stop the operation of the HUB
-#ifndef VPN_CLIENT_ONLY
 void StopHub(HUB *h)
 {
 	bool old_status = false;
@@ -6432,7 +6431,6 @@ void StopHub(HUB *h)
 	h->Offline = old_status;
 	h->HubIsOnlineButHalting = false;
 }
-#endif // VPN_CLIENT_ONLY
 
 // Online the Virtual HUB
 void SetHubOnline(HUB *h)
@@ -6641,7 +6639,6 @@ void LockHubList(CEDAR *cedar)
 }
 
 // Unlock the HUB list
-#ifndef VPN_CLIENT_ONLY
 void UnlockHubList(CEDAR *cedar)
 {
 	// Validate arguments
@@ -6652,7 +6649,6 @@ void UnlockHubList(CEDAR *cedar)
 
 	UnlockList(cedar->HubList);
 }
-#endif // VPN_CLIENT_ONLY
 
 // Release the HUB
 void ReleaseHub(HUB *h)
