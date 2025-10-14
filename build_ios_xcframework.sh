@@ -51,26 +51,26 @@ mkdir -p "$OUTPUT_DIR"
 
 # Build for iOS ARM64 (device)
 echo -e "${GREEN}Building for iOS ARM64 (device)...${NC}"
-zig build -Dtarget=aarch64-ios -Doptimize=ReleaseFast -Dffi=true
+zig build ffi -Dtarget=aarch64-ios -Drelease=true
 mkdir -p "$OUTPUT_DIR/ios-arm64/lib"
 mkdir -p "$OUTPUT_DIR/ios-arm64/Headers"
-cp "$PROJECT_ROOT/zig-out/lib/libsoftether_vpn.a" "$OUTPUT_DIR/ios-arm64/lib/"
+cp "$PROJECT_ROOT/zig-out/lib/libsoftether_ffi.a" "$OUTPUT_DIR/ios-arm64/lib/"
 cp "$PROJECT_ROOT/include/ffi.h" "$OUTPUT_DIR/ios-arm64/Headers/"
 
 # Build for iOS Simulator ARM64
 echo -e "${GREEN}Building for iOS Simulator ARM64...${NC}"
-zig build -Dtarget=aarch64-ios-simulator -Doptimize=ReleaseFast -Dffi=true
+zig build ffi -Dtarget=aarch64-ios-simulator -Drelease=true
 mkdir -p "$OUTPUT_DIR/ios-arm64-simulator/lib"
 mkdir -p "$OUTPUT_DIR/ios-arm64-simulator/Headers"
-cp "$PROJECT_ROOT/zig-out/lib/libsoftether_vpn.a" "$OUTPUT_DIR/ios-arm64-simulator/lib/"
+cp "$PROJECT_ROOT/zig-out/lib/libsoftether_ffi.a" "$OUTPUT_DIR/ios-arm64-simulator/lib/"
 cp "$PROJECT_ROOT/include/ffi.h" "$OUTPUT_DIR/ios-arm64-simulator/Headers/"
 
 # Build for iOS Simulator x86_64 (for Intel Macs)
 echo -e "${GREEN}Building for iOS Simulator x86_64...${NC}"
-zig build -Dtarget=x86_64-ios-simulator -Doptimize=ReleaseFast -Dffi=true
+zig build ffi -Dtarget=x86_64-ios-simulator -Drelease=true
 mkdir -p "$OUTPUT_DIR/ios-x86_64-simulator/lib"
 mkdir -p "$OUTPUT_DIR/ios-x86_64-simulator/Headers"
-cp "$PROJECT_ROOT/zig-out/lib/libsoftether_vpn.a" "$OUTPUT_DIR/ios-x86_64-simulator/lib/"
+cp "$PROJECT_ROOT/zig-out/lib/libsoftether_ffi.a" "$OUTPUT_DIR/ios-x86_64-simulator/lib/"
 cp "$PROJECT_ROOT/include/ffi.h" "$OUTPUT_DIR/ios-x86_64-simulator/Headers/"
 
 # Create universal simulator binary
@@ -78,17 +78,17 @@ echo -e "${GREEN}Creating universal simulator binary...${NC}"
 mkdir -p "$OUTPUT_DIR/ios-simulator-universal/lib"
 mkdir -p "$OUTPUT_DIR/ios-simulator-universal/Headers"
 lipo -create \
-    "$OUTPUT_DIR/ios-arm64-simulator/lib/libsoftether_vpn.a" \
-    "$OUTPUT_DIR/ios-x86_64-simulator/lib/libsoftether_vpn.a" \
-    -output "$OUTPUT_DIR/ios-simulator-universal/lib/libsoftether_vpn.a"
+    "$OUTPUT_DIR/ios-arm64-simulator/lib/libsoftether_ffi.a" \
+    "$OUTPUT_DIR/ios-x86_64-simulator/lib/libsoftether_ffi.a" \
+    -output "$OUTPUT_DIR/ios-simulator-universal/lib/libsoftether_ffi.a"
 cp "$PROJECT_ROOT/include/ffi.h" "$OUTPUT_DIR/ios-simulator-universal/Headers/"
 
 # Create framework structure for device
 echo -e "${GREEN}Creating framework for iOS device...${NC}"
-DEVICE_FRAMEWORK="$OUTPUT_DIR/SoftEtherVPN-iOS.framework"
+DEVICE_FRAMEWORK="$OUTPUT_DIR/device/SoftEtherVPN.framework"
 mkdir -p "$DEVICE_FRAMEWORK/Headers"
 mkdir -p "$DEVICE_FRAMEWORK/Modules"
-cp "$OUTPUT_DIR/ios-arm64/lib/libsoftether_vpn.a" "$DEVICE_FRAMEWORK/SoftEtherVPN"
+cp "$OUTPUT_DIR/ios-arm64/lib/libsoftether_ffi.a" "$DEVICE_FRAMEWORK/SoftEtherVPN"
 cp "$OUTPUT_DIR/ios-arm64/Headers/ffi.h" "$DEVICE_FRAMEWORK/Headers/"
 
 # Create module map for device framework
@@ -130,10 +130,10 @@ EOF
 
 # Create framework structure for simulator
 echo -e "${GREEN}Creating framework for iOS simulator...${NC}"
-SIMULATOR_FRAMEWORK="$OUTPUT_DIR/SoftEtherVPN-Simulator.framework"
+SIMULATOR_FRAMEWORK="$OUTPUT_DIR/simulator/SoftEtherVPN.framework"
 mkdir -p "$SIMULATOR_FRAMEWORK/Headers"
 mkdir -p "$SIMULATOR_FRAMEWORK/Modules"
-cp "$OUTPUT_DIR/ios-simulator-universal/lib/libsoftether_vpn.a" "$SIMULATOR_FRAMEWORK/SoftEtherVPN"
+cp "$OUTPUT_DIR/ios-simulator-universal/lib/libsoftether_ffi.a" "$SIMULATOR_FRAMEWORK/SoftEtherVPN"
 cp "$OUTPUT_DIR/ios-simulator-universal/Headers/ffi.h" "$SIMULATOR_FRAMEWORK/Headers/"
 
 # Create module map for simulator framework

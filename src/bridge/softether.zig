@@ -738,6 +738,26 @@ pub const VpnBridgeClient = struct {
         std.log.info("VPN: Disconnected", .{});
     }
 
+    /// Send a keep-alive packet to maintain connection
+    /// This is a lightweight operation that sends a minimal packet through the tunnel
+    pub fn sendKeepAlive(self: *VpnBridgeClient) !void {
+        if (self.status != .CONNECTED) {
+            return error.NotConnected;
+        }
+
+        // For now, this is a no-op placeholder
+        // The C code (SessionMain) should handle keep-alive automatically
+        // This method exists to support future pure-Zig keep-alive implementation
+
+        // TODO: When we port SessionMain to Zig, implement:
+        // 1. Create minimal ICMP echo packet
+        // 2. Send via packet adapter
+        // 3. Track sent timestamp
+
+        // For now, just log that we attempted it
+        std.log.debug("VPN: Keep-alive check (C layer handles actual transmission)", .{});
+    }
+
     // ============================================
     // Status and Information Getters
     // ============================================

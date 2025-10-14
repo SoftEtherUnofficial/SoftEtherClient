@@ -1,0 +1,5 @@
+framework module SoftEtherVPN {
+    umbrella header "ffi.h"
+    export *
+    module * { export * }
+}

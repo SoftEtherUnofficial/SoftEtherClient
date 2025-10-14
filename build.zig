@@ -1,16 +1,6 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    // Print build banner
-    std.debug.print("\n", .{});
-    std.debug.print("╔══════════════════════════════════════════════════════════════╗\n", .{});
-    std.debug.print("║           SoftEtherZig - Pure Zig VPN Client                ║\n", .{});
-    std.debug.print("║              Progressive C to Zig Migration                 ║\n", .{});
-    std.debug.print("║         Phase 3: Protocol Layer - COMPLETE ✅                ║\n", .{});
-    std.debug.print("║    VPN ✓  Packet ✓  Crypto ✓  Integration ✓  (REAL!)      ║\n", .{});
-    std.debug.print("╚══════════════════════════════════════════════════════════════╝\n", .{});
-    std.debug.print("\n", .{});
-
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{
         .preferred_optimize_mode = .ReleaseFast,
@@ -422,15 +412,29 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cli.step);
 
     // ============================================
-    // 3. FFI LIBRARY (Cross-Platform) - STUB FOR NOW
+    // 3. FFI LIBRARY (Cross-Platform) - PHASE 2: REAL IMPLEMENTATION
     // ============================================
+
+    // Create bridge module for FFI to import
+    const bridge_module = b.createModule(.{
+        .root_source_file = b.path("src/bridge/softether.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Create FFI module with bridge dependency
+    const ffi_module = b.createModule(.{
+        .root_source_file = b.path("src/ffi/ffi.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Add bridge module as a dependency so FFI can import it
+    ffi_module.addImport("bridge", bridge_module);
+
     const ffi_lib = b.addLibrary(.{
         .name = "softether_ffi",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/ffi/ffi.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = ffi_module,
     });
     ffi_lib.linkLibC();
     ffi_lib.addIncludePath(b.path("include"));
@@ -447,8 +451,28 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    // No OpenSSL needed for stub
-    // TODO: Add back when implementing real VPN connection
+    // Link OpenSSL (needed for real implementation)
+    if (use_system_ssl) {
+        // Link system OpenSSL
+        ffi_lib.linkSystemLibrary("ssl");
+        ffi_lib.linkSystemLibrary("crypto");
+    } else {
+        // Link OpenSSL-Zig
+        if (openssl) |s| ffi_lib.linkLibrary(s);
+        if (crypto) |c| ffi_lib.linkLibrary(c);
+    }
+
+    // Add C source files for SoftEther bridge
+    ffi_lib.addCSourceFiles(.{
+        .files = c_sources,
+        .flags = c_flags,
+    });
+
+    // Add include paths for C code
+    ffi_lib.addIncludePath(b.path("src/bridge"));
+    ffi_lib.addIncludePath(b.path("src/bridge/Mayaqua"));
+    ffi_lib.addIncludePath(b.path("src/bridge/Cedar"));
+    ffi_lib.addIncludePath(b.path("src/bridge/VGate"));
 
     b.installArtifact(ffi_lib);
 
@@ -621,6 +645,20 @@ pub fn build(b: *std.Build) void {
 
     const run_crypto_tests = b.addRunArtifact(crypto_tests);
 
+    // Test for SSL socket
+    const ssl_socket_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/protocol/ssl_socket.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    ssl_socket_tests.linkSystemLibrary("ssl");
+    ssl_socket_tests.linkSystemLibrary("crypto");
+    ssl_socket_tests.linkLibC();
+
+    const run_ssl_socket_tests = b.addRunArtifact(ssl_socket_tests);
+
     // Test for integration layer
     const integration_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -686,6 +724,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_vpn_tests.step);
     test_step.dependOn(&run_packet_tests.step);
     test_step.dependOn(&run_crypto_tests.step);
+    test_step.dependOn(&run_ssl_socket_tests.step);
     test_step.dependOn(&run_integration_tests.step);
     test_step.dependOn(&run_macos_adapter_tests.step);
 

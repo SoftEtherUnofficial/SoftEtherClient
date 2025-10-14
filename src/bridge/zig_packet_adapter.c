@@ -209,9 +209,13 @@ static bool ZigAdapterInit(SESSION* s) {
     if (dev_name_len > 0 && dev_name_len < sizeof(dev_name_buf)) {
         dev_name_buf[dev_name_len] = '\0';
         
+#ifndef UNIX_IOS
+        // On desktop platforms, bring interface up manually
+        // On iOS, VPN framework handles this
         char cmd[256];
         snprintf(cmd, sizeof(cmd), "ifconfig %s up", dev_name_buf);
         system(cmd);
+#endif
     }
     
     // Initialize DHCP state machine (Wave 4 compatibility)
@@ -466,6 +470,9 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                             if (dev_name_len > 0 && dev_name_len < sizeof(dev_name_buf)) {
                                 dev_name_buf[dev_name_len] = '\0';
                                 
+#ifndef UNIX_IOS
+                                // On desktop platforms, configure interface manually
+                                // On iOS, VPN framework handles IP configuration
                                 char cmd[512];
                                 snprintf(cmd, sizeof(cmd), "ifconfig %s inet %u.%u.%u.%u %u.%u.%u.%u netmask 255.255.0.0 up",
                                         (char*)dev_name_buf,
@@ -483,8 +490,11 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                         printf("[●] WARNING: Route configuration failed\n");
                                     }
                                 } else {
-                                    printf("[●] ERROR: Interface configuration failed (code %d)\n", result);
-                                }
+#else
+                                // On iOS, interface is managed by VPN framework
+                                // Just log the DHCP info
+                                printf("[●] VPN: DHCP complete (iOS VPN framework manages interface)\n");
+#endif
                             }
                         }
                     }

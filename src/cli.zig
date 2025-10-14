@@ -57,6 +57,7 @@ fn printUsage() void {
         \\    --profile               Enable performance profiling
         \\    --use-zig-adapter       Use Zig packet adapter (default, 10x faster)
         \\    --use-c-adapter         Use legacy C adapter (fallback)
+        \\    --use-zig-auth          Use pure Zig authentication (experimental)
         \\    --log-level <LEVEL>     Set log verbosity: silent, error, warn, info, debug, trace (default: info)
         \\
         \\  Reconnection Options:
@@ -160,6 +161,7 @@ const CliArgs = struct {
     daemon: bool = false,
     profile: bool = false, // Enable performance profiling
     use_zig_adapter: bool = true, // Use Zig packet adapter (default for better performance)
+    use_zig_auth: bool = false, // Use pure Zig authentication (experimental, default: false)
     log_level: []const u8 = "info",
 
     // Reconnection settings
@@ -259,6 +261,8 @@ fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
             result.use_zig_adapter = true;
         } else if (std.mem.eql(u8, arg, "--use-c-adapter")) {
             result.use_zig_adapter = false;
+        } else if (std.mem.eql(u8, arg, "--use-zig-auth")) {
+            result.use_zig_auth = true;
         } else if (std.mem.eql(u8, arg, "--log-level")) {
             result.log_level = args.next() orelse return error.MissingLogLevel;
         } else if (std.mem.eql(u8, arg, "--reconnect")) {
@@ -649,6 +653,7 @@ pub fn main() !void {
         .ip_version = ip_version,
         .static_ip = static_ip,
         .use_zig_adapter = args.use_zig_adapter,
+        .use_zig_auth = args.use_zig_auth,
         .performance = .{
             .recv_buffer_slots = final_recv_buffer_slots,
             .send_buffer_slots = final_send_buffer_slots,
@@ -798,6 +803,18 @@ pub fn main() !void {
     };
 
     std.debug.print("✓ VPN connection established\n\n", .{});
+
+    // Try Zig authentication if enabled (experimental)
+    if (args.use_zig_auth) {
+        std.debug.print("═══════════════════════════════════════════════\n", .{});
+        std.debug.print("🧪 Testing Zig Authentication (Experimental)\n", .{});
+        std.debug.print("═══════════════════════════════════════════════\n", .{});
+        vpn_client.authenticateZig() catch |err| {
+            std.debug.print("⚠️  Zig auth test failed: {any}\n", .{err});
+            std.debug.print("Note: This is experimental - C auth is used for actual connection\n", .{});
+        };
+        std.debug.print("═══════════════════════════════════════════════\n\n", .{});
+    }
 
     // Wait briefly for adapter initialization to complete in background thread
     // The adapter is initialized asynchronously, so we need to wait for it
@@ -1047,6 +1064,15 @@ fn monitorWithProfiling(allocator: std.mem.Allocator, vpn_client: *VpnClient) vo
     std.debug.print("\n", .{});
 
     while (vpn_client.isConnected() and g_running.load(.acquire)) {
+        // Send keep-alive packet if needed (prevents server timeout)
+        vpn_client.maintainKeepAlive() catch |err| {
+            if (err == error.ConnectionFailed) {
+                std.debug.print("\n⚠️  Connection appears dead - triggering reconnect\n", .{});
+                break;
+            }
+            std.log.warn("Keep-alive error: {any}", .{err});
+        };
+
         // Get current stats from VPN client
         const info = vpn_client.getConnectionInfo() catch |err| {
             std.debug.print("Error getting connection info: {any}\n", .{err});
@@ -1060,6 +1086,9 @@ fn monitorWithProfiling(allocator: std.mem.Allocator, vpn_client: *VpnClient) vo
 
         // Update metrics (approximate packet count based on average packet size)
         if (bytes_rx_delta > 0) {
+            // Notify keep-alive that we received packets
+            vpn_client.notifyPacketReceived();
+
             const approx_packets = bytes_rx_delta / 1200; // Assume ~1200 bytes/packet
             var i: u64 = 0;
             while (i < approx_packets) : (i += 1) {

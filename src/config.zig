@@ -80,6 +80,7 @@ pub const ConnectionConfig = struct {
     ip_version: IpVersion = .auto,
     static_ip: ?StaticIpConfig = null,
     use_zig_adapter: bool = true, // Use Zig packet adapter (default, better performance)
+    use_zig_auth: bool = false, // Use pure Zig authentication (experimental, default: false for safety)
     performance: PerformanceConfig = .{}, // Performance tuning options
 
     /// Create a configuration builder

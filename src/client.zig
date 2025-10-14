@@ -8,6 +8,8 @@ const types = @import("types.zig");
 
 // Import Zig VPN bridge implementation
 const bridge = @import("bridge/softether.zig");
+const KeepAlive = @import("protocol/keepalive.zig").KeepAlive;
+const AuthHandler = @import("protocol/auth.zig").AuthHandler;
 
 const VpnError = errors.VpnError;
 const ConnectionConfig = config.ConnectionConfig;
@@ -29,6 +31,8 @@ pub const VpnClient = struct {
     bridge_client: *bridge.VpnBridgeClient,
     allocator: std.mem.Allocator,
     config: ConnectionConfig,
+    keepalive: KeepAlive,
+    auth_handler: ?*AuthHandler, // Optional Zig authentication handler
 
     /// Initialize a new VPN client
     pub fn init(allocator: std.mem.Allocator, cfg: ConnectionConfig) !VpnClient {
@@ -152,15 +156,28 @@ pub const VpnClient = struct {
             }
         }
 
+        // Initialize Zig authentication handler if enabled
+        const auth_handler = if (cfg.use_zig_auth) blk: {
+            const handler = try AuthHandler.init(allocator);
+            std.log.info("🔐 Zig authentication enabled (experimental)", .{});
+            break :blk handler;
+        } else null;
+        errdefer if (auth_handler) |h| h.deinit();
+
         return VpnClient{
             .bridge_client = bridge_client,
             .allocator = allocator,
             .config = cfg,
+            .keepalive = KeepAlive.init(),
+            .auth_handler = auth_handler,
         };
     }
 
     /// Clean up and free resources
     pub fn deinit(self: *VpnClient) void {
+        if (self.auth_handler) |handler| {
+            handler.deinit();
+        }
         self.bridge_client.deinit();
         bridge.deinit(); // Cleanup SoftEther library
     }
@@ -267,6 +284,105 @@ pub const VpnClient = struct {
         } else false;
 
         return if (is_valid) mac else null;
+    }
+
+    // ============================================
+    // Keep-Alive Management
+    // ============================================
+
+    /// Send a keep-alive packet if needed
+    /// Call this regularly (e.g., every second) in your main loop
+    pub fn maintainKeepAlive(self: *VpnClient) !void {
+        // Check if keep-alive should be sent
+        if (!self.keepalive.shouldSend()) {
+            return;
+        }
+
+        // Check if connection is dead
+        if (self.keepalive.isDead()) {
+            std.log.warn("Connection appears dead - no packets received for {d}ms", .{self.keepalive.timeout_ms});
+            return VpnError.ConnectionFailed;
+        }
+
+        // Send a simple ping packet through the bridge
+        // This will go through the VPN tunnel and keep the connection alive
+        try self.bridge_client.sendKeepAlive();
+
+        // Mark that we sent the keep-alive
+        self.keepalive.markSent();
+
+        const status = self.keepalive.getStatus();
+        std.log.debug("[KeepAlive] Sent packet #{d} (interval: {d}ms)", .{ status.packets_sent, self.keepalive.interval_ms });
+    }
+
+    /// Update keep-alive state when packets are received
+    /// This should be called when any traffic is received from the VPN
+    pub fn notifyPacketReceived(self: *VpnClient) void {
+        self.keepalive.markReceived();
+    }
+
+    /// Get keep-alive health status
+    pub fn getKeepAliveStatus(self: *VpnClient) KeepAlive.Status {
+        return self.keepalive.getStatus();
+    }
+
+    // ============================================
+    // Zig Authentication (Experimental)
+    // ============================================
+
+    /// Authenticate using pure Zig implementation (experimental)
+    /// This is called automatically during connect() if use_zig_auth is enabled
+    pub fn authenticateZig(self: *VpnClient) !void {
+        const handler = self.auth_handler orelse {
+            std.log.err("Zig auth not enabled - initialize with use_zig_auth=true", .{});
+            return VpnError.InvalidParameter;
+        };
+
+        std.log.info("🔐 VPN: Using Zig authentication", .{});
+
+        // Build authentication packet based on auth method
+        const auth_packet = switch (self.config.auth) {
+            .password => |pwd| try handler.buildPasswordAuthPacket(
+                pwd.username,
+                pwd.password,
+                self.config.hub_name,
+            ),
+            .anonymous => try handler.buildAnonymousAuthPacket(
+                self.config.hub_name,
+            ),
+            else => {
+                std.log.err("Unsupported auth method for Zig authentication", .{});
+                return VpnError.InvalidParameter;
+            },
+        };
+        defer auth_packet.deinit();
+
+        std.log.debug("Auth packet built: {d} fields", .{auth_packet.fields.count()});
+
+        // Send authentication packet to server
+        var auth_result = try handler.authenticate(
+            self.config.server_name,
+            self.config.server_port,
+            auth_packet,
+        );
+        defer auth_result.deinit();
+
+        // Check authentication result
+        if (!auth_result.success) {
+            std.log.err("❌ Authentication failed: error_code={d}", .{auth_result.error_code});
+            return VpnError.AuthenticationFailed;
+        }
+
+        std.log.info("✅ VPN: Authentication successful!", .{});
+        std.log.info("   Server: {s}", .{auth_result.server_str});
+        std.log.info("   Version: {d}.{d}", .{
+            auth_result.server_version / 100,
+            auth_result.server_version % 100,
+        });
+        std.log.info("   Session key: {d} bytes", .{auth_result.session_key.len});
+
+        // TODO: Use session_key for subsequent communications
+        std.log.warn("⚠️  Note: Zig auth is experimental - C auth is still used for actual connection", .{});
     }
 
     // ============================================
