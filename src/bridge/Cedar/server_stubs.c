@@ -57,6 +57,73 @@ bool ServerDownloadSignature(CONNECTION *c, char **error_detail_str) {
 }
 
 // ============================================================================
+// Remote.c Stubs - RPC utility functions
+// ============================================================================
+
+void EndRpc(RPC *rpc) {
+    // No-op: Client doesn't use RPC
+}
+
+PACK *RpcCall(RPC *rpc, char *function_name, PACK *p) {
+    return NULL; // Client doesn't make RPC calls
+}
+
+bool RpcError(PACK *p) {
+    return true; // Always error for client
+}
+
+void RpcFree(RPC *rpc) {
+    // No-op: Client doesn't free RPC
+}
+
+UINT RpcGetError(PACK *p) {
+    return 1; // Generic error
+}
+
+bool RpcIsOk(PACK *p) {
+    return false; // Always false for client
+}
+
+RPC *RpcServer(SOCK *s, RPC_DISPATCHER *dispatch, void *param) {
+    return NULL; // Client doesn't create RPC servers
+}
+
+// ============================================================================
+// Sam.c Stubs - User authentication (server-side)
+// Client doesn't verify passwords, server does
+// ============================================================================
+
+bool SamAuthUserByAnonymous(void *hub, char *username) {
+    return false; // Client doesn't authenticate users
+}
+
+bool SamAuthUserByCert(void *hub, char *username, void *cert) {
+    return false; // Client doesn't authenticate by certificate
+}
+
+bool SamAuthUserByPassword(void *hub, char *username, void *random, void *secure_password, 
+                           bool *is_radius_login, void *mschap, void *eap_client) {
+    return false; // Client doesn't authenticate by password
+}
+
+bool SamAuthUserByPlainPassword(void *connection, void *hub, char *username, char *password,
+                                 bool ast, void *mschap_v2_server_response_20, void *radius_login_opt) {
+    return false; // Client doesn't authenticate by plain password
+}
+
+void *SamGetUserPolicy(void *hub, char *username) {
+    return NULL; // Client doesn't get user policies
+}
+
+void SecurePassword(void *secure_password, void *password, void *random) {
+    // No-op: Client doesn't secure passwords (server does)
+}
+
+void *GetIssuerFromList(void *cert_list) {
+    return NULL; // Client doesn't get issuers
+}
+
+// ============================================================================
 // Hub Management Stubs
 // ============================================================================
 

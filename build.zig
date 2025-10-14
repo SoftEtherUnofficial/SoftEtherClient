@@ -1,16 +1,6 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    // Print build banner
-    std.debug.print("\n", .{});
-    std.debug.print("╔══════════════════════════════════════════════════════════════╗\n", .{});
-    std.debug.print("║           SoftEtherZig - Pure Zig VPN Client                ║\n", .{});
-    std.debug.print("║              Progressive C to Zig Migration                 ║\n", .{});
-    std.debug.print("║         Phase 3: Protocol Layer - COMPLETE ✅                ║\n", .{});
-    std.debug.print("║    VPN ✓  Packet ✓  Crypto ✓  Integration ✓  (REAL!)      ║\n", .{});
-    std.debug.print("╚══════════════════════════════════════════════════════════════╝\n", .{});
-    std.debug.print("\n", .{});
-
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{
         .preferred_optimize_mode = .ReleaseFast,
@@ -203,15 +193,10 @@ pub fn build(b: *std.Build) void {
         "src/bridge/Cedar/Hub.c", // 7.5K lines (mostly wrapped, but some session management needed)
         "src/bridge/Cedar/Listener.c", // 1.3K lines (mostly wrapped, but some functions needed)
         // Client-required files (server code wrapped with #ifndef VPN_CLIENT_ONLY):
-        "src/bridge/Cedar/Sam.c", // MS-CHAPv2 authentication (client needs some functions)
-        // ❌ NAT/Bridge/WebUI files REMOVED (5 files, 7.5K lines, server-only):
-        // "src/bridge/Cedar/SecureNAT.c", // REMOVED: Virtual NAT/DHCP server
-        // "src/bridge/Cedar/Bridge.c", // REMOVED: Local bridge wrapper
-        // "src/bridge/Cedar/BridgeUnix.c", // REMOVED: Unix bridge implementation
-        // "src/bridge/Cedar/Nat.c", // REMOVED: NAT translation engine
-        // "src/bridge/Cedar/WebUI.c", // REMOVED: Web admin interface
-        "src/bridge/Cedar/Remote.c", // RPC functions (some wrapped)
+        // "src/bridge/Cedar/Sam.c", // REMOVED: MS-CHAPv2 auth (701 lines, server-side verification only)
+        // "src/bridge/Cedar/Remote.c", // REMOVED: RPC functions (478 lines, mostly wrapped, already stubbed)
         "src/bridge/Cedar/WaterMark.c", // Client signature data (NOT wrapped - client needs it!)
+        // ❌ NAT/Bridge/WebUI files REMOVED (5 files, 7.5K lines, server-only):
         // ❌ Interop protocol files REMOVED (2 files, 4.3K lines, server-only):
         // "src/bridge/Cedar/Interop_OpenVPN.c", // REMOVED: OpenVPN server
         // "src/bridge/Cedar/Interop_SSTP.c", // REMOVED: SSTP server
