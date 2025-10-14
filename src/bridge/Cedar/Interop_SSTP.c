@@ -104,6 +104,11 @@
 
 #include "CedarPch.h"
 
+// ============================================================================
+// VPN_CLIENT_ONLY: Disable Interop_SSTP in client builds (server protocol gateway)
+// ============================================================================
+#ifndef VPN_CLIENT_ONLY
+
 static bool g_no_sstp = false;
 
 // Get the SSTP disabling flag
@@ -1239,3 +1244,5 @@ bool AcceptSstp(CONNECTION *c)
 	return ret2;
 }
 
+
+#endif // VPN_CLIENT_ONLY

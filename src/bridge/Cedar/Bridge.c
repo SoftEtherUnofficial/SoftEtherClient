@@ -112,6 +112,11 @@
 
 #ifdef	OS_WIN32
 
+// ============================================================================
+// VPN_CLIENT_ONLY: Disable Bridge code in client builds
+// ============================================================================
+#ifndef VPN_CLIENT_ONLY
+
 // Win32
 #include "BridgeWin32.c"
 
@@ -544,8 +549,9 @@ BRIDGE *BrNewBridge(HUB *h, char *name, POLICY *p, bool local, bool monitor, boo
 	WaitThreadInit(t);
 	ReleaseThread(t);
 
-	return b;
+	return o;
 }
+
 
 // Raw IP bridge is supported only on Linux
 bool IsRawIpBridgeSupported()
@@ -554,6 +560,8 @@ bool IsRawIpBridgeSupported()
 	return true;
 #else	// UNIX_LINUX
 	return false;
-#endif	// UNIX_LINUX
+#endif  // UNIX_LINUX
 }
+
+#endif // VPN_CLIENT_ONLY
 

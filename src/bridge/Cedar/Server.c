@@ -117,7 +117,9 @@ static bool server_reset_setting = false;
 
 static volatile UINT global_server_flags[NUM_GLOBAL_SERVER_FLAGS] = {0};
 
+#ifndef VPN_CLIENT_ONLY
 UINT vpn_global_parameters[NUM_GLOBAL_PARAMS] = {0};
+#endif
 
 // Set the OpenVPN and SSTP setting
 void SiSetOpenVPNAndSSTPConfig(SERVER *s, OPENVPN_SSTP_CONFIG *c)

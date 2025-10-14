@@ -103,6 +103,8 @@
 
 #include "CedarPch.h"
 
+#ifndef VPN_CLIENT_ONLY
+
 static WU_CONTEXT *WuNewContext(WEBUI *wu, char *hubname);
 static void WuFreeContext(WU_CONTEXT *context);
 static WU_WEBPAGE *WuNewUniWebPage(wchar_t *content);
@@ -1977,3 +1979,4 @@ static WU_CONTEXT *WuGetContext(LIST *contexts, char *sessionkey)
 	}
 	return ret;
 }
+#endif // VPN_CLIENT_ONLY

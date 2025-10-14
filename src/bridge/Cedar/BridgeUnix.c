@@ -108,6 +108,11 @@
 
 #ifdef	BRIDGE_C
 
+// ============================================================================
+// VPN_CLIENT_ONLY: Disable all Unix Bridge code in client builds
+// ============================================================================
+#ifndef VPN_CLIENT_ONLY
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2795,7 +2800,7 @@ void EthPutPacketLinuxIpRaw(ETH *e, void *data, UINT size)
 	Free(data);
 }
 
+#endif // VPN_CLIENT_ONLY
 
 #endif	// BRIDGE_C
-
 

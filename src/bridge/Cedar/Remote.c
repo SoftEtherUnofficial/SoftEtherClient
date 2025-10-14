@@ -426,6 +426,7 @@ PACK *RpcCallInternal(RPC *r, PACK *p)
 }
 
 // Start the RPC server
+#ifndef VPN_CLIENT_ONLY
 RPC *StartRpcServer(SOCK *s, RPC_DISPATCHER *dispatch, void *param)
 {
 	RPC *r;
@@ -449,8 +450,10 @@ RPC *StartRpcServer(SOCK *s, RPC_DISPATCHER *dispatch, void *param)
 
 	return r;
 }
+#endif // VPN_CLIENT_ONLY
 
 // Start the RPC client
+#ifndef VPN_CLIENT_ONLY
 RPC *StartRpcClient(SOCK *s, void *param)
 {
 	RPC *r;
@@ -470,4 +473,6 @@ RPC *StartRpcClient(SOCK *s, void *param)
 
 	return r;
 }
+#endif // VPN_CLIENT_ONLY
+
 

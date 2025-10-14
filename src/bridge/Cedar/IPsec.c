@@ -104,6 +104,11 @@
 
 #include "CedarPch.h"
 
+// ============================================================================
+// VPN_CLIENT_ONLY: Disable IPsec in client builds (server protocol gateway)
+// ============================================================================
+#ifndef VPN_CLIENT_ONLY
+
 
 static bool ipsec_disable = false;
 
@@ -791,3 +796,5 @@ IPSEC_SERVER *NewIPsecServer(CEDAR *cedar)
 	return s;
 }
 
+
+#endif // VPN_CLIENT_ONLY

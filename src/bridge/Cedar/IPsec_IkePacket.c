@@ -104,6 +104,11 @@
 
 #include "CedarPch.h"
 
+// ============================================================================
+// VPN_CLIENT_ONLY: Disable IPsec_IkePacket in client builds (server protocol gateway)
+// ============================================================================
+#ifndef VPN_CLIENT_ONLY
+
 // Convert the string to a password
 BUF *IkeStrToPassword(char *str)
 {
@@ -3203,3 +3208,5 @@ void IkeDhFreeCtx(DH_CTX *dh)
 
 
 
+
+#endif // VPN_CLIENT_ONLY

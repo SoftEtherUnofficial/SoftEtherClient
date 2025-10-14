@@ -7325,6 +7325,7 @@ bool ClientDownloadHello(CONNECTION *c, SOCK *s)
 }
 
 // Download the signature
+#ifndef VPN_CLIENT_ONLY
 bool ServerDownloadSignature(CONNECTION *c, char **error_detail_str)
 {
 	HTTP_HEADER *h;
@@ -7717,6 +7718,7 @@ bool ServerDownloadSignature(CONNECTION *c, char **error_detail_str)
 		}
 	}
 }
+#endif // VPN_CLIENT_ONLY
 
 // Upload a signature
 bool ClientUploadSignature(SOCK *s)

@@ -104,6 +104,11 @@
 
 #include "CedarPch.h"
 
+// ============================================================================
+// VPN_CLIENT_ONLY: Disable IPsec_PPP in client builds (server protocol gateway)
+// ============================================================================
+#ifndef VPN_CLIENT_ONLY
+
 // PPP thread
 void PPPThread(THREAD *thread, void *param)
 {
@@ -2802,3 +2807,5 @@ char *MsChapV2DoBruteForce(IPC_MSCHAP_V2_AUTHINFO *d, LIST *password_list)
 
 
 
+
+#endif // VPN_CLIENT_ONLY
