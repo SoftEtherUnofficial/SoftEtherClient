@@ -183,7 +183,7 @@ pub fn build(b: *std.Build) void {
         "src/bridge/Cedar/Connection.c",
         "src/bridge/Cedar/Session.c",
         "src/bridge/Cedar/Account.c",
-        "src/bridge/Cedar/Logging.c",
+        // "src/bridge/Cedar/Logging.c", // REMOVED: File I/O logging (3,048 lines) - using Zig logging instead
         // "src/bridge/Cedar/Virtual.c", // REMOVED: Virtual host mode (software adapter) - we always use TUN devices
         // "src/bridge/Cedar/NullLan.c", // REMOVED: Null LAN adapter (unused, we use Zig adapter)
         // "src/bridge/Cedar/UdpAccel.c", // REMOVED: UDP acceleration (performance optimization, not critical)

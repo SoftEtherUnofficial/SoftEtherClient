@@ -717,6 +717,165 @@ bool UdpAccelInitClient(UDP_ACCEL *a, UCHAR *server_key, void *server_ip, UINT s
     return false; // Failed = no UDP acceleration
 }
 
+// ============================================================================
+// Logging Stubs (Logging.c - 3,048 lines eliminated)
+// ============================================================================
+// The client already has NoSaveLog flag to disable file logging.
+// These stubs allow complete elimination of Logging.c file I/O code.
+// We use Zig logging (src/log.zig) via FFI for runtime logging instead.
+
+typedef struct LOG LOG;
+typedef struct ERASER ERASER;
+typedef struct RECORD RECORD;
+typedef char* (*RECORD_PARSE_PROC)(RECORD *rec);
+
+// Create new log (returns dummy non-NULL pointer)
+LOG *NewLog(char *dir, char *prefix, UINT switch_type) {
+    // Return non-NULL to satisfy NULL checks, but do nothing
+    static char dummy_log = 0;
+    return (LOG *)&dummy_log;
+}
+
+// Free log
+void FreeLog(LOG *g) {
+    // No-op: Nothing to free
+}
+
+// Insert record into log
+void InsertRecord(LOG *g, void *data, RECORD_PARSE_PROC *proc) {
+    // No-op: No file logging
+}
+
+// Insert string record
+void InsertStringRecord(LOG *g, char *str) {
+    // No-op: No file logging
+}
+
+// Write security log
+void WriteSecurityLog(void *h, char *str) {
+    // No-op: Security logs are server-side
+}
+
+// Debug log (variadic)
+void DebugLog(void *c, char *fmt, ...) {
+    // No-op: Debug logs handled by Zig logging
+}
+
+// Hub log (variadic, wide string)
+void HubLog(void *h, wchar_t *fmt, ...) {
+    // No-op: Hub logs are server-side
+}
+
+// Server log (variadic, wide string)
+void ServerLog(void *c, wchar_t *fmt, ...) {
+    // No-op: Server logs are server-side
+}
+
+// Client log (variadic)
+void CLog(void *c, char *name, ...) {
+    // No-op: Client logs handled by Zig logging
+}
+
+// Write client log (wide string)
+void WriteClientLog(void *c, wchar_t *str) {
+    // No-op: Client logs handled by Zig logging
+}
+
+// Create new eraser (log file cleanup)
+ERASER *NewEraser(LOG *log, UINT64 min_size) {
+    // Return non-NULL dummy pointer
+    static char dummy_eraser = 0;
+    return (ERASER *)&dummy_eraser;
+}
+
+// Free eraser
+void FreeEraser(ERASER *e) {
+    // No-op: Nothing to free
+}
+
+// Set log directory name
+void SetLogDirName(LOG *g, char *dir) {
+    // No-op: No file logging
+}
+
+// Set log prefix
+void SetLogPrefix(LOG *g, char *prefix) {
+    // No-op: No file logging
+}
+
+// Wait for log flush
+void WaitLogFlush(LOG *g) {
+    // No-op: No async logging to flush
+}
+
+// ============================================================================
+// Logging Stubs - Additional Functions
+// ============================================================================
+
+// SYSLOG support (server feature)
+typedef struct SLOG SLOG;
+
+// Create new syslog
+SLOG *NewSysLog(char *hostname, UINT port) {
+    static char dummy_syslog = 0;
+    return (SLOG *)&dummy_syslog;
+}
+
+// Free syslog
+void FreeSysLog(SLOG *g) {
+    // No-op
+}
+
+// Set syslog destination
+void SetSysLog(SLOG *g, char *hostname, UINT port) {
+    // No-op
+}
+
+// Send to syslog
+void SendSysLog(SLOG *g, wchar_t *str) {
+    // No-op
+}
+
+// Hub log (variadic, takes name and arguments)
+void HLog(void *h, char *name, ...) {
+    // No-op: Hub logs are server-side
+}
+
+// Server log (variadic, takes name and arguments)
+void SLog(void *c, char *name, ...) {
+    // No-op: Server logs are server-side
+}
+
+// Packet logging
+bool PacketLog(void *hub, void *src_session, void *dest_session, void *packet, UINT64 now) {
+    return false; // No packet logging
+}
+
+// Set log switch type
+void SetLogSwitchType(LOG *g, UINT switch_type) {
+    // No-op
+}
+
+// Eraser interval management
+static UINT64 eraser_check_interval = 0;
+static UINT64 max_log_size = 0;
+
+void SetEraserCheckInterval(UINT64 interval) {
+    eraser_check_interval = interval;
+}
+
+UINT64 GetEraserCheckInterval(void) {
+    return eraser_check_interval;
+}
+
+void SetMaxLogSize(UINT64 size) {
+    max_log_size = size;
+}
+
+UINT64 GetMaxLogSize(void) {
+    return max_log_size;
+}
+
 #endif // VPN_CLIENT_ONLY
 
 
