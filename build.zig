@@ -164,7 +164,7 @@ pub fn build(b: *std.Build) void {
         "src/bridge/zig_packet_adapter.c",
         "src/bridge/Mayaqua/logging.c",
         // Note: security_utils now in src/security/utils.zig (pure Zig)
-        "src/bridge/Cedar/client_bridge.c",
+        // NOTE: client_bridge.c REMOVED - DEAD CODE (no callers found, unused wrapper)
         "src/bridge/zig_bridge.c",
 
         // Mayaqua layer (utility functions) - LOCAL COPIES
