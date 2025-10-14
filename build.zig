@@ -156,7 +156,7 @@ pub fn build(b: *std.Build) void {
         // NOTE: softether_bridge.c REMOVED - fully replaced by src/bridge/softether.zig
         "src/bridge/unix_bridge.c", // Stub/compatibility layer for C code dependencies
         // NOTE: tick64_macos.c REMOVED - fully replaced by src/platform/time.zig (exports C FFI)
-        "src/bridge/security_utils.c", // Security functions - compatibility shim
+        // NOTE: security_utils.c REMOVED - fully replaced by src/security/utils.zig (exports C FFI)
         "src/bridge/packet_utils.c", // Packet builders - compatibility shim
         "src/bridge/session_helper.c", // Session field access helpers
         // Note: Core implementations in src/platform/*.zig (pure Zig)
@@ -338,6 +338,19 @@ pub fn build(b: *std.Build) void {
         .root_module = time_module,
     });
     cli.addObject(time_obj);
+
+    // Platform security utilities module (replaces security_utils.c)
+    const security_module = b.createModule(.{
+        .root_source_file = b.path("src/security/utils.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const security_obj = b.addObject(.{
+        .name = "security_utils",
+        .root_module = security_module,
+    });
+    cli.addObject(security_obj);
 
     // Add Zig packet adapter (Phase 1) - compiled as static object
     const packet_adapter_module = b.createModule(.{
