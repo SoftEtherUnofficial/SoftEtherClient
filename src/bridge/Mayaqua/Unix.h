@@ -101,14 +101,6 @@
 
 // Unix.h
 // Header of Unix.c
-// 
-// PATCHED VERSION FOR ZIG BUILD
-// ==============================
-// This is a patched version of Unix.h with K&R style function declarations
-// fixed to use proper ANSI C (void) for functions with no parameters.
-// This resolves "conflicting types" errors when compiling with Clang/Zig.
-//
-// Changes: All function declarations like `func()` changed to `func(void)`
 
 #ifdef	OS_UNIX
 
@@ -148,18 +140,18 @@ typedef void (SERVICE_FUNCTION)();
 
 
 // Function prototype
-OS_DISPATCH_TABLE *UnixGetDispatchTable(void);
-void UnixInit(void);
-void UnixFree(void);
+OS_DISPATCH_TABLE *UnixGetDispatchTable();
+void UnixInit();
+void UnixFree();
 void *UnixMemoryAlloc(UINT size);
 void *UnixMemoryReAlloc(void *addr, UINT size);
 void UnixMemoryFree(void *addr);
-UINT UnixGetTick(void);
+UINT UnixGetTick();
 void UnixGetSystemTime(SYSTEMTIME *system_time);
 void UnixInc32(UINT *value);
 void UnixDec32(UINT *value);
 void UnixSleep(UINT time);
-LOCK *UnixNewLock(void);
+LOCK *UnixNewLock();
 bool UnixLock(LOCK *lock);
 void UnixUnlock(LOCK *lock);
 void UnixUnlockEx(LOCK *lock, bool inner);
@@ -172,7 +164,7 @@ void UnixFreeEvent(EVENT *event);
 bool UnixWaitThread(THREAD *t);
 void UnixFreeThread(THREAD *t);
 bool UnixInitThread(THREAD *t);
-UINT UnixThreadId(void);
+UINT UnixThreadId();
 void *UnixFileOpen(char *name, bool write_mode, bool read_lock);
 void *UnixFileOpenW(wchar_t *name, bool write_mode, bool read_lock);
 void *UnixFileCreate(char *name);
@@ -189,42 +181,42 @@ bool UnixMakeDir(char *name);
 bool UnixMakeDirW(wchar_t *name);
 bool UnixDeleteDir(char *name);
 bool UnixDeleteDirW(wchar_t *name);
-CALLSTACK_DATA *UnixGetCallStack(void);
+CALLSTACK_DATA *UnixGetCallStack();
 bool UnixGetCallStackSymbolInfo(CALLSTACK_DATA *s);
 bool UnixFileRename(char *old_name, char *new_name);
 bool UnixFileRenameW(wchar_t *old_name, wchar_t *new_name);
 bool UnixRun(char *filename, char *arg, bool hide, bool wait);
 bool UnixRunW(wchar_t *filename, wchar_t *arg, bool hide, bool wait);
-bool UnixIsSupportedOs(void);
+bool UnixIsSupportedOs();
 void UnixGetOsInfo(OS_INFO *info);
 void UnixAlert(char *msg, char *caption);
 void UnixAlertW(wchar_t *msg, wchar_t *caption);
-char *UnixGetProductId(void);
-void UnixSetHighPriority(void);
-void UnixSetHighOomScore(void);
-void UnixRestorePriority(void);
-UINT UnixGetNumberOfCpuInner(void);
+char *UnixGetProductId();
+void UnixSetHighPriority();
+void UnixSetHighOomScore();
+void UnixRestorePriority();
+UINT UnixGetNumberOfCpuInner();
 void *UnixNewSingleInstance(char *instance_name);
 void UnixFreeSingleInstance(void *data);
 void UnixGetMemInfo(MEMINFO *info);
-void UnixYield(void);
+void UnixYield();
 TOKEN_LIST *UnixExec(char *cmd);
 void UnixExecSilent(char *cmd);
 void UnixDisableInterfaceOffload(char *name);
 void UnixSetEnableKernelEspProcessing(bool b);
 
-void UnixDisableCoreDump(void);
-void UnixSetThreadPriorityRealtime(void);
-void UnixSetThreadPriorityLow(void);
-void UnixSetThreadPriorityHigh(void);
-void UnixSetThreadPriorityIdle(void);
-void UnixRestoreThreadPriority(void);
+void UnixDisableCoreDump();
+void UnixSetThreadPriorityRealtime();
+void UnixSetThreadPriorityLow();
+void UnixSetThreadPriorityHigh();
+void UnixSetThreadPriorityIdle();
+void UnixRestoreThreadPriority();
 void UnixSetResourceLimit(UINT id, UINT64 value);
-bool UnixIs64BitRlimSupported(void);
-UINT64 UnixGetTick64(void);
+bool UnixIs64BitRlimSupported();
+UINT64 UnixGetTick64();
 UINT64 UnixGetHighresTickNano64(bool raw);
 void UnixSigChldHandler(int sig);
-void UnixCloseIO(void);
+void UnixCloseIO();
 void UnixDaemon(bool debug_mode);
 void UnixGetCurrentDir(char *dir, UINT size);
 void UnixGetCurrentDirW(wchar_t *dir, UINT size);
@@ -235,8 +227,8 @@ DIRLIST *UnixEnumDirExW(wchar_t *dirname, COMPARE *compare);
 bool UnixGetDiskFreeMain(char *path, UINT64 *free_size, UINT64 *used_size, UINT64 *total_size);
 bool UnixGetDiskFree(char *path, UINT64 *free_size, UINT64 *used_size, UINT64 *total_size);
 bool UnixGetDiskFreeW(wchar_t *path, UINT64 *free_size, UINT64 *used_size, UINT64 *total_size);
-void UnixInitSolarisSleep(void);
-void UnixFreeSolarisSleep(void);
+void UnixInitSolarisSleep();
+void UnixFreeSolarisSleep();
 void UnixSolarisSleep(UINT msec);
 
 UINT UnixService(int argc, char *argv[], char *name, SERVICE_FUNCTION *start, SERVICE_FUNCTION *stop);
@@ -249,22 +241,23 @@ void UnixExecService(char *name, SERVICE_FUNCTION *start, SERVICE_FUNCTION *stop
 void UnixUsage(char *name);
 void UnixWritePidFile(UINT pid);
 void UnixWriteCtlFile(UINT i);
-UINT UnixReadPidFile(void);
-UINT UnixReadCtlFile(void);
+UINT UnixReadPidFile();
+UINT UnixReadCtlFile();
 bool UnixIsProcess(UINT pid);
 bool UnixWaitProcessEx(UINT pid, UINT timeout);
 void UnixWaitProcess(UINT pid);
-void UnixDeletePidFile(void);
-void UnixDeleteCtlFile(void);
+void UnixDeletePidFile();
+void UnixDeleteCtlFile();
 void UnixStopThread(THREAD *t, void *param);
-UINT UnixGetUID(void);
+UINT UnixGetUID();
 void UnixIgnoreSignalForThread(int sig);
-void UnixPrintVpnServerUrlInfo(void);
+void UnixPrintVpnServerUrlInfo();
 
-bool UnixIsInVmMain(void);
-bool UnixIsInVm(void);
+bool UnixIsInVmMain();
+bool UnixIsInVm();
 
 
 #endif	// UNIX_H
 
 #endif	// OS_UNIX
+

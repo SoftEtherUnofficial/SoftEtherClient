@@ -141,3 +141,8 @@ int secure_compare(const void* a, const void* b, size_t len) {
     
     return result;
 }
+
+// ARCHIVED: Sun Oct 13 20:15:00 PDT 2025
+// Ported to: src/security/utils.zig
+// Reason: Replaced with pure Zig implementation with better security features
+// New features: SecureBuffer, timing-safe comparison, memory locking

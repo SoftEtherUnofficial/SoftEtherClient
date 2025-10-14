@@ -5,7 +5,7 @@
  */
 
 #include "softether_bridge.h"
-#include "logging.h"
+#include "Mayaqua/logging.h"
 #include "security_utils.h"  // Secure password handling
 #include <string.h>
 #include <stdlib.h>
@@ -24,7 +24,7 @@
 
 // Platform-specific packet adapter
 #if defined(UNIX_MACOS)
-    #include "packet_adapter_macos.h"
+    #include "platform/packet_adapter_macos.h"
     #include "zig_packet_adapter.h"
     
     // Toggle between C and Zig adapter (set to 1 to use Zig adapter)

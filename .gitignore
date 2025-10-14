@@ -43,3 +43,5 @@ main
 *.dSYM/
 
 config.json
+
+benchmark_results/

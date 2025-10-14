@@ -465,6 +465,7 @@ void CheckEndian()
 // Minimize mode
 void MayaquaMinimalMode()
 {
+	printf("[MayaquaMinimalMode] Enabling minimal mode (skip hamcore loading)\n"); fflush(stdout);
 	minimal_mode = true;
 }
 bool MayaquaIsMinimalMode()

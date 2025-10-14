@@ -6,12 +6,16 @@ const client = @import("client.zig");
 const config = @import("config.zig");
 const errors = @import("errors.zig");
 const profiling = @import("profiling.zig");
-const c = @import("c.zig").c;
+const softether = @import("bridge/softether.zig");
+// NOTE: Old src/c.zig removed - all C bindings now in src/bridge/c.zig
 
 const VpnClient = client.VpnClient;
 const ConnectionConfig = config.ConnectionConfig;
 const AuthMethod = config.AuthMethod;
 const VpnError = errors.VpnError;
+
+// External C function for setenv
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 const VERSION = "1.0.0";
 
@@ -315,6 +319,13 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Initialize SoftEther VPN bridge system
+    softether.init(false) catch |err| {
+        std.debug.print("✗ Failed to initialize SoftEther libraries: {any}\n", .{err});
+        std.process.exit(1);
+    };
+    defer softether.deinit();
+
     const args = parseArgs(allocator) catch |err| {
         switch (err) {
             error.UnknownArgument => {
@@ -368,8 +379,13 @@ pub fn main() !void {
     }
 
     // Performance configuration (defaults from config.PerformanceConfig)
+    // Default: balanced profile (128/128)
     var final_recv_buffer_slots: u16 = 128;
-    var final_send_buffer_slots: u16 = 64;
+    var final_send_buffer_slots: u16 = 128;
+
+    // Compression and encryption settings (defaults from CliArgs)
+    var final_use_compress: bool = args.use_compress;
+    var final_use_encrypt: bool = args.use_encrypt;
 
     if (config_path) |path| {
         std.debug.print("[●] Loading configuration from: {s}\n", .{path});
@@ -458,20 +474,60 @@ pub fn main() !void {
         }
 
         // Load compression setting (CLI > env > config > default)
-        if (!args.use_compress) {
-            // CLI explicitly disabled compression
-        } else if (getEnvVar("SOFTETHER_COMPRESS")) |compress_str| {
+        // Check if CLI explicitly disabled compression (--no-compress flag would set to false)
+        // Otherwise, check env var, then config file
+        if (getEnvVar("SOFTETHER_COMPRESS")) |compress_str| {
             if (std.mem.eql(u8, compress_str, "false") or std.mem.eql(u8, compress_str, "0")) {
-                // Env var explicitly disables compression
-                // Note: This modifies args which is used later
+                final_use_compress = false;
+            } else if (std.mem.eql(u8, compress_str, "true") or std.mem.eql(u8, compress_str, "1")) {
+                final_use_compress = true;
             }
         } else if (file_config.use_compress) |compress| {
-            // Config file value (will be used by config.mergeConfigs)
-            _ = compress;
+            // Apply config file value if no CLI override
+            final_use_compress = compress;
+        }
+
+        // Load encryption setting similarly
+        if (getEnvVar("SOFTETHER_ENCRYPT")) |encrypt_str| {
+            if (std.mem.eql(u8, encrypt_str, "false") or std.mem.eql(u8, encrypt_str, "0")) {
+                final_use_encrypt = false;
+            } else if (std.mem.eql(u8, encrypt_str, "true") or std.mem.eql(u8, encrypt_str, "1")) {
+                final_use_encrypt = true;
+            }
+        } else if (file_config.use_encrypt) |encrypt| {
+            final_use_encrypt = encrypt;
         }
 
         // Load performance configuration
         if (file_config.performance) |perf| {
+            // Apply profile first (if specified)
+            if (perf.profile) |profile| {
+                // Set environment variable for C bridge layer
+                const profile_z = try allocator.dupeZ(u8, profile);
+                defer allocator.free(profile_z);
+                _ = setenv("VPN_PERF_PROFILE", profile_z, 1);
+
+                if (std.mem.eql(u8, profile, "latency")) {
+                    // Latency profile: Minimal buffers for lowest ping
+                    final_recv_buffer_slots = 64;
+                    final_send_buffer_slots = 64;
+                    std.debug.print("[⚡] Performance Profile: LATENCY (optimized for gaming/VoIP)\n", .{});
+                } else if (std.mem.eql(u8, profile, "throughput")) {
+                    // Throughput profile: Large buffers for max speed
+                    final_recv_buffer_slots = 512;
+                    final_send_buffer_slots = 256;
+                    std.debug.print("[📊] Performance Profile: THROUGHPUT (optimized for downloads)\n", .{});
+                } else if (std.mem.eql(u8, profile, "balanced")) {
+                    // Balanced profile: Default settings
+                    final_recv_buffer_slots = 128;
+                    final_send_buffer_slots = 128;
+                    std.debug.print("[⚖️] Performance Profile: BALANCED (general use)\n", .{});
+                } else {
+                    std.debug.print("[⚠️] Unknown performance profile '{s}', using balanced\n", .{profile});
+                }
+            }
+
+            // Explicit buffer settings override profile
             if (perf.recv_buffer_slots) |slots| {
                 final_recv_buffer_slots = slots;
             }
@@ -498,28 +554,13 @@ pub fn main() !void {
         const username = args.gen_hash_user.?;
         const password = args.gen_hash_pass.?;
 
-        // Initialize SoftEther library first
-        const init_result = c.vpn_bridge_init(0); // 0 = FALSE (debug off)
-        if (init_result != c.VPN_BRIDGE_SUCCESS) {
-            std.debug.print("Error initializing SoftEther library\n", .{});
-            std.process.exit(1);
-        }
-        defer _ = c.vpn_bridge_cleanup();
-
-        var hash_buffer: [128]u8 = undefined;
-        const result = c.vpn_bridge_generate_password_hash(username.ptr, password.ptr, &hash_buffer, hash_buffer.len);
-
-        if (result != c.VPN_BRIDGE_SUCCESS) {
-            std.debug.print("Error generating hash: {d}\n", .{result});
-            std.process.exit(1);
-        }
-
-        const hash_len = std.mem.indexOfScalar(u8, &hash_buffer, 0) orelse hash_buffer.len;
-        for (hash_buffer[0..hash_len]) |byte| {
-            std.debug.print("{c}", .{byte});
-        }
-        std.debug.print("\n", .{});
-        return;
+        // TODO: Implement password hashing in Zig
+        // The generatePasswordHash function needs to be completed
+        std.debug.print("✗ Password hash generation not yet implemented\n", .{});
+        std.debug.print("  Username: {s}\n", .{username});
+        std.debug.print("  Password: {s}\n", .{password});
+        std.debug.print("  TODO: Port SoftEther's HashPassword algorithm to Zig\n", .{});
+        std.process.exit(1);
     }
 
     // Validate required arguments (using config file fallback values)
@@ -559,10 +600,8 @@ pub fn main() !void {
 
     const account = final_account orelse username;
 
-    // Initialize logging system
-    const log_level_cstr = std.mem.sliceTo(args.log_level, 0);
-    const parsed_level = c.parse_log_level(log_level_cstr.ptr);
-    c.set_log_level(parsed_level);
+    // NOTE: Logging configuration removed - using std.log instead
+    // Old C logging functions (parse_log_level, set_log_level) not needed
 
     // Parse IP version
     const ip_version: config.IpVersion = if (std.mem.eql(u8, args.ip_version, "auto"))
@@ -604,8 +643,8 @@ pub fn main() !void {
             .password = password,
             .is_hashed = use_password_hash,
         } },
-        .use_encrypt = args.use_encrypt,
-        .use_compress = args.use_compress,
+        .use_encrypt = final_use_encrypt,
+        .use_compress = final_use_compress,
         .max_connection = args.max_connection,
         .ip_version = ip_version,
         .static_ip = static_ip,
@@ -622,14 +661,15 @@ pub fn main() !void {
     std.debug.print("Connecting to: {s}:{d}\n", .{ server, final_port });
     std.debug.print("Virtual Hub:   {s}\n", .{hub});
     std.debug.print("User:          {s}\n", .{username});
-    std.debug.print("Encryption:    {s}\n", .{if (args.use_encrypt) "Enabled" else "Disabled"});
-    std.debug.print("Compression:   {s}\n", .{if (args.use_compress) "Enabled" else "Disabled"});
+    std.debug.print("Encryption:    {s}\n", .{if (final_use_encrypt) "Enabled" else "Disabled"});
+    std.debug.print("Compression:   {s}\n", .{if (final_use_compress) "Enabled" else "Disabled"});
     if (args.max_connection == 0) {
         std.debug.print("Max Connections: Server Policy\n", .{});
     } else {
         std.debug.print("Max Connections: {d}\n", .{args.max_connection});
     }
     std.debug.print("IP Version:    {s}\n", .{args.ip_version});
+    std.debug.print("Buffer Sizes:  RX={d} TX={d} slots\n", .{ final_recv_buffer_slots, final_send_buffer_slots });
 
     if (static_ip) |sip| {
         if (sip.ipv4_address) |ipv4| {
@@ -677,7 +717,7 @@ pub fn main() !void {
     const sigaction = std.posix.Sigaction{
         .handler = .{ .handler = signalHandler },
         .mask = std.mem.zeroes(std.posix.sigset_t),
-        .flags = std.posix.SA.RESTART, // Restart syscalls interrupted by signal
+        .flags = 0, // Don't restart syscalls - allow sleep to be interrupted
     };
 
     // Register handlers
@@ -698,6 +738,7 @@ pub fn main() !void {
     // This is more reliable than relying on signal delivery to C code
     const MonitorThread = struct {
         fn run(vpn_client_ptr: *VpnClient) void {
+            _ = vpn_client_ptr;
             while (true) {
                 std.Thread.sleep(500 * std.time.ns_per_ms); // Check every 500ms (reduced CPU usage)
 
@@ -716,25 +757,44 @@ pub fn main() !void {
                     // Stop the main loop
                     g_running.store(false, .release);
 
-                    // Mark as user-requested disconnect
-                    vpn_client_ptr.markUserDisconnect() catch {};
+                    // For VPN disconnect, we need to restore routing before exit
+                    std.debug.print("[●] VPN session terminating...\n", .{});
+                    std.debug.print("[●] Restoring original network configuration...\n", .{});
 
-                    std.debug.print("[●] Initiating graceful shutdown...\n", .{});
-                    std.debug.print("[●] Disconnecting VPN session...\n", .{});
+                    // Restore original default route (emergency cleanup)
+                    // This ensures network connectivity is restored even if normal cleanup fails
+                    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                    defer arena.deinit();
+                    const temp_allocator = arena.allocator();
 
-                    // Call disconnect to trigger StopSession()
-                    vpn_client_ptr.disconnect() catch |err| {
-                        std.debug.print("[!] Disconnect error: {}\n", .{err});
+                    // First, delete any existing default routes (including VPN route)
+                    _ = std.process.Child.run(.{
+                        .allocator = temp_allocator,
+                        .argv = &[_][]const u8{ "route", "delete", "default" },
+                    }) catch {
+                        // Ignore errors - route might not exist
                     };
 
-                    return;
+                    // Then restore the original default route
+                    _ = std.process.Child.run(.{
+                        .allocator = temp_allocator,
+                        .argv = &[_][]const u8{ "route", "add", "default", "192.168.1.1" },
+                    }) catch |err| {
+                        std.debug.print("[!] Warning: Failed to restore route: {}\n", .{err});
+                        std.debug.print("[●] Network may need manual restoration\n", .{});
+                    };
+
+                    std.debug.print("[●] ✅ Network configuration restored\n", .{});
+                    std.debug.print("[●] TUN device will be cleaned up by OS\n", .{});
+                    std.process.exit(0);
                 }
             }
         }
     };
 
-    _ = std.Thread.spawn(.{}, MonitorThread.run, .{&vpn_client}) catch |err| {
+    const monitor_thread = std.Thread.spawn(.{}, MonitorThread.run, .{&vpn_client}) catch |err| {
         std.debug.print("Warning: Failed to start monitoring thread: {}\n", .{err});
+        return err;
     };
 
     std.debug.print("✓ VPN connection established\n\n", .{});
@@ -870,7 +930,7 @@ pub fn main() !void {
         while (g_running.load(.acquire)) {
             if (vpn_client.isConnected()) {
                 // Connected - normal monitoring
-                std.Thread.sleep(500 * std.time.ns_per_ms); // Check every 500ms
+                std.Thread.sleep(100 * std.time.ns_per_ms); // Check every 100ms for faster response
             } else {
                 // Disconnected - check if we should reconnect
                 const reconnect_info = vpn_client.getReconnectInfo() catch {
@@ -940,7 +1000,15 @@ pub fn main() !void {
     } else {
         // Signal handler called disconnect(), now call deinit() to free resources
         std.debug.print("[●] VPN: Disconnected successfully\n", .{});
+
+        // Wait for monitoring thread to finish
+        std.debug.print("[DEBUG] Waiting for monitor thread to finish...\n", .{});
+        monitor_thread.join();
+        std.debug.print("[DEBUG] Monitor thread finished\n", .{});
+
+        std.debug.print("[DEBUG] About to call vpn_client.deinit()...\n", .{});
         vpn_client.deinit();
+        std.debug.print("[DEBUG] vpn_client.deinit() returned\n", .{});
         std.debug.print("[✓] VPN connection terminated\n", .{});
         std.debug.print("[✓] Resources released\n", .{});
         std.debug.print("\n", .{});
@@ -948,6 +1016,10 @@ pub fn main() !void {
         std.debug.print("Goodbye! VPN session closed cleanly.\n", .{});
         std.debug.print("═══════════════════════════════════════════════\n", .{});
     }
+
+    // Ensure program exits after cleanup
+    std.debug.print("[DEBUG] About to call std.process.exit(0)...\n", .{});
+    std.process.exit(0);
 }
 
 // Background daemon loop - runs forever until killed

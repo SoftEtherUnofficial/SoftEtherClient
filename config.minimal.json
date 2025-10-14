@@ -6,7 +6,6 @@
   "password_hash": "generate-with-gen-hash-command",
   "use_compress": true,
   "performance": {
-    "recv_buffer_slots": 128,
-    "send_buffer_slots": 128
+    "profile": "latency"
   }
 }
