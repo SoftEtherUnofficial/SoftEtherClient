@@ -73,8 +73,9 @@ void zig_adapter_print_stats(ZigPacketAdapter *adapter);
 void zig_adapter_set_gateway(ZigPacketAdapter *adapter, uint32_t ip_network_order);
 void zig_adapter_set_gateway_mac(ZigPacketAdapter *adapter, const uint8_t mac[6]);
 
-// VPN routing configuration (ZIGSE-80: replaces C bridge routing hack)
+// VPN routing configuration
 bool zig_adapter_configure_routing(ZigPacketAdapter *adapter, uint32_t vpn_gateway, uint32_t vpn_server);
+bool zig_adapter_configure_routes(ZigPacketAdapter *adapter, uint32_t vpn_gateway_ip);
 
 // Synchronous I/O (for non-async operation)
 ssize_t zig_adapter_read_sync(ZigPacketAdapter *adapter, uint8_t *buffer, size_t buffer_len);

@@ -97,11 +97,36 @@ pub const ZigPacketAdapter = struct {
     // - Removed: read_thread, write_thread, monitor_thread, running, adaptive_manager
     // - Saved: ~170 lines of dead code eliminated
 
+    // ✅ WAVE 5 PHASE 2: DHCP state machine (moved from C)
+    dhcp_state: DhcpState = .init,
+    connection_start_time: i64 = 0,
+    last_dhcp_send_time: i64 = 0,
+    dhcp_retry_count: u32 = 0,
+    my_mac: [6]u8 = undefined,
+    dhcp_xid: u32 = 0,
+    offered_ip: u32 = 0,
+    dhcp_server_ip: u32 = 0,
+
+    // ✅ WAVE 5 PHASE 2: SoftEther session context (for callbacks)
+    session: ?*anyopaque = null, // SESSION* from C
+    cancel: ?*anyopaque = null, // CANCEL* from C
+    halt: bool = false,
+
     // Statistics
     stats: Stats,
 
     // Debug counters
     debug_read_count: usize = 0,
+
+    /// DHCP state machine states (Wave 4 compatibility)
+    pub const DhcpState = enum(u8) {
+        init = 0,
+        arp_announce_sent = 1,
+        discover_sent = 2,
+        offer_received = 3,
+        request_sent = 4,
+        configured = 5,
+    };
 
     pub const Stats = struct {
         packets_read: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -182,6 +207,27 @@ pub const ZigPacketAdapter = struct {
         errdefer tun_adapter.close();
         logInfo("TUN device opened: {s}", .{tun_adapter.getDeviceName()});
 
+        // ✅ WAVE 5 PHASE 2: Initialize DHCP state machine
+        const now_ns = std.time.nanoTimestamp();
+        const now_ms = @divTrunc(now_ns, 1_000_000);
+
+        // Generate MAC address (SoftEther format: 02:00:5E:XX:XX:XX)
+        const seed = @as(u64, @truncate(@as(u128, @bitCast(now_ns))));
+        var prng = std.Random.DefaultPrng.init(seed);
+        const random = prng.random();
+        var mac: [6]u8 = undefined;
+        mac[0] = 0x02; // Locally administered
+        mac[1] = 0x00;
+        mac[2] = 0x5E; // SoftEther prefix
+        mac[3] = random.int(u8);
+        mac[4] = random.int(u8);
+        mac[5] = random.int(u8);
+
+        const xid = @as(u32, @truncate(seed));
+
+        std.debug.print("[DEBUG] ZigPacketAdapter.init: allocated adapter at {*}\n", .{self});
+        std.debug.print("[DEBUG] ZigPacketAdapter.init: tun_adapter pointer to assign = {*}\n", .{tun_adapter});
+
         self.* = .{
             .allocator = allocator,
             .config = config,
@@ -189,11 +235,35 @@ pub const ZigPacketAdapter = struct {
             .recv_queue = recv_queue,
             .send_queue = send_queue,
             .packet_pool = packet_pool,
-            .active_buffers = std.AutoHashMap(usize, []u8).init(allocator), // ✅ ZIGSE-19
+            .active_buffers = std.AutoHashMap(usize, []u8).init(allocator),
             .stats = .{},
+            .dhcp_state = .init,
+            .connection_start_time = @as(i64, @intCast(now_ms)),
+            .last_dhcp_send_time = 0,
+            .dhcp_retry_count = 0,
+            .my_mac = mac,
+            .dhcp_xid = xid,
+            .offered_ip = 0,
+            .dhcp_server_ip = 0,
+            .session = null,
+            .cancel = null,
+            .halt = false,
+            .debug_read_count = 0,
         };
 
+        std.debug.print("[DEBUG] ZigPacketAdapter.init: after assignment, self.tun_adapter = {*}\n", .{self.tun_adapter});
+
+        logInfo("🔄 DHCP initialized: xid=0x{x:0>8}, MAC={x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}", .{
+            xid, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+        });
+
         logInfo("Adapter initialized (recv={d} slots, send={d} slots)", .{ config.recv_queue_size, config.send_queue_size });
+
+        // ✅ WAVE 5 PHASE 1: DHCP will be started by C state machine with proper timing
+        // Old: Started immediately → Server didn't respond (needs Gratuitous ARP first!)
+        // New: C layer controls timing (2s delay → GARP → 300ms → DHCP DISCOVER)
+        logInfo("Adapter ready (DHCP will start after 2s with Gratuitous ARP)", .{});
+
         return self;
     }
 
@@ -256,6 +326,27 @@ pub const ZigPacketAdapter = struct {
 
     /// Put packet for transmission
     pub fn putPacket(self: *ZigPacketAdapter, data: []const u8) bool {
+        // ✅ WAVE 5 PHASE 1: Check for DHCP packets from VPN server
+        // If this is a DHCP OFFER or ACK, process it with translator
+        if (data.len >= 14 + 20 + 8 + 240) { // Ethernet + IP + UDP + DHCP minimum
+            const ethertype = (@as(u16, data[12]) << 8) | data[13];
+            if (ethertype == 0x0800) { // IPv4
+                const ip_proto = data[14 + 9]; // IP protocol at offset 23
+                if (ip_proto == 17) { // UDP
+                    const udp_dest_port = (@as(u16, data[14 + 20 + 2]) << 8) | data[14 + 20 + 3];
+                    if (udp_dest_port == 68) { // DHCP client port
+                        // This is a DHCP packet! Process it
+                        logInfo("📬 Received DHCP packet from VPN server, len={d} bytes", .{data.len});
+                        self.tun_adapter.translator.processDhcpPacket(data) catch |err| {
+                            logInfo("⚠️  DHCP processing error: {}", .{err});
+                        };
+                        // Don't write DHCP packets to TUN device (they're Layer 2 only)
+                        return true;
+                    }
+                }
+            }
+        }
+
         // Log ALL incoming packets for debugging
         if (data.len >= 34) {
             const ip_proto = data[14 + 9]; // IP protocol at offset 23 (14 Ethernet + 9 IP header)
@@ -382,90 +473,112 @@ export fn zig_adapter_start(adapter: *ZigPacketAdapter) bool {
 /// **CRITICAL**: TUN devices return raw IP packets, but SoftEther expects Ethernet frames!
 /// We must ADD a 14-byte Ethernet header to each IP packet read from TUN.
 export fn zig_adapter_read_sync(adapter: *ZigPacketAdapter, buffer: [*]u8, buffer_len: usize) isize {
-    // Read directly from TUN device (non-blocking)
-    const fd = adapter.tun_adapter.device.fd;
+    // ✅ WAVE 5 PHASE 1: Check for pending DHCP packets first
+    // ZigTapTun's translator generates DHCP packets that need to be sent to VPN server
+    if (adapter.tun_adapter.translator.hasPendingDhcpPacket()) {
+        if (adapter.tun_adapter.translator.popDhcpPacket()) |dhcp_frame| {
+            defer adapter.allocator.free(dhcp_frame);
 
-    // Use a temp buffer to read IP packet (we'll prepend Ethernet header later)
-    var temp_buf: [2048]u8 = undefined;
-
-    // **CRITICAL FOR MACOS TUN**: Use poll() with timeout to check if TUN is readable
-    // Without this, TUN device "freezes" after first ~10 reads (returns WouldBlock forever)
-    // This is a known macOS utun quirk - the device needs to be polled to stay "alive"
-    var fds = [_]std.posix.pollfd{
-        .{
-            .fd = fd,
-            .events = std.posix.POLL.IN, // Wait for readable
-            .revents = 0,
-        },
-    };
-
-    // Poll with 1ms timeout for better responsiveness (was 0ms)
-    // ZIGSE-25: Small timeout prevents missing packets during bursts
-    const ready_count = std.posix.poll(&fds, 1) catch |err| {
-        std.debug.print("[zig_adapter_read_sync] ⚠️  Poll error: {}\n", .{err});
-        return -1;
-    };
-
-    // If no data available, return immediately (this is normal - polled frequently)
-    if (ready_count == 0 or (fds[0].revents & std.posix.POLL.IN) == 0) {
-        return 0; // No data ready
-    }
-
-    // Now read - TUN device is ready with data
-    const bytes_read = std.posix.read(fd, temp_buf[0..]) catch |err| {
-        if (err == error.WouldBlock) {
-            // Should not happen after poll() said readable, but handle it anyway
-            return 0;
+            if (dhcp_frame.len <= buffer_len) {
+                @memcpy(buffer[0..dhcp_frame.len], dhcp_frame);
+                return @intCast(dhcp_frame.len);
+            } else {
+                // Frame too large - skip it
+                return 0;
+            }
         }
-        return -1;
+    } // Check for pending ARP replies (existing functionality)
+    if (adapter.tun_adapter.translator.hasPendingArpReply()) {
+        if (adapter.tun_adapter.translator.popArpReply()) |arp_reply| {
+            defer adapter.allocator.free(arp_reply);
+
+            if (arp_reply.len <= buffer_len) {
+                @memcpy(buffer[0..arp_reply.len], arp_reply);
+                return @intCast(arp_reply.len);
+            }
+        }
+    }
+
+    // **READ FROM TUN**: Get OUTGOING packets (OS → TUN → VPN)
+    // Use readEthernet() which reads IP packets from TUN and converts to Ethernet frames
+    var temp_buf: [2048]u8 = undefined;
+    const eth_frame = adapter.tun_adapter.readEthernet(&temp_buf) catch |err| {
+        // No packet available or error
+        if (err == error.WouldBlock) {
+            return 0; // Normal - no packets to send
+        }
+        return 0; // Other errors - just return no packet
     };
 
-    if (bytes_read == 0) return 0;
-    if (bytes_read < 4) return 0; // Too small - need at least 4-byte AF_INET header
-
-    // Skip 4-byte AF_INET header from macOS utun to get raw IP packet
-    const ip_packet_start = 4;
-    const ip_packet_len = bytes_read - ip_packet_start;
-
-    if (ip_packet_len <= 0) return 0;
-
-    // Check IP version (first nibble of IP packet)
-    const ip_version = (temp_buf[ip_packet_start] >> 4) & 0x0F;
-
-    // **BUILD ETHERNET FRAME**: SoftEther expects [Ethernet header][IP packet]
-    // Ethernet header: [6 bytes dest MAC][6 bytes src MAC][2 bytes EtherType]
-    const ETHERNET_HEADER_SIZE = 14;
-    const ethernet_frame_len = ETHERNET_HEADER_SIZE + ip_packet_len;
-
-    if (ethernet_frame_len > buffer_len) {
-        return 0; // Frame too large for buffer
+    // Got an Ethernet frame to send to VPN server
+    if (eth_frame.len == 0) return 0;
+    if (eth_frame.len > buffer_len) {
+        std.log.warn("Packet too large: {} > {}", .{ eth_frame.len, buffer_len });
+        return 0;
     }
 
-    // Build Ethernet header
-    const ethertype: u16 = if (ip_version == 4) 0x0800 else if (ip_version == 6) 0x86DD else 0x0000;
+    // Copy Ethernet frame to output buffer
+    @memcpy(buffer[0..eth_frame.len], eth_frame);
+    return @intCast(eth_frame.len);
+}
 
-    if (ethertype == 0) {
-        return 0; // Unknown IP version, skip packet
-    }
+// LEGACY CODE BELOW - KEPT FOR REFERENCE BUT NOT USED
+// This was the old manual packet reading code that had MAC address issues
+fn _unused_legacy_read_code() void {
+    _ = struct {
+        // Read directly from TUN device (non-blocking)
+        // const fd = adapter.tun_adapter.device.fd;
 
-    // Dest MAC: Use gateway MAC if learned, otherwise broadcast (FF:FF:FF:FF:FF:FF)
-    // For inbound packets, dest should be our MAC, but we use gateway MAC for routing
-    if (adapter.tun_adapter.translator.gateway_mac) |gw_mac| {
-        @memcpy(buffer[0..6], &gw_mac);
-    } else {
-        // Broadcast MAC if gateway not learned yet
-        @memset(buffer[0..6], 0xFF);
-    }
+        // Use a temp buffer to read IP packet (we'll prepend Ethernet header later)
+        // var temp_buf: [2048]u8 = undefined;
 
-    // Src MAC: Our MAC address (from translator options)
-    @memcpy(buffer[6..12], &adapter.tun_adapter.translator.options.our_mac); // EtherType (big-endian)
-    buffer[12] = @intCast((ethertype >> 8) & 0xFF);
-    buffer[13] = @intCast(ethertype & 0xFF);
+        // **CRITICAL FOR MACOS TUN**: Use poll() with timeout to check if TUN is readable
+        // Without this, TUN device "freezes" after first ~10 reads (returns WouldBlock forever)
+        // This is a known macOS utun quirk - the device needs to be polled to stay "alive"
+        // var fds = [_]std.posix.pollfd{
+        //     .{
+        //         .fd = fd,
+        //         .events = std.posix.POLL.IN, // Wait for readable
+        //         .revents = 0,
+        //     },
+        // };
 
-    // Copy IP packet after Ethernet header
-    @memcpy(buffer[14..ethernet_frame_len], temp_buf[ip_packet_start..(ip_packet_start + ip_packet_len)]);
+        // Poll with 1ms timeout for better responsiveness (was 0ms)
+        // ZIGSE-25: Small timeout prevents missing packets during bursts
+        // const ready_count = std.posix.poll(&fds, 1) catch |err| {
+        //     std.debug.print("[zig_adapter_read_sync] ⚠️  Poll error: {}\n", .{err});
+        //     return -1;
+        // };
 
-    return @intCast(ethernet_frame_len);
+        // If no data available, return immediately (this is normal - polled frequently)
+        // if (ready_count == 0 or (fds[0].revents & std.posix.POLL.IN) == 0) {
+        //     return 0; // No data ready
+        // }
+
+        // Now read - TUN device is ready with data
+        // const bytes_read = std.posix.read(fd, temp_buf[0..]) catch |err| {
+        //     if (err == error.WouldBlock) {
+        //         // Should not happen after poll() said readable, but handle it anyway
+        //         return 0;
+        //     }
+        //     return -1;
+        // };
+
+        // if (bytes_read == 0) return 0;
+        // if (bytes_read < 4) return 0; // Too small - need at least 4-byte AF_INET header
+
+        // Skip 4-byte AF_INET header from macOS utun to get raw IP packet
+        // const ip_packet_start = 4;
+        // const ip_packet_len = bytes_read - ip_packet_start;
+
+        // if (ip_packet_len <= 0) return 0;
+
+        // Check IP version (first nibble of IP packet)
+        // const ip_version = (temp_buf[ip_packet_start] >> 4) & 0x0F;
+
+        // **BUILD ETHERNET FRAME**: SoftEther expects [Ethernet header][IP packet]
+        // Ethernet header: [6 bytes dest MAC][6 bytes src MAC][2 bytes EtherType]
+    };
 }
 
 /// Synchronous write to TUN device (called from PutPacket)
@@ -601,13 +714,13 @@ export fn zig_adapter_print_stats(adapter: *ZigPacketAdapter) void {
     stats.print();
 }
 
-export fn zig_adapter_get_device_name(adapter: *ZigPacketAdapter, out_buffer: [*]u8, buffer_len: usize) usize {
+export fn zig_adapter_get_device_name(adapter: *ZigPacketAdapter, buffer: [*]u8, buffer_len: u64) u64 {
     if (buffer_len == 0) return 0;
 
     const device_name = adapter.tun_adapter.getDeviceName();
     const copy_len = @min(device_name.len, buffer_len - 1);
-    @memcpy(out_buffer[0..copy_len], device_name[0..copy_len]);
-    out_buffer[copy_len] = 0; // Null terminate
+    @memcpy(buffer[0..copy_len], device_name[0..copy_len]);
+    buffer[copy_len] = 0; // Null terminate
 
     return copy_len;
 }
@@ -642,6 +755,39 @@ export fn zig_adapter_set_gateway_mac(adapter: *ZigPacketAdapter, mac: [*c]const
         mac_array[0], mac_array[1], mac_array[2],
         mac_array[3], mac_array[4], mac_array[5],
     });
+}
+
+/// Configure VPN routing (replace default gateway with VPN gateway)
+/// vpn_gateway_ip: VPN gateway IP in host byte order (e.g., 0x0A150001 for 10.21.0.1)
+/// Returns true on success, false on failure
+export fn zig_adapter_configure_routes(adapter: *ZigPacketAdapter, vpn_gateway_ip: u32) bool {
+    // Check if route_manager is available (macOS only)
+    if (adapter.tun_adapter.route_manager) |route_mgr| {
+        // Convert IP from host byte order to network byte order (big-endian)
+        const vpn_gw: [4]u8 = .{
+            @intCast((vpn_gateway_ip >> 24) & 0xFF),
+            @intCast((vpn_gateway_ip >> 16) & 0xFF),
+            @intCast((vpn_gateway_ip >> 8) & 0xFF),
+            @intCast(vpn_gateway_ip & 0xFF),
+        };
+
+        // Replace default route with VPN gateway
+        route_mgr.replaceDefaultGateway(vpn_gw) catch |err| {
+            logError("Failed to configure routes: {any}", .{err});
+            return false;
+        };
+
+        logInfo("✅ Routes configured: all traffic now goes through VPN gateway {d}.{d}.{d}.{d}", .{
+            vpn_gw[0],
+            vpn_gw[1],
+            vpn_gw[2],
+            vpn_gw[3],
+        });
+        return true;
+    }
+
+    std.log.warn("Route management not available on this platform", .{});
+    return false;
 }
 
 /// Configure TUN interface with IP address
