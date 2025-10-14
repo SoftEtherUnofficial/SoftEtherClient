@@ -603,16 +603,35 @@ The SoftEther VPN components are licensed under Apache License 2.0 by the SoftEt
 
 ## Documentation
 
-### Server Mode Comparison
-- **[DOCS_INDEX.md](DOCS_INDEX.md)** - Documentation navigation and overview
-- **[SECURENAT_VS_LOCALBRIDGE.md](SECURENAT_VS_LOCALBRIDGE.md)** - Complete technical comparison of server modes
-- **[LOCALBRIDGE_QUICKREF.md](LOCALBRIDGE_QUICKREF.md)** - Quick reference for Local Bridge implementation
-- **[PACKET_FLOW_DIAGRAMS.md](PACKET_FLOW_DIAGRAMS.md)** - Visual diagrams of packet flows
+### Getting Started
+- [QUICKSTART.md](QUICKSTART.md) - Get started quickly
+- [QUICKREF.md](QUICKREF.md) - Quick reference guide
+- [docs/CONFIGURATION.md](docs/CONFIGURATION.md) - Configuration guide
 
-### Architecture
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Cross-platform architecture
-- **[PROGRESS.md](PROGRESS.md)** - Implementation progress and roadmap
-- **[ZigTapTun/](ZigTapTun/)** - Layer 2/3 translation library
+### Architecture & Design
+- [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture
+- [docs/ARCHITECTURE_AND_DEPENDENCIES.md](docs/ARCHITECTURE_AND_DEPENDENCIES.md) - Pure Zig architecture & dependencies
+- [deps/taptun/PROJECT_SUMMARY.md](deps/taptun/PROJECT_SUMMARY.md) - ZigTapTun library overview
+- [PROGRESS.md](PROGRESS.md) - Implementation progress and roadmap
+
+### Migration to Pure Zig 🚀
+- [docs/MIGRATION_EXECUTIVE_SUMMARY.md](docs/MIGRATION_EXECUTIVE_SUMMARY.md) - **START HERE** - Executive summary
+- [docs/ZIG_PURE_CLIENT_FEASIBILITY.md](docs/ZIG_PURE_CLIENT_FEASIBILITY.md) - Detailed feasibility analysis
+- [docs/ZIG_MIGRATION_ROADMAP.md](docs/ZIG_MIGRATION_ROADMAP.md) - Month-by-month execution plan
+- [RUST_TO_ZIG_MIGRATION.md](RUST_TO_ZIG_MIGRATION.md) - Historical context (Rust → Zig)
+
+### Platform Support
+- [CROSS_PLATFORM.md](CROSS_PLATFORM.md) - Cross-platform build guide
+- [IOS_BUILD_GUIDE.md](IOS_BUILD_GUIDE.md) - iOS build instructions
+
+### Server Mode Comparison
+- [DOCS_INDEX.md](DOCS_INDEX.md) - Documentation navigation and overview
+- [SECURENAT_VS_LOCALBRIDGE.md](SECURENAT_VS_LOCALBRIDGE.md) - Complete technical comparison of server modes
+- [LOCALBRIDGE_QUICKREF.md](LOCALBRIDGE_QUICKREF.md) - Quick reference for Local Bridge implementation
+- [PACKET_FLOW_DIAGRAMS.md](PACKET_FLOW_DIAGRAMS.md) - Visual diagrams of packet flows
+
+### Security
+- [SECURITY.md](SECURITY.md) - Security best practices
 
 ---
 

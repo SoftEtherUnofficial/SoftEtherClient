@@ -155,7 +155,7 @@ pub fn build(b: *std.Build) void {
         // Bridge wrapper layer
         // NOTE: softether_bridge.c REMOVED - fully replaced by src/bridge/softether.zig
         "src/bridge/unix_bridge.c", // Stub/compatibility layer for C code dependencies
-        "src/bridge/tick64_macos.c", // Time functions - compatibility shim
+        // NOTE: tick64_macos.c REMOVED - fully replaced by src/platform/time.zig (exports C FFI)
         "src/bridge/security_utils.c", // Security functions - compatibility shim
         "src/bridge/packet_utils.c", // Packet builders - compatibility shim
         "src/bridge/session_helper.c", // Session field access helpers
@@ -325,6 +325,19 @@ pub fn build(b: *std.Build) void {
         .root_module = taptun_wrapper_module,
     });
     cli.addObject(taptun_wrapper);
+
+    // Add platform time module (replaces tick64_macos.c)
+    const time_module = b.createModule(.{
+        .root_source_file = b.path("src/platform/time.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const time_obj = b.addObject(.{
+        .name = "platform_time",
+        .root_module = time_module,
+    });
+    cli.addObject(time_obj);
 
     // Add Zig packet adapter (Phase 1) - compiled as static object
     const packet_adapter_module = b.createModule(.{
