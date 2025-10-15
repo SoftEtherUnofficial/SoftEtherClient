@@ -330,6 +330,17 @@ int iconv_close (iconv_t __cd);
 #endif	// AF_INET6
 #endif	// WIN32
 
+// Windows headers must be included before basic types to avoid conflicts
+#ifdef WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
+#include <windows.h>
+#endif
+
 // Basic type declaration
 #include <Mayaqua/MayaType.h>
 

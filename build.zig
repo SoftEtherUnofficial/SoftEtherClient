@@ -1,16 +1,6 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    // Print build banner
-    std.debug.print("\n", .{});
-    std.debug.print("╔══════════════════════════════════════════════════════════════╗\n", .{});
-    std.debug.print("║           SoftEtherZig - Pure Zig VPN Client                ║\n", .{});
-    std.debug.print("║              Progressive C to Zig Migration                 ║\n", .{});
-    std.debug.print("║         Phase 3: Protocol Layer - COMPLETE ✅                ║\n", .{});
-    std.debug.print("║    VPN ✓  Packet ✓  Crypto ✓  Integration ✓  (REAL!)      ║\n", .{});
-    std.debug.print("╚══════════════════════════════════════════════════════════════╝\n", .{});
-    std.debug.print("\n", .{});
-
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{
         .preferred_optimize_mode = .ReleaseFast,
@@ -127,14 +117,6 @@ pub fn build(b: *std.Build) void {
 
     const c_flags = c_flags_list.items;
 
-    // Print build configuration
-    std.debug.print("Build Configuration:\n", .{});
-    std.debug.print("  Target: {s}\n", .{@tagName(target_os)});
-    std.debug.print("  Optimize: {s}\n", .{@tagName(optimize)});
-    std.debug.print("  SSL: {s}\n", .{if (use_system_ssl) "system" else "OpenSSL-Zig"});
-    std.debug.print("  Packet Adapter: {s}\n", .{if (use_zig_adapter) "Zig (native)" else "C (legacy)"});
-    std.debug.print("\n", .{});
-
     // Platform-specific packet adapter and timing files
     const packet_adapter_src = switch (target.result.os.tag) {
         .ios => "src/bridge/platform/packet_adapter_ios_stub.c",
@@ -144,30 +126,30 @@ pub fn build(b: *std.Build) void {
         else => "src/bridge/platform/packet_adapter_linux.c", // fallback
     };
 
-    // Note: tick64 now implemented in src/platform/time.zig (pure Zig)
+    // Platform-specific timing files
+    const timing_src = switch (target.result.os.tag) {
+        .macos, .ios => "src/bridge/tick64_macos.c",
+        else => null, // Note: tick64 now implemented in src/platform/time.zig (pure Zig)
+    };
 
     // ============================================
     // C Source Files
     // ============================================
 
-    // Full source list (includes server components)
-    const c_sources_full = &[_][]const u8{
+    // Client-only source list (server components removed)
+    const c_sources_client_base = &[_][]const u8{
         // Bridge wrapper layer
-        // NOTE: softether_bridge.c REMOVED - fully replaced by src/bridge/softether.zig
         "src/bridge/unix_bridge.c", // Stub/compatibility layer for C code dependencies
-        "src/bridge/tick64_macos.c", // Time functions - compatibility shim
         "src/bridge/security_utils.c", // Security functions - compatibility shim
         "src/bridge/packet_utils.c", // Packet builders - compatibility shim
         "src/bridge/session_helper.c", // Session field access helpers
-        // Note: Core implementations in src/platform/*.zig (pure Zig)
         packet_adapter_src,
         "src/bridge/zig_packet_adapter.c",
         "src/bridge/Mayaqua/logging.c",
-        // Note: security_utils now in src/security/utils.zig (pure Zig)
         "src/bridge/Cedar/client_bridge.c",
         "src/bridge/zig_bridge.c",
 
-        // Mayaqua layer (utility functions) - LOCAL COPIES
+        // Essential Mayaqua layer (utility functions)
         "src/bridge/Mayaqua/Mayaqua.c",
         "src/bridge/Mayaqua/Memory.c",
         "src/bridge/Mayaqua/Str.c",
@@ -175,65 +157,36 @@ pub fn build(b: *std.Build) void {
         "src/bridge/Mayaqua/OS.c",
         "src/bridge/Mayaqua/FileIO.c",
         "src/bridge/Mayaqua/Kernel.c",
-        "src/bridge/Mayaqua/Network.c",
         "src/bridge/Mayaqua/TcpIp.c",
-        "src/bridge/Mayaqua/Encrypt.c",
-        "src/bridge/Mayaqua/Secure.c",
         "src/bridge/Mayaqua/Pack.c",
         "src/bridge/Mayaqua/Cfg.c",
         "src/bridge/Mayaqua/Table.c",
         "src/bridge/Mayaqua/Tracking.c",
-        "src/bridge/Mayaqua/Microsoft.c",
         "src/bridge/Mayaqua/Internat.c",
 
-        // Cedar layer (VPN protocol) - LOCAL COPIES
+        // Essential Cedar layer (client VPN protocol only)
         "src/bridge/Cedar/Cedar.c",
         "src/bridge/Cedar/Client.c",
         "src/bridge/Cedar/Protocol.c",
         "src/bridge/Cedar/Connection.c",
         "src/bridge/Cedar/Session.c",
         "src/bridge/Cedar/Account.c",
-        "src/bridge/Cedar/Admin.c",
-        "src/bridge/Cedar/Command.c",
-        "src/bridge/Cedar/Hub.c",
-        "src/bridge/Cedar/Listener.c",
-        "src/bridge/Cedar/Logging.c",
-        "src/bridge/Cedar/Sam.c",
-        "src/bridge/Cedar/Server.c",
         "src/bridge/Cedar/Virtual.c",
-        "src/bridge/Cedar/Link.c",
-        "src/bridge/Cedar/SecureNAT.c",
         "src/bridge/Cedar/NullLan.c",
-        "src/bridge/Cedar/Bridge.c",
-        "src/bridge/Cedar/BridgeUnix.c",
-        "src/bridge/Cedar/Nat.c",
-        "src/bridge/Cedar/UdpAccel.c",
-        "src/bridge/Cedar/Database.c",
-        "src/bridge/Cedar/Remote.c",
-        "src/bridge/Cedar/DDNS.c",
-        "src/bridge/Cedar/AzureClient.c",
-        "src/bridge/Cedar/AzureServer.c",
-        "src/bridge/Cedar/Radius.c",
-        "src/bridge/Cedar/Console.c",
-        "src/bridge/Cedar/Layer3.c",
-        "src/bridge/Cedar/Interop_OpenVPN.c",
-        "src/bridge/Cedar/Interop_SSTP.c",
-        "src/bridge/Cedar/IPsec.c",
-        "src/bridge/Cedar/IPsec_IKE.c",
-        "src/bridge/Cedar/IPsec_IkePacket.c",
-        "src/bridge/Cedar/IPsec_L2TP.c",
-        "src/bridge/Cedar/IPsec_PPP.c",
-        "src/bridge/Cedar/IPsec_EtherIP.c",
-        "src/bridge/Cedar/IPsec_IPC.c",
-        "src/bridge/Cedar/EtherLog.c",
-        "src/bridge/Cedar/WebUI.c",
-        "src/bridge/Cedar/WaterMark.c",
     };
 
-    // Use full source list - Client/server code is tightly coupled.
-    // Can't remove server files without breaking client functionality.
-    // Strategy: Keep all C code, port to Zig with proper separation.
-    const c_sources = c_sources_full;
+    // Use client-only source list with platform-specific files
+    const c_sources = if (target_os == .macos or target_os == .ios) blk: {
+        // macOS/iOS needs timing file
+        const sources = c_sources_client_base ++ &[_][]const u8{timing_src.?};
+        break :blk sources;
+    } else c_sources_client_base;
+
+    // TODO: Add these back after fixing Windows issues:
+    // - Network.c (Windows API type mismatches)
+    // - Encrypt.c (Missing includes)
+    // - Secure.c (PKCS11 dllimport issues)
+    // - Microsoft.c (Windows-specific API issues)
 
     // NativeStack.c uses system() which is unavailable on iOS
     // It's only needed for server-side routing, not client VPN
@@ -349,7 +302,7 @@ pub fn build(b: *std.Build) void {
         .root_module = packet_adapter_module,
     });
     packet_adapter_obj.addIncludePath(b.path("src/bridge"));
-    
+
     // Link libc for C imports and allocator functions
     packet_adapter_obj.linkLibC();
 
@@ -384,6 +337,10 @@ pub fn build(b: *std.Build) void {
         cli.linkSystemLibrary("ws2_32");
         cli.linkSystemLibrary("iphlpapi");
         cli.linkSystemLibrary("advapi32");
+        cli.linkSystemLibrary("kernel32");
+        cli.linkSystemLibrary("user32");
+        cli.linkSystemLibrary("shell32");
+        // Note: zlib may not be available on Windows
     }
 
     b.installArtifact(cli);

@@ -11,7 +11,14 @@
 #include "Cedar/Cedar.h"
 
 // System headers needed
+#ifdef _WIN32
+#include <windows.h>
+#include <process.h>
+#else
 #include <sys/stat.h>
+#include <pthread.h>
+#include <unistd.h>
+#endif
 #include <errno.h>
 
 //============================================================================
@@ -62,22 +69,36 @@ static LOCK *stub_NewLock(void) {
     LOCK *lock = (LOCK *)ZeroMalloc(sizeof(LOCK));
     if (!lock) return NULL;
     
-    // Allocate the pthread mutex using malloc (pthread library manages this)
+#ifdef _WIN32
+    // Windows: Use CRITICAL_SECTION
+    CRITICAL_SECTION *cs = (CRITICAL_SECTION *)malloc(sizeof(CRITICAL_SECTION));
+    if (!cs) {
+        Free(lock);
+        return NULL;
+    }
+    InitializeCriticalSection(cs);
+    lock->pData = cs;
+#else
+    // Unix: Use pthread mutex
     pthread_mutex_t *mutex = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
     if (!mutex) {
         Free(lock);
         return NULL;
     }
-    
     pthread_mutex_init(mutex, NULL);
     lock->pData = mutex;  // Store the pointer to the mutex
+#endif
     lock->Ready = true;
     return lock;
 }
 
 static bool stub_Lock(LOCK *lock) { 
     if (lock && lock->pData) {
+#ifdef _WIN32
+        EnterCriticalSection((CRITICAL_SECTION *)lock->pData);
+#else
         pthread_mutex_lock((pthread_mutex_t *)lock->pData);
+#endif
         return true;
     }
     return false;
@@ -85,21 +106,62 @@ static bool stub_Lock(LOCK *lock) {
 
 static void stub_Unlock(LOCK *lock) { 
     if (lock && lock->pData) {
+#ifdef _WIN32
+        LeaveCriticalSection((CRITICAL_SECTION *)lock->pData);
+#else
         pthread_mutex_unlock((pthread_mutex_t *)lock->pData);
+#endif
     }
 }
 
 static void stub_DeleteLock(LOCK *lock) {
     if (lock) {
         if (lock->pData) {
+#ifdef _WIN32
+            DeleteCriticalSection((CRITICAL_SECTION *)lock->pData);
+#else
             pthread_mutex_destroy((pthread_mutex_t *)lock->pData);
-            free(lock->pData);  // pthread_mutex_t was allocated with malloc
+#endif
+            free(lock->pData);  // Was allocated with malloc
         }
         Free(lock);  // LOCK was allocated with ZeroMalloc, use Free()
     }
 }
 
-// Real pthread-based event implementation
+// Cross-platform event implementation
+#ifdef OS_WIN32
+// Windows implementation using Event objects
+
+static void stub_InitEvent(EVENT *event) {
+    if (!event) return;
+    HANDLE h = CreateEvent(NULL, FALSE, FALSE, NULL); // Auto-reset event
+    event->pData = h;
+}
+
+static void stub_SetEvent(EVENT *event) {
+    if (!event || !event->pData) return;
+    SetEvent((HANDLE)event->pData);
+}
+
+static void stub_ResetEvent(EVENT *event) {
+    if (!event || !event->pData) return;
+    ResetEvent((HANDLE)event->pData);
+}
+
+static bool stub_WaitEvent(EVENT *event, UINT timeout) {
+    if (!event || !event->pData) return false;
+    DWORD result = WaitForSingleObject((HANDLE)event->pData, timeout);
+    return (result == WAIT_OBJECT_0);
+}
+
+static void stub_FreeEvent(EVENT *event) {
+    if (!event || !event->pData) return;
+    CloseHandle((HANDLE)event->pData);
+    event->pData = NULL;
+}
+
+#else
+// Unix implementation using pthread condition variables
 typedef struct {
     pthread_mutex_t mutex;
     pthread_cond_t cond;
@@ -112,13 +174,13 @@ static void stub_InitEvent(EVENT *event) {
     if (!ev) return;
     pthread_mutex_init(&ev->mutex, NULL);
     pthread_cond_init(&ev->cond, NULL);
-    ev->signaled = false;  // FIXED: Consistent field name
-    event->pData = ev;  // FIXED: Use pData field
+    ev->signaled = false;
+    event->pData = ev;
 }
 
 static void stub_SetEvent(EVENT *event) {
     if (!event) return;
-    PTHREAD_EVENT *ev = (PTHREAD_EVENT *)event->pData;  // FIXED: Use pData field
+    PTHREAD_EVENT *ev = (PTHREAD_EVENT *)event->pData;
     if (ev) {
         pthread_mutex_lock(&ev->mutex);
         ev->signaled = true;
@@ -129,7 +191,7 @@ static void stub_SetEvent(EVENT *event) {
 
 static void stub_ResetEvent(EVENT *event) {
     if (!event) return;
-    PTHREAD_EVENT *ev = (PTHREAD_EVENT *)event->pData;  // FIXED: Use pData field
+    PTHREAD_EVENT *ev = (PTHREAD_EVENT *)event->pData;
     if (ev) {
         pthread_mutex_lock(&ev->mutex);
         ev->signaled = false;
@@ -139,7 +201,7 @@ static void stub_ResetEvent(EVENT *event) {
 
 static bool stub_WaitEvent(EVENT *event, UINT timeout) {
     if (!event) return false;
-    PTHREAD_EVENT *ev = (PTHREAD_EVENT *)event->pData;  // FIXED: Use pData field
+    PTHREAD_EVENT *ev = (PTHREAD_EVENT *)event->pData;
     if (!ev) return false;
     
     pthread_mutex_lock(&ev->mutex);
@@ -177,18 +239,43 @@ static bool stub_WaitEvent(EVENT *event, UINT timeout) {
 
 static void stub_FreeEvent(EVENT *event) {
     if (!event) return;
-    PTHREAD_EVENT *ev = (PTHREAD_EVENT *)event->pData;  // FIXED: Use pData field
+    PTHREAD_EVENT *ev = (PTHREAD_EVENT *)event->pData;
     if (ev) {
         pthread_mutex_destroy(&ev->mutex);
         pthread_cond_destroy(&ev->cond);
-        free(ev);  // pthread structures use malloc/free
+        free(ev);
         event->pData = NULL;
     }
 }
+#endif
+
+// Cross-platform thread implementation
+#ifdef OS_WIN32
+// Windows thread implementation
+
+static bool stub_WaitThread(THREAD *t) { 
+    if (!t || !t->pData) return false;
+    HANDLE handle = (HANDLE)t->pData;
+    DWORD result = WaitForSingleObject(handle, INFINITE);
+    return (result == WAIT_OBJECT_0);
+}
+
+static void stub_FreeThread(THREAD *t) {
+    if (!t) return;
+    printf("[stub_FreeThread] t=%p, pData=%p\n", t, t->pData);
+    if (t->pData) {
+        CloseHandle((HANDLE)t->pData);
+        t->pData = NULL;
+    }
+    Free(t);  // THREAD was allocated with ZeroMalloc, use Free()
+}
+
+#else
+// Unix pthread implementation
 
 static bool stub_WaitThread(THREAD *t) { 
     if (!t) return false;
-    pthread_t *thread = (pthread_t *)t->pData;  // FIXED: Use t->pData
+    pthread_t *thread = (pthread_t *)t->pData;
     if (thread) {
         pthread_join(*thread, NULL);
         return true;
@@ -199,14 +286,24 @@ static bool stub_WaitThread(THREAD *t) {
 static void stub_FreeThread(THREAD *t) {
     if (!t) return;
     printf("[stub_FreeThread] t=%p, pData=%p\n", t, t->pData);
-    pthread_t *thread = (pthread_t *)t->pData;  // FIXED: Use t->pData
-    if (thread) {
-        free(thread);  // pthread_t was allocated with malloc
-        t->pData = NULL;  // FIXED: Clear pData, not the THREAD pointer
+    if (t->pData) {
+        free(t->pData);  // pthread_t was allocated with malloc
+        t->pData = NULL;
     }
+    Free(t);  // THREAD was allocated with ZeroMalloc, use Free()
 }
+#endif
 
 // Thread start wrapper that calls NoticeThreadInit after thread_proc
+#ifdef OS_WIN32
+static DWORD WINAPI thread_start_wrapper(LPVOID param) {
+    THREAD *t = (THREAD *)param;
+    if (t && t->thread_proc) {
+        t->thread_proc(t, t->param);
+    }
+    return 0;
+}
+#else
 static void *thread_start_wrapper(void *param) {
     THREAD *t = (THREAD *)param;
     if (t && t->thread_proc) {
@@ -214,7 +311,34 @@ static void *thread_start_wrapper(void *param) {
     }
     return NULL;
 }
+#endif
 
+// Cross-platform thread creation
+#ifdef OS_WIN32
+static bool stub_InitThread(THREAD *t) { 
+    if (!t) return false;
+    
+    // Initialize reference counter only if not already set
+    if (t->ref == NULL || (uintptr_t)t->ref < 0x10000) {
+        t->ref = NewRef();
+        if (t->ref == NULL) return false;
+    }
+    
+    // Add a reference for the thread itself (like real UnixInitThread)
+    AddRef(t->ref);
+    
+    HANDLE handle = CreateThread(NULL, 0, thread_start_wrapper, t, 0, NULL);
+    if (!handle) return false;
+    
+    t->pData = handle;
+    return true;
+}
+
+static UINT stub_ThreadId(void) { 
+    return (UINT)GetCurrentThreadId();
+}
+
+#else
 static bool stub_InitThread(THREAD *t) { 
     if (!t) return false;
     
@@ -244,6 +368,7 @@ static UINT stub_ThreadId(void) {
     // On macOS pthread_t is a pointer, hash it to get a UINT
     return (UINT)((uintptr_t)pthread_self() & 0xFFFFFFFF);
 }
+#endif
 
 // Real file I/O implementations using standard C functions
 static void *stub_FileOpen(char *name, bool write_mode, bool read_lock) {

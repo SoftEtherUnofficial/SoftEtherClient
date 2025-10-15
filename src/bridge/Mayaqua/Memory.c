@@ -111,7 +111,10 @@
 #include <stdarg.h>
 #include <time.h>
 #include <errno.h>
+// zlib.h may not be available on Windows - make it optional
+#ifdef HAVE_ZLIB
 #include <zlib.h>
+#endif
 #include <Mayaqua/Mayaqua.h>
 
 #define	MEMORY_SLEEP_TIME		150
@@ -1303,6 +1306,7 @@ bool IsZero(void *data, UINT size)
 // Expand the data
 UINT Uncompress(void *dst, UINT dst_size, void *src, UINT src_size)
 {
+#ifdef HAVE_ZLIB
 	unsigned long dst_size_long = dst_size;
 	// Validate arguments
 	if (dst == NULL || dst_size_long == 0 || src == NULL)
@@ -1316,6 +1320,10 @@ UINT Uncompress(void *dst, UINT dst_size, void *src, UINT src_size)
 	}
 
 	return (UINT)dst_size_long;
+#else
+	// zlib not available - return 0 to indicate failure
+	return 0;
+#endif
 }
 BUF *UncompressBuf(BUF *src_buf)
 {
@@ -1345,7 +1353,12 @@ BUF *UncompressBuf(BUF *src_buf)
 // Compress the data
 UINT Compress(void *dst, UINT dst_size, void *src, UINT src_size)
 {
+#ifdef HAVE_ZLIB
 	return CompressEx(dst, dst_size, src, src_size, Z_DEFAULT_COMPRESSION);
+#else
+	// zlib not available - return 0 to indicate failure
+	return 0;
+#endif
 }
 BUF *CompressBuf(BUF *src_buf)
 {
@@ -1381,6 +1394,7 @@ BUF *CompressBuf(BUF *src_buf)
 // Compress the data with options
 UINT CompressEx(void *dst, UINT dst_size, void *src, UINT src_size, UINT level)
 {
+#ifdef HAVE_ZLIB
 	unsigned long dst_size_long = dst_size;
 	// Validate arguments
 	if (dst == NULL || dst_size_long == 0 || src == NULL)
@@ -1394,6 +1408,10 @@ UINT CompressEx(void *dst, UINT dst_size, void *src, UINT src_size, UINT level)
 	}
 
 	return dst_size_long;
+#else
+	// zlib not available - return 0 to indicate failure
+	return 0;
+#endif
 }
 
 // Get the maximum size of compressed data from data of src_size

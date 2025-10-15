@@ -251,21 +251,21 @@ typedef int (COMPARE)(void *p1, void *p2);
 // 
 
 // bool type
-#ifndef	WINDOWS_H
+#if !defined(WINDOWS_H) && !defined(_WINDEF_)
 typedef	unsigned int		BOOL;
 #define	TRUE				1
 #define	FALSE				0
-#endif	// WINDOWS_H
+#endif	// !WINDOWS_H && !_WINDEF_
 
 // bool type
-#ifndef	WIN32COM_CPP
+#if !defined(WIN32COM_CPP) && !defined(__cplusplus) && !defined(_STDBOOL_H) && !defined(bool)
 typedef	unsigned int		bool;
 #define	true				1
 #define	false				0
-#endif	// WIN32COM_CPP
+#endif	// !WIN32COM_CPP && !__cplusplus && !_STDBOOL_H && !bool
 
 // 32bit integer type
-#ifndef	WINDOWS_H
+#if !defined(WINDOWS_H) && !defined(_WINDEF_) && !defined(_WINSOCKAPI_)
 typedef	unsigned int		UINT;
 typedef	unsigned int		UINT32;
 typedef	unsigned int		DWORD;
@@ -286,9 +286,9 @@ typedef	signed short		SHORT;
 typedef	unsigned char		BYTE;
 typedef	unsigned char		UCHAR;
 
-#ifndef	WIN32COM_CPP
+#if !defined(WIN32COM_CPP) && !defined(_WINDEF_)
 typedef signed char			CHAR;
-#endif	// WIN32COM_CPP
+#endif	// !WIN32COM_CPP && !_WINDEF_
 
 
 // 64-bit integer type

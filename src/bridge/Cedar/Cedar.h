@@ -1123,10 +1123,10 @@ typedef struct CEDAR
 #include <Cedar/NativeStack.h>
 
 #ifdef	OS_WIN32
-// Neo device driver
-#include <Neo/Neo.h>
-// SeLow User-mode
-#include <Cedar/SeLowUser.h>
+// Neo device driver - disabled for client-only build
+// #include <Neo/Neo.h>
+// SeLow User-mode - disabled for client-only build  
+// #include <Cedar/SeLowUser.h>
 #endif	// OS_WIN32
 
 // Neo device driver manipulation library

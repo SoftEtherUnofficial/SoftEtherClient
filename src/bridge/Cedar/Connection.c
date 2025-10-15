@@ -104,6 +104,8 @@
 
 #include "CedarPch.h"
 
+#undef ERROR  // Windows defines ERROR as 0, conflicting with goto labels
+
 // Determine whether the socket is to use to send
 #define	IS_SEND_TCP_SOCK(ts)		\
 	((ts->Direction == TCP_BOTH) || ((ts->Direction == TCP_SERVER_TO_CLIENT) && (s->ServerMode)) || ((ts->Direction == TCP_CLIENT_TO_SERVER) && (s->ServerMode == false)))
@@ -1202,7 +1204,7 @@ void ConnectionSend(CONNECTION *c, UINT64 now)
 					{
 						// The size of the socket send queue is exceeded
 						// Unable to send
-						while (b = GetNext(q))
+						while ((b = GetNext(q)))
 						{
 							if (b != NULL)
 							{
@@ -1218,7 +1220,7 @@ void ConnectionSend(CONNECTION *c, UINT64 now)
 							if (s->UseUdpAcceleration && s->UdpAccel != NULL && UdpAccelIsSendReady(s->UdpAccel, true))
 							{
 								// UDP acceleration mode
-								while (b = GetNext(q))
+								while ((b = GetNext(q)))
 								{
 									UdpAccelSendBlock(s->UdpAccel, b);
 
@@ -1240,7 +1242,7 @@ void ConnectionSend(CONNECTION *c, UINT64 now)
 								Zero(&h, sizeof(h));
 								h.EnableHMac = s->EnableHMacOnBulkOfRUDP;
 
-								while (b = GetNext(q))
+								while ((b = GetNext(q)))
 								{
 									if (b->Compressed == false)
 									{
@@ -1293,7 +1295,7 @@ void ConnectionSend(CONNECTION *c, UINT64 now)
 								s->TotalSendSize += sizeof(UINT);
 								s->TotalSendSizeReal += sizeof(UINT);
 
-								while (b = GetNext(q))
+								while ((b = GetNext(q)))
 								{
 									// Size data
 									UINT size_data;
@@ -1335,7 +1337,7 @@ void ConnectionSend(CONNECTION *c, UINT64 now)
 						{
 							bool flush = false;
 							// In-process socket
-							while (b = GetNext(q))
+							while ((b = GetNext(q)))
 							{
 								TubeSendEx(ts->Sock->SendTube, b->Buf, b->Size, NULL, true);
 								flush = true;
@@ -1495,7 +1497,7 @@ SEND_START:
 			NatSetHubOption(v, hub->Option);
 		}
 
-		while (block = GetNext(c->SendBlocks))
+		while ((block = GetNext(c->SendBlocks)))
 		{
 			num_packet++;
 			c->CurrentSendQueueSize -= block->Size;
@@ -1515,7 +1517,7 @@ SEND_START:
 		BLOCK *block;
 		UINT num_packet = 0;
 
-		while (block = GetNext(c->SendBlocks))
+		while ((block = GetNext(c->SendBlocks)))
 		{
 			num_packet++;
 			c->CurrentSendQueueSize -= block->Size;
@@ -1541,7 +1543,7 @@ SEND_START:
 				BLOCK *block;
 
 				// Transfer the packet queue to the client thread
-				while (block = GetNext(c->SendBlocks))
+				while ((block = GetNext(c->SendBlocks)))
 				{
 					c->CurrentSendQueueSize -= block->Size;
 
@@ -1586,7 +1588,7 @@ SEND_START:
 					UINT i;
 
 					i = 0;
-					while (block = GetNext(c->SendBlocks))
+					while ((block = GetNext(c->SendBlocks)))
 					{
 						if (hub != NULL && hub->Option != NULL && hub->Option->DisableUdpFilterForLocalBridgeNic == false &&
 							b->Eth != NULL && IsDhcpPacketForSpecificMac(block->Buf, block->Size, b->Eth->MacAddress))
@@ -2470,12 +2472,11 @@ DISCONNECT_THIS_TCP:
 			NatSetHubOption(v, hub->Option);
 		}
 
-		// Receive a packet from the virtual machine
-		while (size = VirtualGetNextPacket(v, &data))
-		{
-			BLOCK *block;
 
-			// Generate packet block
+	// Receive a packet from the virtual machine
+	while ((size = VirtualGetNextPacket(v, &data)))
+	{
+		BLOCK *block;			// Generate packet block
 			block = NewBlock(data, size, 0);
 			if (block->Size > MAX_PACKET_SIZE)
 			{
@@ -2557,7 +2558,7 @@ DISCONNECT_THIS_TCP:
 		}
 
 		// Get the next packet
-		while (size = L3GetNextPacket(f, &data))
+		while ((size = L3GetNextPacket(f, &data)))
 		{
 			BLOCK *block = NewBlock(data, size, 0);
 			if (block->Size > MAX_PACKET_SIZE)
@@ -2706,7 +2707,7 @@ DISCONNECT_THIS_TCP:
 				b->LastBridgeTry = Tick64();
 
 				// Try to open an Ethernet device
-				e = OpenEth(b->Name, b->Local, b->TapMode, b->TapMacAddress);
+				e = OpenEth(b->Name, b->Local, b->TapMode, (char *)b->TapMacAddress);
 				if (e != NULL)
 				{
 					// Success
@@ -3294,7 +3295,7 @@ void DisconnectUDPSockets(CONNECTION *c)
 		{
 			// Release of the queue
 			BUF *b;
-			while (b = GetNext(c->Udp->BufferQueue))
+			while ((b = GetNext(c->Udp->BufferQueue)))
 			{
 				FreeBuf(b);
 			}
@@ -3419,7 +3420,7 @@ void CleanupConnection(CONNECTION *c)
 		LockQueue(c->SendBlocks);
 		{
 			BLOCK *b;
-			while (b = GetNext(c->SendBlocks))
+			while ((b = GetNext(c->SendBlocks)))
 			{
 				FreeBlock(b);
 			}
@@ -3431,7 +3432,7 @@ void CleanupConnection(CONNECTION *c)
 		LockQueue(c->SendBlocks2);
 		{
 			BLOCK *b;
-			while (b = GetNext(c->SendBlocks2))
+			while ((b = GetNext(c->SendBlocks2)))
 			{
 				FreeBlock(b);
 			}
@@ -3443,7 +3444,7 @@ void CleanupConnection(CONNECTION *c)
 		LockQueue(c->ReceivedBlocks);
 		{
 			BLOCK *b;
-			while (b = GetNext(c->ReceivedBlocks))
+			while ((b = GetNext(c->ReceivedBlocks)))
 			{
 				FreeBlock(b);
 			}

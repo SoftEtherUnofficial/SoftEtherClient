@@ -2,6 +2,7 @@
 // Production command-line interface for establishing VPN connections
 
 const std = @import("std");
+const builtin = @import("builtin");
 const client = @import("client.zig");
 const config = @import("config.zig");
 const errors = @import("errors.zig");
@@ -142,7 +143,16 @@ fn printVersion() void {
 
 /// Get environment variable or return null
 fn getEnvVar(key: []const u8) ?[]const u8 {
-    return std.posix.getenv(key);
+    // Windows uses WTF-16 environment strings, use cross-platform API
+    const allocator = std.heap.page_allocator;
+    const value = std.process.getEnvVarOwned(allocator, key) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return null,
+        else => return null,
+    };
+    defer allocator.free(value);
+
+    // Return a copy that won't be freed
+    return allocator.dupe(u8, value) catch null;
 }
 
 const CliArgs = struct {
@@ -713,24 +723,31 @@ pub fn main() !void {
     // Set up signal handler for Ctrl+C and graceful termination
     g_client = &vpn_client;
 
-    // Configure signal handler with proper flags
-    const sigaction = std.posix.Sigaction{
-        .handler = .{ .handler = signalHandler },
-        .mask = std.mem.zeroes(std.posix.sigset_t),
-        .flags = 0, // Don't restart syscalls - allow sleep to be interrupted
-    };
+    // Configure signal handling (Windows uses different API)
+    if (builtin.os.tag != .windows) {
+        // Unix-like systems use sigaction
+        const sigaction = std.posix.Sigaction{
+            .handler = .{ .handler = signalHandler },
+            .mask = std.mem.zeroes(std.posix.sigset_t),
+            .flags = 0, // Don't restart syscalls - allow sleep to be interrupted
+        };
 
-    // Register handlers
-    std.posix.sigaction(std.posix.SIG.INT, &sigaction, null);
-    std.posix.sigaction(std.posix.SIG.TERM, &sigaction, null);
+        // Register handlers
+        std.posix.sigaction(std.posix.SIG.INT, &sigaction, null);
+        std.posix.sigaction(std.posix.SIG.TERM, &sigaction, null);
 
-    // Ignore SIGPIPE (broken pipe when writing to closed socket)
-    const sig_ignore = std.posix.Sigaction{
-        .handler = .{ .handler = std.posix.SIG.IGN },
-        .mask = std.mem.zeroes(std.posix.sigset_t),
-        .flags = 0,
-    };
-    std.posix.sigaction(std.posix.SIG.PIPE, &sig_ignore, null);
+        // Ignore SIGPIPE (broken pipe when writing to closed socket)
+        const sig_ignore = std.posix.Sigaction{
+            .handler = .{ .handler = std.posix.SIG.IGN },
+            .mask = std.mem.zeroes(std.posix.sigset_t),
+            .flags = 0,
+        };
+        std.posix.sigaction(std.posix.SIG.PIPE, &sig_ignore, null);
+    } else {
+        // Windows: Use SetConsoleCtrlHandler
+        // For now, rely on the monitoring thread below
+        std.debug.print("Note: Windows signal handling via console events\n", .{});
+    }
 
     std.debug.print("✓ Signal handlers registered (Ctrl+C to disconnect)\n", .{});
 

@@ -115,6 +115,7 @@
 
 #undef	Lock
 #undef	Unlock
+#undef	Yield
 
 // Dispatch table
 static OS_DISPATCH_TABLE *os = NULL;

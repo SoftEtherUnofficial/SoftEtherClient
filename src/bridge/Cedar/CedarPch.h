@@ -112,6 +112,14 @@
 #include <time.h>
 #include <errno.h>
 
+#ifdef WIN32
+// Windows network headers
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#include <iphlpapi.h>
+#endif
+
 #include <Mayaqua/Mayaqua.h>
 #include <Cedar/Cedar.h>
 

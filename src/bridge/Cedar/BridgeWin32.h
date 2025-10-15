@@ -115,8 +115,10 @@
 
 #define	BRIDGE_WIN32_ETH_BUFFER		(1048576)
 
-
+// Define HANDLE only if not already defined by Windows headers
+#if !defined(_WINDEF_) && !defined(_WINNT_)
 typedef void *HANDLE;
+#endif
 
 #ifdef	BRIDGE_C
 
