@@ -157,14 +157,17 @@ pub fn build(b: *std.Build) void {
         "src/bridge/Mayaqua/OS.c",
         "src/bridge/Mayaqua/FileIO.c",
         "src/bridge/Mayaqua/Kernel.c",
+        "src/bridge/Mayaqua/Network.c", // REQUIRED: Socket/network functions used by client
         "src/bridge/Mayaqua/TcpIp.c",
+        "src/bridge/Mayaqua/Encrypt.c", // REQUIRED: Crypto functions (Hash, Encrypt, etc)
+        "src/bridge/Mayaqua/Secure.c", // REQUIRED: PKCS#11/smartcard support
         "src/bridge/Mayaqua/Pack.c",
         "src/bridge/Mayaqua/Cfg.c",
         "src/bridge/Mayaqua/Table.c",
         "src/bridge/Mayaqua/Tracking.c",
         "src/bridge/Mayaqua/Internat.c",
 
-        // Essential Cedar layer (client VPN protocol only)
+        // Essential Cedar layer (client VPN protocol)
         "src/bridge/Cedar/Cedar.c",
         "src/bridge/Cedar/Client.c",
         "src/bridge/Cedar/Protocol.c",
@@ -173,6 +176,45 @@ pub fn build(b: *std.Build) void {
         "src/bridge/Cedar/Account.c",
         "src/bridge/Cedar/Virtual.c",
         "src/bridge/Cedar/NullLan.c",
+
+        // Additional Cedar components needed by client
+        "src/bridge/Cedar/Hub.c", // Hub management (minimal for client-server protocol)
+        "src/bridge/Cedar/Listener.c", // Listener support (needed by client)
+        "src/bridge/Cedar/Logging.c", // Logging infrastructure
+        "src/bridge/Cedar/Admin.c", // Admin protocol (needed by RPC)
+        "src/bridge/Cedar/Command.c", // Command infrastructure
+        "src/bridge/Cedar/Sam.c", // SAM auth (needed by auth protocol)
+        "src/bridge/Cedar/Server.c", // Server structures (used by protocol)
+        "src/bridge/Cedar/Layer3.c", // Layer3 support
+        "src/bridge/Cedar/Link.c", // Link management
+        "src/bridge/Cedar/Bridge.c", // Ethernet bridge (used by client adapter)
+        "src/bridge/Cedar/BridgeUnix.c", // Unix eth adapter (EthOpen, EthGetPacket, etc)
+        "src/bridge/Cedar/UdpAccel.c", // UDP acceleration
+        "src/bridge/Cedar/SecureNAT.c", // SecureNAT (referenced by protocol)
+        "src/bridge/Cedar/Nat.c", // NAT functionality
+        "src/bridge/Cedar/Database.c", // Database support
+        "src/bridge/Cedar/Remote.c", // Remote management
+        "src/bridge/Cedar/Console.c", // Console support
+        "src/bridge/Cedar/Radius.c", // RADIUS auth
+        "src/bridge/Cedar/DDNS.c", // DDNS support
+        "src/bridge/Cedar/EtherLog.c", // Packet logging
+        "src/bridge/Cedar/WebUI.c", // Web UI support
+        "src/bridge/Cedar/WaterMark.c", // Protocol watermarks
+
+        // Protocol support modules (referenced by Connection/Protocol)
+        "src/bridge/Cedar/Interop_OpenVPN.c", // OpenVPN interoperability
+        "src/bridge/Cedar/Interop_SSTP.c", // SSTP interoperability
+        "src/bridge/Cedar/IPsec.c", // IPsec support
+        "src/bridge/Cedar/IPsec_IKE.c", // IKE protocol
+        "src/bridge/Cedar/IPsec_IkePacket.c", // IKE packet handling
+        "src/bridge/Cedar/IPsec_L2TP.c", // L2TP/IPsec
+        "src/bridge/Cedar/IPsec_PPP.c", // PPP over IPsec (has MsChapV2 functions)
+        "src/bridge/Cedar/IPsec_EtherIP.c", // EtherIP support
+        "src/bridge/Cedar/IPsec_IPC.c", // IPC support (NewIPCByParam, NewIPCBySock)
+
+        // Additional server-side components (referenced by current files)
+        "src/bridge/Cedar/AzureClient.c", // Azure relay client
+        "src/bridge/Cedar/AzureServer.c", // Azure relay server
     };
 
     // Use client-only source list with platform-specific files
@@ -180,13 +222,16 @@ pub fn build(b: *std.Build) void {
         // macOS/iOS needs timing file
         const sources = c_sources_client_base ++ &[_][]const u8{timing_src.?};
         break :blk sources;
+    } else if (target_os == .windows) blk: {
+        // Windows needs Microsoft.c
+        const sources = c_sources_client_base ++ &[_][]const u8{
+            "src/bridge/Mayaqua/Microsoft.c", // Windows-specific functions
+        };
+        break :blk sources;
     } else c_sources_client_base;
 
-    // TODO: Add these back after fixing Windows issues:
-    // - Network.c (Windows API type mismatches)
-    // - Encrypt.c (Missing includes)
-    // - Secure.c (PKCS11 dllimport issues)
-    // - Microsoft.c (Windows-specific API issues)
+    // NOTE: Network.c, Encrypt.c, and Secure.c have been added back
+    // as they contain essential client functions (sockets, crypto, PKCS#11)
 
     // NativeStack.c uses system() which is unavailable on iOS
     // It's only needed for server-side routing, not client VPN
