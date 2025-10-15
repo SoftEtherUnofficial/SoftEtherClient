@@ -402,6 +402,15 @@ pub fn base64Decode(dst: []u8, src: []const u8) !usize {
     return @intCast(result);
 }
 
+/// Encode base64
+pub fn base64Encode(dst: []u8, src: []const u8) usize {
+    const dst_ptr: [*c]u8 = @ptrCast(dst.ptr);
+    const src_ptr: [*c]const u8 = @ptrCast(src.ptr);
+
+    const result = B64_Encode(dst_ptr, src_ptr, @intCast(src.len));
+    return @intCast(result);
+}
+
 /// Create Zig packet adapter
 pub fn createZigPacketAdapter() !*PACKET_ADAPTER {
     const pa = NewZigPacketAdapter() orelse return error.PacketAdapterCreationFailed;

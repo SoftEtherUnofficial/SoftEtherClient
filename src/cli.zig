@@ -7,6 +7,7 @@ const config = @import("config.zig");
 const errors = @import("errors.zig");
 const profiling = @import("profiling.zig");
 const softether = @import("bridge/softether.zig");
+const c = @import("bridge/c.zig");
 // NOTE: Old src/c.zig removed - all C bindings now in src/bridge/c.zig
 
 const VpnClient = client.VpnClient;
@@ -558,13 +559,52 @@ pub fn main() !void {
         const username = args.gen_hash_user.?;
         const password = args.gen_hash_pass.?;
 
-        // TODO: Implement password hashing in Zig
-        // The generatePasswordHash function needs to be completed
-        std.debug.print("✗ Password hash generation not yet implemented\n", .{});
-        std.debug.print("  Username: {s}\n", .{username});
-        std.debug.print("  Password: {s}\n", .{password});
-        std.debug.print("  TODO: Port SoftEther's HashPassword algorithm to Zig\n", .{});
-        std.process.exit(1);
+        std.debug.print("\n", .{});
+        std.debug.print("═══════════════════════════════════════════════\n", .{});
+        std.debug.print("🔐 SoftEther Password Hash Generator\n", .{});
+        std.debug.print("═══════════════════════════════════════════════\n", .{});
+        std.debug.print("\n", .{});
+        std.debug.print("Username: {s}\n", .{username});
+        std.debug.print("Password: {s}\n", .{password});
+        std.debug.print("\n", .{});
+
+        // Generate password hash using SoftEther's algorithm
+        var hash_binary: [20]u8 = undefined; // SHA-1 = 20 bytes
+        c.hashPassword(&hash_binary, username, password);
+
+        // Encode to base64 for config file
+        var base64_buffer: [64]u8 = undefined; // Base64 of 20 bytes = ~28 chars + padding
+        const base64_len = c.base64Encode(&base64_buffer, &hash_binary);
+
+        const base64_hash = base64_buffer[0..base64_len];
+
+        std.debug.print("─────────────────────────────────────────────\n", .{});
+        std.debug.print("Password Hash (base64):\n", .{});
+        std.debug.print("\n", .{});
+        std.debug.print("  {s}\n", .{base64_hash});
+        std.debug.print("\n", .{});
+        std.debug.print("─────────────────────────────────────────────\n", .{});
+        std.debug.print("\n", .{});
+        std.debug.print("💡 Usage:\n", .{});
+        std.debug.print("\n", .{});
+        std.debug.print("1. Add to config file (config.json):\n", .{});
+        std.debug.print("   {{\n", .{});
+        std.debug.print("     \"user\": \"{s}\",\n", .{username});
+        std.debug.print("     \"password_hash\": \"{s}\"\n", .{base64_hash});
+        std.debug.print("   }}\n", .{});
+        std.debug.print("\n", .{});
+        std.debug.print("2. Set environment variable:\n", .{});
+        std.debug.print("   export SOFTETHER_PASSWORD_HASH=\"{s}\"\n", .{base64_hash});
+        std.debug.print("\n", .{});
+        std.debug.print("3. Use command line option:\n", .{});
+        std.debug.print("   --password-hash \"{s}\"\n", .{base64_hash});
+        std.debug.print("\n", .{});
+        std.debug.print("═══════════════════════════════════════════════\n", .{});
+        std.debug.print("✅ Hash generated successfully!\n", .{});
+        std.debug.print("═══════════════════════════════════════════════\n", .{});
+        std.debug.print("\n", .{});
+
+        std.process.exit(0);
     }
 
     // Validate required arguments (using config file fallback values)
