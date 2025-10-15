@@ -349,6 +349,9 @@ pub fn build(b: *std.Build) void {
         .root_module = packet_adapter_module,
     });
     packet_adapter_obj.addIncludePath(b.path("src/bridge"));
+    
+    // Link libc for C imports and allocator functions
+    packet_adapter_obj.linkLibC();
 
     // Add iOS SDK paths for C imports
     if (is_ios) {
