@@ -743,7 +743,6 @@ pub fn main() !void {
     // This is more reliable than relying on signal delivery to C code
     const MonitorThread = struct {
         fn run(vpn_client_ptr: *VpnClient) void {
-            _ = vpn_client_ptr;
             while (true) {
                 std.Thread.sleep(500 * std.time.ns_per_ms); // Check every 500ms (reduced CPU usage)
 
@@ -757,41 +756,19 @@ pub fn main() !void {
                     std.debug.print("═══════════════════════════════════════════════\n", .{});
                     std.debug.print("🛑 Shutdown signal detected (Ctrl+C)\n", .{});
                     std.debug.print("═══════════════════════════════════════════════\n", .{});
-                    std.debug.print("\n", .{});
+                    std.debug.print("\n[●] Initiating graceful shutdown...\n", .{});
 
-                    // Stop the main loop
+                    // Stop the main loop - this will cause the main function to proceed to cleanup
                     g_running.store(false, .release);
 
-                    // For VPN disconnect, we need to restore routing before exit
-                    std.debug.print("[●] VPN session terminating...\n", .{});
-                    std.debug.print("[●] Restoring original network configuration...\n", .{});
-
-                    // Restore original default route (emergency cleanup)
-                    // This ensures network connectivity is restored even if normal cleanup fails
-                    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-                    defer arena.deinit();
-                    const temp_allocator = arena.allocator();
-
-                    // First, delete any existing default routes (including VPN route)
-                    _ = std.process.Child.run(.{
-                        .allocator = temp_allocator,
-                        .argv = &[_][]const u8{ "route", "delete", "default" },
-                    }) catch {
-                        // Ignore errors - route might not exist
+                    // Disconnect the VPN session cleanly
+                    std.debug.print("[●] Disconnecting VPN session...\n", .{});
+                    vpn_client_ptr.disconnect() catch |err| {
+                        std.debug.print("[!] Warning: Disconnect error: {}\n", .{err});
                     };
 
-                    // Then restore the original default route
-                    _ = std.process.Child.run(.{
-                        .allocator = temp_allocator,
-                        .argv = &[_][]const u8{ "route", "add", "default", "192.168.1.1" },
-                    }) catch |err| {
-                        std.debug.print("[!] Warning: Failed to restore route: {}\n", .{err});
-                        std.debug.print("[●] Network may need manual restoration\n", .{});
-                    };
-
-                    std.debug.print("[●] ✅ Network configuration restored\n", .{});
-                    std.debug.print("[●] TUN device will be cleaned up by OS\n", .{});
-                    std.process.exit(0);
+                    std.debug.print("[●] VPN session stopped\n", .{});
+                    return; // Exit monitoring thread, let main function handle cleanup
                 }
             }
         }
@@ -1005,37 +982,36 @@ pub fn main() !void {
     }
 
     // Only cleanup if signal handler hasn't already done it
-    if (!g_cleanup_done.load(.acquire)) {
-        if (vpn_client.isConnected()) {
-            std.debug.print("\n[●] Disconnecting...\n", .{});
-        } else {
-            std.debug.print("\n[●] Cleaning up...\n", .{});
-        }
-        g_cleanup_done.store(true, .release);
-        vpn_client.deinit();
-        std.debug.print("[✓] Cleanup complete\n", .{});
-    } else {
-        // Signal handler called disconnect(), now call deinit() to free resources
-        std.debug.print("[●] VPN: Disconnected successfully\n", .{});
+    if (g_cleanup_done.load(.acquire)) {
+        // Signal handler already called disconnect, now cleanup resources
+        std.debug.print("\n[●] Cleaning up resources...\n", .{});
 
         // Wait for monitoring thread to finish
-        std.debug.print("[DEBUG] Waiting for monitor thread to finish...\n", .{});
         monitor_thread.join();
-        std.debug.print("[DEBUG] Monitor thread finished\n", .{});
 
-        std.debug.print("[DEBUG] About to call vpn_client.deinit()...\n", .{});
+        // Free VPN client resources
         vpn_client.deinit();
-        std.debug.print("[DEBUG] vpn_client.deinit() returned\n", .{});
-        std.debug.print("[✓] VPN connection terminated\n", .{});
-        std.debug.print("[✓] Resources released\n", .{});
+
         std.debug.print("\n", .{});
         std.debug.print("═══════════════════════════════════════════════\n", .{});
-        std.debug.print("Goodbye! VPN session closed cleanly.\n", .{});
+        std.debug.print("✅ VPN connection terminated cleanly\n", .{});
+        std.debug.print("✅ All resources released\n", .{});
         std.debug.print("═══════════════════════════════════════════════\n", .{});
+        std.debug.print("Goodbye!\n", .{});
+        std.debug.print("═══════════════════════════════════════════════\n", .{});
+    } else {
+        // Normal exit (not via Ctrl+C)
+        if (vpn_client.isConnected()) {
+            std.debug.print("\n[●] Disconnecting VPN session...\n", .{});
+            vpn_client.disconnect() catch |err| {
+                std.debug.print("[!] Warning: Disconnect error: {}\n", .{err});
+            };
+        }
+        std.debug.print("[●] Cleaning up resources...\n", .{});
+        vpn_client.deinit();
+        std.debug.print("[✓] Cleanup complete\n", .{});
     }
 
-    // Ensure program exits after cleanup
-    std.debug.print("[DEBUG] About to call std.process.exit(0)...\n", .{});
     std.process.exit(0);
 }
 

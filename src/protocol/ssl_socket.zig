@@ -65,7 +65,7 @@ pub const SslSocket = struct {
         const hostname_z = try allocator.dupeZ(u8, hostname);
         defer allocator.free(hostname_z);
 
-        const port_str = try std.fmt.allocPrintZ(allocator, "{d}", .{port});
+        const port_str = try std.fmt.allocPrint(allocator, "{d}\x00", .{port});
         defer allocator.free(port_str);
 
         var hints: c.struct_addrinfo = std.mem.zeroes(c.struct_addrinfo);

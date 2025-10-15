@@ -490,6 +490,8 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                         printf("[●] WARNING: Route configuration failed\n");
                                     }
                                 } else {
+                                    printf("[●] WARNING: Interface configuration command failed\n");
+                                }
 #else
                                 // On iOS, interface is managed by VPN framework
                                 // Just log the DHCP info

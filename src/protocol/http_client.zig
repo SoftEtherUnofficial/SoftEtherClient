@@ -278,22 +278,21 @@ pub const VpnHttpClient = struct {
         std.log.debug("Received {d} bytes from server", .{bytes_read});
 
         // Parse HTTP response
-        const response = try HttpResponse.parse(self.allocator, response_buffer[0..bytes_read]);
+        var stream = std.io.fixedBufferStream(response_buffer[0..bytes_read]);
+        var response = try HttpResponse.parse(stream.reader(), self.allocator);
         defer response.deinit();
 
         std.log.debug("HTTP response: status={d} body_len={d}", .{
             response.status_code,
             response.body.len,
-        });
-
-        // Check HTTP status
+        }); // Check HTTP status
         if (response.status_code != 200) {
             std.log.err("Server returned error status: {d}", .{response.status_code});
             return error.HttpError;
         }
 
         // Parse PACK from response body
-        return Pack.fromBytes(self.allocator, response.body);
+        return Pack.fromBytes(response.body, self.allocator);
     }
 
     /// Create a mock authentication success response

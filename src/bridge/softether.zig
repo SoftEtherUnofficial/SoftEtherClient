@@ -5,6 +5,7 @@
 // It manages VPN client lifecycle, configuration, and connection orchestration.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 // Phase 3: Import C FFI for SoftEther integration
 const c = @import("c.zig");
@@ -618,6 +619,18 @@ pub const VpnBridgeClient = struct {
 
         self.softether_session = session;
         account.ClientSession = session;
+
+        // On iOS, skip the connection wait since packet I/O is handled externally by VPN framework
+        // The session will never reach ESTABLISHED status through normal means
+        if (builtin.os.tag == .ios) {
+            std.log.info("iOS: Session created, skipping ESTABLISHED wait (VPN framework handles packets)", .{});
+            self.status = .CONNECTED;
+            self.connect_time = getCurrentTimeMs();
+            self.reconnect.current_attempt = 0;
+            self.reconnect.user_requested_disconnect = false;
+            std.log.info("VPN: ✅ Connected successfully to {s}:{d} (iOS mode)", .{ hostname_slice, self.port });
+            return;
+        }
 
         // Wait for connection to establish (with timeout)
         // The ClientThread runs in background and will initialize the packet adapter
