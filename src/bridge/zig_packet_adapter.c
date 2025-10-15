@@ -254,8 +254,7 @@ static CANCEL* ZigAdapterGetCancel(SESSION* s) {
 // ✅ SIMPLIFIED: No DHCP/ARP state machine, just read from TUN
 // ZigTapTun's translator handles all L2/L3 conversion automatically
 static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
-    // Call counter removed - too noisy during normal operation
-    // Function called thousands of times per second
+    static int read_count = 0;
     
     if (!s || !s->PacketAdapter || !s->PacketAdapter->Param) {
         printf("[ZigAdapterGetNextPacket] ERROR: Invalid session/adapter\n");
@@ -357,7 +356,63 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
         return 0;
     }
     
-    // Got a packet - log removed (too noisy)
+    // Got a packet - log first 100 (increased to catch ICMP)
+    read_count++;
+    if (read_count <= 100) {
+        // Inspect packet type (check EtherType)
+        const char* packet_type = "UNKNOWN";
+        if (bytes_read >= 14) {
+            uint16_t ethertype = (temp_buf[12] << 8) | temp_buf[13];
+            if (ethertype == 0x0800) {
+                // IPv4 - check protocol
+                if (bytes_read >= 34) {
+                    uint8_t ip_proto = temp_buf[23];
+                    if (ip_proto == 1) {
+                        // ICMP - check type
+                        if (bytes_read >= 35) {
+                            uint8_t icmp_type = temp_buf[34];
+                            if (icmp_type == 0) packet_type = "ICMP-REPLY";
+                            else if (icmp_type == 8) {
+                                packet_type = "ICMP-REQUEST";
+                                // Dump first ICMP request for debugging
+                                static int icmp_dump_count = 0;
+                                if (icmp_dump_count == 0) {
+                                    printf("\n[ICMP DEBUG] First ICMP request packet (%zd bytes):\n", bytes_read);
+                                    printf("  Ethernet Header:\n");
+                                    printf("    Dst MAC: %02x:%02x:%02x:%02x:%02x:%02x\n", 
+                                           temp_buf[0], temp_buf[1], temp_buf[2], temp_buf[3], temp_buf[4], temp_buf[5]);
+                                    printf("    Src MAC: %02x:%02x:%02x:%02x:%02x:%02x\n", 
+                                           temp_buf[6], temp_buf[7], temp_buf[8], temp_buf[9], temp_buf[10], temp_buf[11]);
+                                    printf("    EtherType: 0x%04x\n", (temp_buf[12] << 8) | temp_buf[13]);
+                                    if (bytes_read >= 34) {
+                                        printf("  IP Header:\n");
+                                        printf("    Src IP: %d.%d.%d.%d\n", temp_buf[26], temp_buf[27], temp_buf[28], temp_buf[29]);
+                                        printf("    Dst IP: %d.%d.%d.%d\n", temp_buf[30], temp_buf[31], temp_buf[32], temp_buf[33]);
+                                        printf("    Protocol: %d (ICMP)\n", temp_buf[23]);
+                                    }
+                                    if (bytes_read >= 36) {
+                                        printf("  ICMP Header:\n");
+                                        printf("    Type: %d (Echo Request)\n", temp_buf[34]);
+                                        printf("    Code: %d\n", temp_buf[35]);
+                                    }
+                                    icmp_dump_count++;
+                                }
+                            }
+                            else packet_type = "ICMP-OTHER";
+                        } else {
+                            packet_type = "ICMP";
+                        }
+                    }
+                    else if (ip_proto == 6) packet_type = "TCP";
+                    else if (ip_proto == 17) packet_type = "UDP";
+                    else packet_type = "IPv4-Other";
+                }
+            } else if (ethertype == 0x0806) packet_type = "ARP";
+            else if (ethertype == 0x86DD) packet_type = "IPv6";
+        }
+        printf("[GetNextPacket] 📤 Read %zd bytes (%s) from TUN → VPN server (count=%d)\n", 
+               bytes_read, packet_type, read_count);
+    }
     
     // Copy packet data for SoftEther
     UCHAR* pkt_copy = Malloc(bytes_read);
@@ -376,6 +431,8 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
 // ✅ SIMPLIFIED: No DHCP/ARP parsing, just write to TUN
 // ZigTapTun's translator handles all L2/L3 conversion automatically
 static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
+    static int put_count = 0;
+    
     if (!s || !s->PacketAdapter || !s->PacketAdapter->Param) {
         return false;
     }
@@ -390,6 +447,38 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
     // SessionMain calls PutPacket(NULL, 0) to flush buffers - MUST return TRUE!
     if (!data || size == 0) {
         return true; // Success: flush acknowledged
+    }
+    
+    // Log incoming packets from VPN server (first 100)
+    put_count++;
+    if (put_count <= 100) {
+        // Inspect packet type
+        const char* packet_type = "UNKNOWN";
+        const UCHAR* pkt = (const UCHAR*)data;
+        if (size >= 14) {
+            uint16_t ethertype = (pkt[12] << 8) | pkt[13];
+            if (ethertype == 0x0800) {
+                // IPv4 - check protocol
+                if (size >= 34) {
+                    uint8_t ip_proto = pkt[23];
+                    if (ip_proto == 1) {
+                        packet_type = "ICMP";
+                        // Check ICMP type (offset 34 in Ethernet frame)
+                        if (size >= 35) {
+                            uint8_t icmp_type = pkt[34];
+                            if (icmp_type == 0) packet_type = "ICMP-REPLY";
+                            else if (icmp_type == 8) packet_type = "ICMP-REQUEST";
+                        }
+                    }
+                    else if (ip_proto == 6) packet_type = "TCP";
+                    else if (ip_proto == 17) packet_type = "UDP";
+                    else packet_type = "IPv4-Other";
+                }
+            } else if (ethertype == 0x0806) packet_type = "ARP";
+            else if (ethertype == 0x86DD) packet_type = "IPv6";
+        }
+        printf("[PutPacket] 📥 Received %u bytes (%s) from VPN server → TUN (count=%d)\n", 
+               size, packet_type, put_count);
     }
     
     // ✅ WAVE 5 PHASE 1: Detect DHCP OFFER/ACK to transition state machine
@@ -495,6 +584,19 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
     
     // Write packet to queue
     bool result = zig_adapter_put_packet(ctx->zig_adapter, (const uint8_t*)data, (uint64_t)size);
+    
+    // **CRITICAL FIX**: Immediately flush send_queue to TUN device
+    // Without this, packets from VPN server sit in queue and never reach TUN!
+    // This is why ping showed requests (GetNextPacket reads from TUN) but no replies
+    // (PutPacket queued but never wrote to TUN)
+    ssize_t written = zig_adapter_write_sync(ctx->zig_adapter);
+    if (written > 0) {
+        static int packet_count = 0;
+        packet_count++;
+        if (packet_count <= 20) {  // Log first 20 packets only
+            printf("[ZigAdapterPutPacket] ✅ Wrote %zd packets to TUN (total=%d)\n", written, packet_count);
+        }
+    }
     
     if (!result) {
         // Queue full - force flush and retry

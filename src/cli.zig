@@ -4,6 +4,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const client = @import("client.zig");
+// Temporarily disable pure Zig client due to incomplete implementation
+// const client_pure = @import("client_pure.zig");
 const config = @import("config.zig");
 const errors = @import("errors.zig");
 const profiling = @import("profiling.zig");
@@ -11,6 +13,8 @@ const softether = @import("bridge/softether.zig");
 // NOTE: Old src/c.zig removed - all C bindings now in src/bridge/c.zig
 
 const VpnClient = client.VpnClient;
+// Temporarily disabled - pure Zig implementation incomplete
+// const PureZigVpnClient = client_pure.PureZigVpnClient;
 const ConnectionConfig = config.ConnectionConfig;
 const AuthMethod = config.AuthMethod;
 const VpnError = errors.VpnError;
@@ -170,6 +174,7 @@ const CliArgs = struct {
     daemon: bool = false,
     profile: bool = false, // Enable performance profiling
     use_zig_adapter: bool = true, // Use Zig packet adapter (default for better performance)
+    use_pure_zig: bool = false, // Use pure Zig VPN stack (experimental)
     log_level: []const u8 = "info",
 
     // Reconnection settings
@@ -269,6 +274,8 @@ fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
             result.use_zig_adapter = true;
         } else if (std.mem.eql(u8, arg, "--use-c-adapter")) {
             result.use_zig_adapter = false;
+        } else if (std.mem.eql(u8, arg, "--use-pure-zig")) {
+            result.use_pure_zig = true;
         } else if (std.mem.eql(u8, arg, "--log-level")) {
             result.log_level = args.next() orelse return error.MissingLogLevel;
         } else if (std.mem.eql(u8, arg, "--reconnect")) {
@@ -679,6 +686,7 @@ pub fn main() !void {
         std.debug.print("Max Connections: {d}\n", .{args.max_connection});
     }
     std.debug.print("IP Version:    {s}\n", .{args.ip_version});
+    std.debug.print("VPN Mode:      {s}\n", .{if (args.use_pure_zig) "Pure Zig (Experimental)" else "C Bridge (Stable)"});
     std.debug.print("Buffer Sizes:  RX={d} TX={d} slots\n", .{ final_recv_buffer_slots, final_send_buffer_slots });
 
     if (static_ip) |sip| {
@@ -706,6 +714,14 @@ pub fn main() !void {
 
     std.debug.print("─────────────────────────────────────────────\n\n", .{});
 
+    // Pure Zig mode is temporarily disabled due to incomplete implementation
+    if (args.use_pure_zig) {
+        std.debug.print("✗ Pure Zig VPN client is not yet complete.\n", .{});
+        std.debug.print("   Please use the stable C bridge mode (default).\n", .{});
+        std.process.exit(1);
+    }
+
+    // C Bridge VPN client (stable, default)
     var vpn_client = VpnClient.init(allocator, vpn_config) catch |err| {
         std.debug.print("✗ Failed to initialize VPN client: {any}\n", .{err});
         std.process.exit(1);

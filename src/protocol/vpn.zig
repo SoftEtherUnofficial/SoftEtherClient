@@ -3,9 +3,10 @@
 // Phase 3: Protocol Layer - Task 1
 
 const std = @import("std");
-const http = @import("http");
-const socket = @import("socket");
-const connection = @import("connection");
+// Use module imports instead of file paths to avoid conflicts
+const http = @import("../net/http.zig"); // Keep file import for http (not in socket module)
+// const socket = @import("../net/socket.zig"); // Commented out - conflicts with socket module
+// connection module not needed - we use socket directly
 
 /// VPN protocol version
 pub const VpnVersion = struct {
@@ -281,14 +282,13 @@ pub const VpnSession = struct {
     keepalive_config: KeepAliveConfig,
     last_keepalive: i64,
     missed_keepalives: u8,
-    conn_manager: *connection.ConnectionManager,
+    // conn_manager removed - not used in this old implementation
 
     pub fn init(
         allocator: std.mem.Allocator,
         server_host: []const u8,
         server_port: u16,
         credentials: AuthCredentials,
-        conn_manager: *connection.ConnectionManager,
     ) !VpnSession {
         const host_copy = try allocator.dupe(u8, server_host);
 
@@ -303,7 +303,7 @@ pub const VpnSession = struct {
             .keepalive_config = KeepAliveConfig{},
             .last_keepalive = std.time.milliTimestamp(),
             .missed_keepalives = 0,
-            .conn_manager = conn_manager,
+            // conn_manager removed
         };
     }
 
@@ -322,9 +322,8 @@ pub const VpnSession = struct {
 
         self.state = .connecting;
 
-        // Connect to server
-        const conn = try self.conn_manager.connect(self.server_host, self.server_port);
-        _ = conn; // Will be used for actual communication
+        // Note: Connection logic removed - see vpn_protocol.zig for actual implementation
+        // This old code is not used anymore
 
         self.state = .authenticating;
 
@@ -470,18 +469,18 @@ export fn zig_vpn_session_init(
     server_port: u16,
     username: [*:0]const u8,
     password: [*:0]const u8,
-    conn_manager: ?*connection.ConnectionManager,
+    conn_manager: ?*anyopaque, // Changed from connection.ConnectionManager
 ) ?*VpnSession {
+    _ = conn_manager; // Not used in this old implementation
     const allocator = std.heap.c_allocator;
     const host_slice = std.mem.span(server_host);
     const user_slice = std.mem.span(username);
     const pass_slice = std.mem.span(password);
-    const manager = conn_manager orelse return null;
 
     const credentials = AuthCredentials.withPassword(user_slice, pass_slice);
 
     const session = allocator.create(VpnSession) catch return null;
-    session.* = VpnSession.init(allocator, host_slice, server_port, credentials, manager) catch return null;
+    session.* = VpnSession.init(allocator, host_slice, server_port, credentials) catch return null;
     return session;
 }
 

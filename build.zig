@@ -258,15 +258,30 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // Create socket and collections modules early - they're needed by lib_module
+    const collections_module = b.createModule(.{
+        .root_source_file = b.path("src/mayaqua/collections.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const socket_module = b.createModule(.{
+        .root_source_file = b.path("src/net/socket.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    socket_module.addImport("mayaqua_collections", collections_module);
+
     const lib_module = b.addModule("softether", .{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
     });
     lib_module.addIncludePath(b.path("src"));
     lib_module.addImport("taptun", taptun_module);
-    lib_module.link_libc = true;
+    lib_module.addImport("socket", socket_module);
+    lib_module.addImport("mayaqua_collections", collections_module);
 
-    // ============================================
+    lib_module.link_libc = true; // ============================================
     // 2. CLI CLIENT (production tool)
     // ============================================
     const cli = b.addExecutable(.{
@@ -277,6 +292,9 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "softether", .module = lib_module },
+                .{ .name = "taptun", .module = taptun_module },
+                .{ .name = "socket", .module = socket_module },
+                .{ .name = "mayaqua_collections", .module = collections_module },
             },
         }),
     });
@@ -339,7 +357,17 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    // Add taptun dependency for L2/L3 translation
+    // Create TUN module (our inlined TUN device code)
+    const tun_module = b.createModule(.{
+        .root_source_file = b.path("src/tun/tun.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Add TUN module to packet adapter
+    packet_adapter_module.addImport("tun", tun_module);
+
+    // Add taptun dependency for L2/L3 translation (legacy, will be removed)
     packet_adapter_module.addImport("taptun", taptun_module);
 
     const packet_adapter_obj = b.addObject(.{
