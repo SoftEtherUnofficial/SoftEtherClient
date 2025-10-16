@@ -65,6 +65,7 @@ typedef struct ZIG_ADAPTER_CONTEXT {
     UINT32 dhcp_xid;         // DHCP transaction ID
     UINT32 offered_ip;       // IP offered by DHCP server
     UINT32 dhcp_server_ip;   // DHCP server IP (from OFFER)
+    UINT32 subnet_mask;      // Subnet mask from DHCP (option 1)
     
     // Performance profile (simplified - just profile selection)
     PERF_PROFILE perf_profile; // Active profile: latency/balanced/throughput
@@ -222,6 +223,7 @@ static bool ZigAdapterInit(SESSION* s) {
     ctx->dhcp_initialized = false;
     ctx->offered_ip = 0;
     ctx->dhcp_server_ip = 0;
+    ctx->subnet_mask = 0xFFFF0000;  // Default: 255.255.0.0 (/16)
     
     // Generate MAC address (matches iPhone/iOS app format: 02:00:5E:XX:XX:XX)
     ctx->my_mac[0] = 0x02;  // Locally administered
@@ -501,11 +503,12 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                         dhcp_payload[236] == 0x63 && dhcp_payload[237] == 0x82 &&
                         dhcp_payload[238] == 0x53 && dhcp_payload[239] == 0x63) {
                         
-                        // Parse options to find message type (option 53) and server ID (option 54)
+                        // Parse options to find message type (option 53), server ID (option 54), and subnet mask (option 1)
                         UINT opt_offset = 240;
                         UCHAR msg_type = 0;
                         UINT32 offered_ip = 0;
                         UINT32 server_ip = 0;
+                        UINT32 subnet_mask = 0xFFFF0000;  // Default: 255.255.0.0 (/16)
                         
                         // Extract offered IP from BOOTP 'yiaddr' field (offset 16-19)
                         offered_ip = (dhcp_payload[16] << 24) | (dhcp_payload[17] << 16) |
@@ -518,7 +521,12 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                             if (opt_type == 0) { opt_offset++; continue; } // PAD
                             
                             UCHAR opt_len = dhcp_payload[opt_offset + 1];
-                            if (opt_type == 53 && opt_len == 1) { // MESSAGE_TYPE
+                            if (opt_type == 1 && opt_len == 4) { // SUBNET_MASK
+                                subnet_mask = (dhcp_payload[opt_offset + 2] << 24) |
+                                            (dhcp_payload[opt_offset + 3] << 16) |
+                                            (dhcp_payload[opt_offset + 4] << 8) |
+                                            dhcp_payload[opt_offset + 5];
+                            } else if (opt_type == 53 && opt_len == 1) { // MESSAGE_TYPE
                                 msg_type = dhcp_payload[opt_offset + 2];
                             } else if (opt_type == 54 && opt_len == 4) { // SERVER_IDENTIFIER
                                 server_ip = (dhcp_payload[opt_offset + 2] << 24) |
@@ -533,13 +541,19 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                             // DHCP OFFER received
                             ctx->offered_ip = offered_ip;
                             ctx->dhcp_server_ip = server_ip;
+                            ctx->subnet_mask = subnet_mask;
                             ctx->dhcp_state = DHCP_STATE_OFFER_RECEIVED;
                             ctx->last_dhcp_send_time = Tick64();
                         } else if (msg_type == 5 && offered_ip != 0) {
-                            // DHCP ACK received - configure interface
+                            // DHCP ACK received - store subnet mask and configure interface
+                            ctx->subnet_mask = subnet_mask;
+                            
                             printf("[●] DHCP: Assigned IP %u.%u.%u.%u\n",
                                    (offered_ip >> 24) & 0xFF, (offered_ip >> 16) & 0xFF,
                                    (offered_ip >> 8) & 0xFF, offered_ip & 0xFF);
+                            printf("[●] DHCP: Subnet mask %u.%u.%u.%u\n",
+                                   (subnet_mask >> 24) & 0xFF, (subnet_mask >> 16) & 0xFF,
+                                   (subnet_mask >> 8) & 0xFF, subnet_mask & 0xFF);
                             
                             ctx->dhcp_state = DHCP_STATE_CONFIGURED;
                             
@@ -556,20 +570,124 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                 dev_name_buf[dev_name_len] = '\0';
                                 
                                 char cmd[512];
-                                snprintf(cmd, sizeof(cmd), "ifconfig %s inet %u.%u.%u.%u %u.%u.%u.%u netmask 255.255.0.0 up",
+                                snprintf(cmd, sizeof(cmd), "ifconfig %s inet %u.%u.%u.%u %u.%u.%u.%u netmask %u.%u.%u.%u up",
                                         (char*)dev_name_buf,
                                         (offered_ip >> 24) & 0xFF, (offered_ip >> 16) & 0xFF,
                                         (offered_ip >> 8) & 0xFF, offered_ip & 0xFF,
                                         (server_ip >> 24) & 0xFF, (server_ip >> 16) & 0xFF,
-                                        (server_ip >> 8) & 0xFF, server_ip & 0xFF);
+                                        (server_ip >> 8) & 0xFF, server_ip & 0xFF,
+                                        (subnet_mask >> 24) & 0xFF, (subnet_mask >> 16) & 0xFF,
+                                        (subnet_mask >> 8) & 0xFF, subnet_mask & 0xFF);
                                 int result = system(cmd);
                                 
                                 if (result == 0) {
-                                    // Configure routes
-                                    if (zig_adapter_configure_routes(ctx->zig_adapter, server_ip)) {
-                                        printf("[●] VPN: Interface configured, routes active\n");
+                                    // Calculate VPN network dynamically: network = offered_ip & subnet_mask
+                                    uint32_t vpn_network = offered_ip & subnet_mask;
+                                    uint32_t vpn_netmask = subnet_mask;
+                                    
+                                    printf("[●] VPN: Network %u.%u.%u.%u/%d\n",
+                                           (vpn_network >> 24) & 0xFF, (vpn_network >> 16) & 0xFF,
+                                           (vpn_network >> 8) & 0xFF, vpn_network & 0xFF,
+                                           __builtin_popcount(vpn_netmask));
+                                    
+                                    // Step 1: Add route for VPN network
+                                    if (zig_adapter_configure_routes(ctx->zig_adapter, server_ip, vpn_network, vpn_netmask)) {
+                                        printf("[●] VPN: VPN network route configured\n");
                                     } else {
-                                        printf("[●] WARNING: Route configuration failed\n");
+                                        printf("[●] WARNING: VPN network route configuration failed\n");
+                                    }
+                                    
+                                    // Step 2: Get VPN server hostname from session (to add protected route)
+                                    char server_hostname[256] = {0};
+                                    bool enable_full_tunnel = false;
+                                    
+                                    // Method 1: Try to get hostname from session
+                                    if (ctx->session && ctx->session->ClientOption && ctx->session->ClientOption->Hostname) {
+                                        strncpy(server_hostname, ctx->session->ClientOption->Hostname, sizeof(server_hostname) - 1);
+                                        printf("[●] VPN: Server hostname from session: %s\n", server_hostname);
+                                    }
+                                    
+                                    // Method 2: Check environment variable for full tunnel mode
+                                    const char* full_tunnel_env = getenv("VPN_FULL_TUNNEL");
+                                    if (full_tunnel_env && (strcmp(full_tunnel_env, "1") == 0 || strcmp(full_tunnel_env, "true") == 0)) {
+                                        enable_full_tunnel = true;
+                                        // If hostname wasn't found from session, try environment variable
+                                        if (strlen(server_hostname) == 0) {
+                                            const char* hostname_env = getenv("VPN_SERVER_HOSTNAME");
+                                            if (hostname_env) {
+                                                strncpy(server_hostname, hostname_env, sizeof(server_hostname) - 1);
+                                                printf("[●] VPN: Server hostname from env: %s\n", server_hostname);
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Step 3: Route ALL traffic through VPN (full tunnel mode) if enabled
+                                    if (enable_full_tunnel && strlen(server_hostname) > 0) {
+                                        printf("[●] VPN: Configuring full tunnel mode (routing all traffic through VPN)\n");
+                                        printf("[●] VPN: Server hostname: %s\n", server_hostname);
+                                        
+                                        // Get original default gateway
+                                        FILE* gw_pipe = popen("netstat -rn | grep '^default' | head -1 | awk '{print $2}'", "r");
+                                        char orig_gateway[32] = {0};
+                                        if (gw_pipe) {
+                                            if (fgets(orig_gateway, sizeof(orig_gateway), gw_pipe)) {
+                                                // Remove newline
+                                                orig_gateway[strcspn(orig_gateway, "\n")] = 0;
+                                            }
+                                            pclose(gw_pipe);
+                                        }
+                                        
+                                        if (strlen(orig_gateway) > 0) {
+                                            printf("[●] VPN: Original gateway: %s\n", orig_gateway);
+                                            
+                                            // Resolve VPN server hostname to IP
+                                            char resolve_cmd[512];
+                                            snprintf(resolve_cmd, sizeof(resolve_cmd), 
+                                                    "dig +short %s | grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$' | head -1", 
+                                                    server_hostname);
+                                            
+                                            FILE* resolve_pipe = popen(resolve_cmd, "r");
+                                            char server_ip_str[32] = {0};
+                                            if (resolve_pipe) {
+                                                if (fgets(server_ip_str, sizeof(server_ip_str), resolve_pipe)) {
+                                                    server_ip_str[strcspn(server_ip_str, "\n")] = 0;
+                                                }
+                                                pclose(resolve_pipe);
+                                            }
+                                            
+                                            // Add host route for VPN server through original gateway (protects VPN connection)
+                                            if (strlen(server_ip_str) > 0) {
+                                                printf("[●] VPN: Server IP: %s\n", server_ip_str);
+                                                printf("[●] VPN: Adding protected route for VPN server via %s\n", orig_gateway);
+                                                
+                                                char protect_cmd[256];
+                                                snprintf(protect_cmd, sizeof(protect_cmd), 
+                                                        "route add -host %s %s 2>/dev/null", 
+                                                        server_ip_str, orig_gateway);
+                                                system(protect_cmd);
+                                            }
+                                            
+                                            // Delete current default route
+                                            printf("[●] VPN: Removing old default route\n");
+                                            system("route delete default 2>/dev/null");
+                                            
+                                            // Add VPN as new default route
+                                            char default_route_cmd[256];
+                                            snprintf(default_route_cmd, sizeof(default_route_cmd),
+                                                    "route add default %u.%u.%u.%u",
+                                                    (server_ip >> 24) & 0xFF, (server_ip >> 16) & 0xFF,
+                                                    (server_ip >> 8) & 0xFF, server_ip & 0xFF);
+                                            
+                                            if (system(default_route_cmd) == 0) {
+                                                printf("[●] VPN: ✅ Full tunnel mode active - ALL traffic now goes through VPN\n");
+                                            } else {
+                                                printf("[●] WARNING: Failed to set VPN as default route\n");
+                                            }
+                                        } else {
+                                            printf("[●] WARNING: Could not determine original gateway\n");
+                                        }
+                                    } else {
+                                        printf("[●] VPN: Interface configured, routes active (split tunnel mode)\n");
                                     }
                                 } else {
                                     printf("[●] ERROR: Interface configuration failed (code %d)\n", result);
