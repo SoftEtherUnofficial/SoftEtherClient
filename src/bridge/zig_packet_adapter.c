@@ -48,6 +48,33 @@ typedef enum {
     PERF_PROFILE_THROUGHPUT   // Downloads/streaming - highest speed
 } PERF_PROFILE;
 
+// Routing configuration structures
+#define MAX_ROUTE_ENTRIES 64
+
+typedef struct {
+    char cidr[64];  // e.g., "192.168.1.0/24" or "2001:db8::/32"
+    bool is_ipv6;
+} VPN_ROUTE_ENTRY;
+
+typedef struct {
+    bool enabled;
+    VPN_ROUTE_ENTRY include[MAX_ROUTE_ENTRIES];
+    int include_count;
+    VPN_ROUTE_ENTRY exclude[MAX_ROUTE_ENTRIES];
+    int exclude_count;
+} IP_ROUTE_CONFIG;
+
+typedef struct {
+    bool enabled;
+    IP_ROUTE_CONFIG ipv4;
+    IP_ROUTE_CONFIG ipv6;
+} ADVANCED_ROUTING;
+
+typedef struct {
+    bool send_all_traffic;  // Full tunnel mode
+    ADVANCED_ROUTING advanced;
+} ROUTING_CONFIG;
+
 // Zig adapter context structure
 typedef struct ZIG_ADAPTER_CONTEXT {
     SESSION *session;
@@ -69,6 +96,9 @@ typedef struct ZIG_ADAPTER_CONTEXT {
     
     // Performance profile (simplified - just profile selection)
     PERF_PROFILE perf_profile; // Active profile: latency/balanced/throughput
+    
+    // Routing configuration
+    ROUTING_CONFIG routing_config;
 } ZIG_ADAPTER_CONTEXT;
 
 // ✅ REMOVED (~350 lines): DHCP state machine, ARP handling, packet builders
@@ -235,6 +265,115 @@ static bool ZigAdapterInit(SESSION* s) {
     
     // Generate DHCP transaction ID
     ctx->dhcp_xid = (UINT32)time(NULL);
+    
+    // Parse routing configuration from environment or use defaults
+    const char* send_all_env = getenv("VPN_SEND_ALL_TRAFFIC");
+    if (send_all_env != NULL) {
+        // Explicit environment variable setting
+        ctx->routing_config.send_all_traffic = (strcmp(send_all_env, "1") == 0);
+    } else {
+        // Default: Full Tunnel mode
+        ctx->routing_config.send_all_traffic = true;
+    }
+    
+    // Initialize advanced routing (disabled by default)
+    ctx->routing_config.advanced.enabled = false;
+    ctx->routing_config.advanced.ipv4.enabled = true;
+    ctx->routing_config.advanced.ipv4.include_count = 0;
+    ctx->routing_config.advanced.ipv4.exclude_count = 0;
+    ctx->routing_config.advanced.ipv6.enabled = false;
+    ctx->routing_config.advanced.ipv6.include_count = 0;
+    ctx->routing_config.advanced.ipv6.exclude_count = 0;
+    
+    // Parse advanced routing from environment if provided
+    const char* adv_routing_env = getenv("VPN_ADVANCED_ROUTING");
+    if (adv_routing_env != NULL && strcmp(adv_routing_env, "1") == 0) {
+        ctx->routing_config.advanced.enabled = true;
+        
+        // Parse IPv4 include routes (comma-separated CIDRs)
+        const char* ipv4_include = getenv("VPN_IPV4_INCLUDE");
+        if (ipv4_include != NULL) {
+            char* routes = strdup(ipv4_include);
+            char* token = strtok(routes, ",");
+            while (token != NULL && ctx->routing_config.advanced.ipv4.include_count < MAX_ROUTE_ENTRIES) {
+                // Trim whitespace
+                while (*token == ' ' || *token == '\t') token++;
+                strncpy(ctx->routing_config.advanced.ipv4.include[ctx->routing_config.advanced.ipv4.include_count].cidr,
+                       token, sizeof(ctx->routing_config.advanced.ipv4.include[0].cidr) - 1);
+                ctx->routing_config.advanced.ipv4.include[ctx->routing_config.advanced.ipv4.include_count].is_ipv6 = false;
+                ctx->routing_config.advanced.ipv4.include_count++;
+                token = strtok(NULL, ",");
+            }
+            free(routes);
+            printf("[ZigAdapterInit] 📍 IPv4 Include Routes: %d routes configured\n", 
+                   ctx->routing_config.advanced.ipv4.include_count);
+        }
+        
+        // Parse IPv4 exclude routes (comma-separated CIDRs)
+        const char* ipv4_exclude = getenv("VPN_IPV4_EXCLUDE");
+        if (ipv4_exclude != NULL) {
+            char* routes = strdup(ipv4_exclude);
+            char* token = strtok(routes, ",");
+            while (token != NULL && ctx->routing_config.advanced.ipv4.exclude_count < MAX_ROUTE_ENTRIES) {
+                while (*token == ' ' || *token == '\t') token++;
+                strncpy(ctx->routing_config.advanced.ipv4.exclude[ctx->routing_config.advanced.ipv4.exclude_count].cidr,
+                       token, sizeof(ctx->routing_config.advanced.ipv4.exclude[0].cidr) - 1);
+                ctx->routing_config.advanced.ipv4.exclude[ctx->routing_config.advanced.ipv4.exclude_count].is_ipv6 = false;
+                ctx->routing_config.advanced.ipv4.exclude_count++;
+                token = strtok(NULL, ",");
+            }
+            free(routes);
+            printf("[ZigAdapterInit] 🚫 IPv4 Exclude Routes: %d routes configured\n", 
+                   ctx->routing_config.advanced.ipv4.exclude_count);
+        }
+        
+        // Parse IPv6 routes (similar pattern)
+        const char* ipv6_enabled = getenv("VPN_IPV6_ENABLED");
+        if (ipv6_enabled != NULL && strcmp(ipv6_enabled, "1") == 0) {
+            ctx->routing_config.advanced.ipv6.enabled = true;
+            
+            const char* ipv6_include = getenv("VPN_IPV6_INCLUDE");
+            if (ipv6_include != NULL) {
+                char* routes = strdup(ipv6_include);
+                char* token = strtok(routes, ",");
+                while (token != NULL && ctx->routing_config.advanced.ipv6.include_count < MAX_ROUTE_ENTRIES) {
+                    while (*token == ' ' || *token == '\t') token++;
+                    strncpy(ctx->routing_config.advanced.ipv6.include[ctx->routing_config.advanced.ipv6.include_count].cidr,
+                           token, sizeof(ctx->routing_config.advanced.ipv6.include[0].cidr) - 1);
+                    ctx->routing_config.advanced.ipv6.include[ctx->routing_config.advanced.ipv6.include_count].is_ipv6 = true;
+                    ctx->routing_config.advanced.ipv6.include_count++;
+                    token = strtok(NULL, ",");
+                }
+                free(routes);
+                printf("[ZigAdapterInit] 📍 IPv6 Include Routes: %d routes configured\n", 
+                       ctx->routing_config.advanced.ipv6.include_count);
+            }
+            
+            const char* ipv6_exclude = getenv("VPN_IPV6_EXCLUDE");
+            if (ipv6_exclude != NULL) {
+                char* routes = strdup(ipv6_exclude);
+                char* token = strtok(routes, ",");
+                while (token != NULL && ctx->routing_config.advanced.ipv6.exclude_count < MAX_ROUTE_ENTRIES) {
+                    while (*token == ' ' || *token == '\t') token++;
+                    strncpy(ctx->routing_config.advanced.ipv6.exclude[ctx->routing_config.advanced.ipv6.exclude_count].cidr,
+                           token, sizeof(ctx->routing_config.advanced.ipv6.exclude[0].cidr) - 1);
+                    ctx->routing_config.advanced.ipv6.exclude[ctx->routing_config.advanced.ipv6.exclude_count].is_ipv6 = true;
+                    ctx->routing_config.advanced.ipv6.exclude_count++;
+                    token = strtok(NULL, ",");
+                }
+                free(routes);
+                printf("[ZigAdapterInit] 🚫 IPv6 Exclude Routes: %d routes configured\n", 
+                       ctx->routing_config.advanced.ipv6.exclude_count);
+            }
+        }
+        
+        printf("[ZigAdapterInit] 🔧 Advanced Routing: ENABLED\n");
+    }
+    
+    printf("[ZigAdapterInit] 🌐 Routing Mode: %s\n", 
+           ctx->routing_config.send_all_traffic ? "FULL TUNNEL (all traffic)" : 
+           ctx->routing_config.advanced.enabled ? "ADVANCED (custom rules)" : 
+           "SPLIT TUNNEL (VPN network only)");
     
     // Store context in session
     s->PacketAdapter->Param = ctx;
@@ -599,29 +738,24 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                     
                                     // Step 2: Get VPN server hostname from session (to add protected route)
                                     char server_hostname[256] = {0};
-                                    bool enable_full_tunnel = false;
+                                    bool enable_full_tunnel = ctx->routing_config.send_all_traffic;
                                     
                                     // Method 1: Try to get hostname from session
-                                    if (ctx->session && ctx->session->ClientOption && ctx->session->ClientOption->Hostname) {
+                                    if (ctx->session && ctx->session->ClientOption && ctx->session->ClientOption->Hostname[0] != '\0') {
                                         strncpy(server_hostname, ctx->session->ClientOption->Hostname, sizeof(server_hostname) - 1);
                                         printf("[●] VPN: Server hostname from session: %s\n", server_hostname);
                                     }
                                     
-                                    // Method 2: Check environment variable for full tunnel mode
-                                    const char* full_tunnel_env = getenv("VPN_FULL_TUNNEL");
-                                    if (full_tunnel_env && (strcmp(full_tunnel_env, "1") == 0 || strcmp(full_tunnel_env, "true") == 0)) {
-                                        enable_full_tunnel = true;
-                                        // If hostname wasn't found from session, try environment variable
-                                        if (strlen(server_hostname) == 0) {
-                                            const char* hostname_env = getenv("VPN_SERVER_HOSTNAME");
-                                            if (hostname_env) {
-                                                strncpy(server_hostname, hostname_env, sizeof(server_hostname) - 1);
-                                                printf("[●] VPN: Server hostname from env: %s\n", server_hostname);
-                                            }
+                                    // Fallback: Check environment variable for hostname
+                                    if (strlen(server_hostname) == 0) {
+                                        const char* hostname_env = getenv("VPN_SERVER_HOSTNAME");
+                                        if (hostname_env) {
+                                            strncpy(server_hostname, hostname_env, sizeof(server_hostname) - 1);
+                                            printf("[●] VPN: Server hostname from env: %s\n", server_hostname);
                                         }
                                     }
                                     
-                                    // Step 3: Route ALL traffic through VPN (full tunnel mode) if enabled
+                                    // Step 3: Configure routing based on routing_config
                                     if (enable_full_tunnel && strlen(server_hostname) > 0) {
                                         printf("[●] VPN: Configuring full tunnel mode (routing all traffic through VPN)\n");
                                         printf("[●] VPN: Server hostname: %s\n", server_hostname);
@@ -686,6 +820,105 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                         } else {
                                             printf("[●] WARNING: Could not determine original gateway\n");
                                         }
+                                    } else if (ctx->routing_config.advanced.enabled) {
+                                        printf("[●] VPN: Configuring advanced routing rules\n");
+                                        
+                                        // Get original default gateway for exclude routes
+                                        FILE* gw_pipe = popen("netstat -rn | grep '^default' | head -1 | awk '{print $2}'", "r");
+                                        char orig_gateway[32] = {0};
+                                        if (gw_pipe) {
+                                            if (fgets(orig_gateway, sizeof(orig_gateway), gw_pipe)) {
+                                                orig_gateway[strcspn(orig_gateway, "\n")] = 0;
+                                            }
+                                            pclose(gw_pipe);
+                                        }
+                                        
+                                        // Apply advanced routing rules
+                                        if (ctx->routing_config.advanced.ipv4.enabled) {
+                                            // Apply IPv4 include routes (route through VPN)
+                                            for (int i = 0; i < ctx->routing_config.advanced.ipv4.include_count; i++) {
+                                                char cmd[256];
+                                                snprintf(cmd, sizeof(cmd), "route -n add -net %s %u.%u.%u.%u 2>/dev/null",
+                                                        ctx->routing_config.advanced.ipv4.include[i].cidr,
+                                                        (server_ip >> 24) & 0xFF,
+                                                        (server_ip >> 16) & 0xFF,
+                                                        (server_ip >> 8) & 0xFF,
+                                                        server_ip & 0xFF);
+                                                int ret = system(cmd);
+                                                if (ret == 0) {
+                                                    printf("[●] VPN: ✅ Added IPv4 include route: %s\n",
+                                                          ctx->routing_config.advanced.ipv4.include[i].cidr);
+                                                } else {
+                                                    printf("[●] WARNING: Failed to add IPv4 include route: %s\n",
+                                                          ctx->routing_config.advanced.ipv4.include[i].cidr);
+                                                }
+                                            }
+                                            
+                                            // Apply IPv4 exclude routes (route through original gateway)
+                                            if (strlen(orig_gateway) > 0) {
+                                                for (int i = 0; i < ctx->routing_config.advanced.ipv4.exclude_count; i++) {
+                                                    char cmd[256];
+                                                    snprintf(cmd, sizeof(cmd), "route -n add -net %s %s 2>/dev/null",
+                                                            ctx->routing_config.advanced.ipv4.exclude[i].cidr,
+                                                            orig_gateway);
+                                                    int ret = system(cmd);
+                                                    if (ret == 0) {
+                                                        printf("[●] VPN: ✅ Added IPv4 exclude route: %s via %s\n",
+                                                              ctx->routing_config.advanced.ipv4.exclude[i].cidr, orig_gateway);
+                                                    } else {
+                                                        printf("[●] WARNING: Failed to add IPv4 exclude route: %s\n",
+                                                              ctx->routing_config.advanced.ipv4.exclude[i].cidr);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        
+                                        if (ctx->routing_config.advanced.ipv6.enabled) {
+                                            // Get IPv6 gateway for exclude routes
+                                            FILE* gw6_pipe = popen("netstat -rn | grep '^default' | grep ':' | head -1 | awk '{print $2}'", "r");
+                                            char orig_gateway6[128] = {0};
+                                            if (gw6_pipe) {
+                                                if (fgets(orig_gateway6, sizeof(orig_gateway6), gw6_pipe)) {
+                                                    orig_gateway6[strcspn(orig_gateway6, "\n")] = 0;
+                                                }
+                                                pclose(gw6_pipe);
+                                            }
+                                            
+                                            // Apply IPv6 include routes (route through VPN - using link-local for now)
+                                            for (int i = 0; i < ctx->routing_config.advanced.ipv6.include_count; i++) {
+                                                char cmd[256];
+                                                snprintf(cmd, sizeof(cmd), "route -n add -inet6 %s ::1 2>/dev/null",
+                                                        ctx->routing_config.advanced.ipv6.include[i].cidr);
+                                                int ret = system(cmd);
+                                                if (ret == 0) {
+                                                    printf("[●] VPN: ✅ Added IPv6 include route: %s\n",
+                                                          ctx->routing_config.advanced.ipv6.include[i].cidr);
+                                                } else {
+                                                    printf("[●] WARNING: Failed to add IPv6 include route: %s\n",
+                                                          ctx->routing_config.advanced.ipv6.include[i].cidr);
+                                                }
+                                            }
+                                            
+                                            // Apply IPv6 exclude routes
+                                            if (strlen(orig_gateway6) > 0) {
+                                                for (int i = 0; i < ctx->routing_config.advanced.ipv6.exclude_count; i++) {
+                                                    char cmd[256];
+                                                    snprintf(cmd, sizeof(cmd), "route -n add -inet6 %s %s 2>/dev/null",
+                                                            ctx->routing_config.advanced.ipv6.exclude[i].cidr,
+                                                            orig_gateway6);
+                                                    int ret = system(cmd);
+                                                    if (ret == 0) {
+                                                        printf("[●] VPN: ✅ Added IPv6 exclude route: %s via %s\n",
+                                                              ctx->routing_config.advanced.ipv6.exclude[i].cidr, orig_gateway6);
+                                                    } else {
+                                                        printf("[●] WARNING: Failed to add IPv6 exclude route: %s\n",
+                                                              ctx->routing_config.advanced.ipv6.exclude[i].cidr);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        
+                                        printf("[●] VPN: ✅ Advanced routing configured\n");
                                     } else {
                                         printf("[●] VPN: Interface configured, routes active (split tunnel mode)\n");
                                     }
