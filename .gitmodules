@@ -2,6 +2,3 @@
 	path = deps/taptun
 	url = https://github.com/SoftEtherUnofficial/ZigTapTun.git
 	branch = master
-[submodule "deps/openssl"]
-	path = deps/openssl
-	url = https://github.com/SoftEtherUnofficial/OpenSSLZig

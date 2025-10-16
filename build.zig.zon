@@ -65,7 +65,8 @@
         //    .lazy = false,
         //},
         .openssl = .{
-            .path = "deps/openssl",
+            .url = "https://github.com/SoftEtherUnofficial/OpenSSLZig/archive/5e893fe3353e51aeae332b07d060e7d88efcd626.tar.gz",
+            .hash = "12201b931799b87787d1fd74d22603945918b467907bfbe5829f829cf9160b6c2000",
         },
     },
     // Specifies the set of files and directories that are included in this package.
@@ -80,9 +81,8 @@
         "build.zig",
         "build.zig.zon",
         "src",
-        "deps",
-        // For example...
-        //"LICENSE",
-        //"README.md",
+        "deps/taptun",
+        "LICENSE",
+        "README.md",
     },
 }
