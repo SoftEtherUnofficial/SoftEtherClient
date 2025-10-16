@@ -330,6 +330,7 @@ pub const ZigPacketAdapter = struct {
     }
 
     /// Get batch of packets (NEW API for batch processing)
+    /// Returns number of packets retrieved
     pub fn getPacketBatch(self: *ZigPacketAdapter, out: []?PacketBuffer) usize {
         return self.recv_queue.popBatch(out);
     }
@@ -378,6 +379,82 @@ pub const ZigPacketAdapter = struct {
         }
 
         return true;
+    }
+
+    /// Put batch of packets for transmission (NEW API for batch processing)
+    /// Returns number of packets successfully queued
+    /// This provides significant performance improvement by:
+    /// - Amortizing function call overhead across multiple packets
+    /// - Better CPU cache utilization
+    /// - Reduced lock contention (if locks were used)
+    /// - Enabling batch I/O to TUN device
+    pub fn putPacketBatch(self: *ZigPacketAdapter, packets: []const []const u8) usize {
+        var queued: usize = 0;
+
+        for (packets) |data| {
+            // Skip DHCP packets (handled separately)
+            if (data.len >= 14 + 20 + 8 + 240) {
+                const ethertype = (@as(u16, data[12]) << 8) | data[13];
+                if (ethertype == 0x0800) { // IPv4
+                    const ip_proto = data[14 + 9];
+                    if (ip_proto == 17) { // UDP
+                        const udp_dest_port = (@as(u16, data[14 + 20 + 2]) << 8) | data[14 + 20 + 3];
+                        if (udp_dest_port == 68) { // DHCP client port
+                            queued += 1; // Count as queued but don't send to TUN
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // Get buffer from pool
+            const buffer = self.packet_pool.alloc() orelse break; // Stop on pool exhaustion
+
+            // Copy packet data
+            if (data.len > buffer.len) {
+                self.packet_pool.free(buffer);
+                break; // Stop on oversized packet
+            }
+
+            @memcpy(buffer[0..data.len], data);
+
+            const pkt = PacketBuffer{
+                .data = buffer,
+                .len = data.len,
+                .timestamp = @intCast(std.time.nanoTimestamp()),
+            };
+
+            if (!self.send_queue.push(pkt)) {
+                _ = self.stats.send_queue_drops.fetchAdd(1, .monotonic);
+                self.packet_pool.free(buffer);
+                break; // Stop on queue full
+            }
+
+            queued += 1;
+        }
+
+        return queued;
+    }
+
+    /// Write batch of packets directly to TUN device (bypass queue)
+    /// This is the highest performance path for bulk writes
+    /// Returns number of packets successfully written
+    pub fn writeBatchDirect(self: *ZigPacketAdapter, packets: []const []const u8) !usize {
+        var written: usize = 0;
+
+        for (packets) |packet| {
+            // Convert Ethernet to IP if needed and write
+            self.tun_device.writeEthernet(packet) catch |err| {
+                logError("Batch write error at packet {d}: {}", .{ written, err });
+                break; // Stop on first error
+            };
+
+            written += 1;
+            _ = self.stats.packets_written.fetchAdd(1, .monotonic);
+            _ = self.stats.bytes_written.fetchAdd(packet.len, .monotonic);
+        }
+
+        return written;
     }
 
     /// Configure VPN routing (ZIGSE-80: replaces C bridge route management)

@@ -429,7 +429,139 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cli.step);
 
     // ============================================
-    // 3. FFI LIBRARY (Cross-Platform)
+    // 3. BENCHMARK UTILITY (Performance Testing)
+    // ============================================
+    const bench = b.addExecutable(.{
+        .name = "bench_adapter",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/packet/bench_adapter.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "adapter", .module = packet_adapter_module },
+            },
+        }),
+    });
+
+    bench.addIncludePath(b.path("src"));
+    bench.addIncludePath(b.path("src/bridge"));
+    bench.addIncludePath(b.path("src/bridge/Mayaqua"));
+    bench.addIncludePath(b.path("src/bridge/Cedar"));
+
+    // Link OpenSSL (system or bundled)
+    if (use_system_ssl) {
+        bench.linkSystemLibrary("ssl");
+        bench.linkSystemLibrary("crypto");
+    } else {
+        if (crypto) |c| bench.linkLibrary(c);
+        if (openssl) |s| bench.linkLibrary(s);
+    }
+
+    bench.addCSourceFiles(.{
+        .files = c_sources,
+        .flags = c_flags,
+    });
+
+    // Add NativeStack for non-iOS builds
+    if (!is_ios) {
+        bench.addCSourceFiles(.{
+            .files = native_stack_sources,
+            .flags = c_flags,
+        });
+    }
+
+    // Add ZigTapTun wrapper
+    bench.addObject(taptun_wrapper);
+
+    // NOTE: Don't add packet_adapter_obj here - it's already included via the adapter module import
+    // bench.addObject(packet_adapter_obj);  // This would cause duplicate symbols
+
+    bench.linkLibC();
+
+    // Platform-specific system libraries
+    if (target_os != .windows) {
+        bench.linkSystemLibrary("pthread");
+        bench.linkSystemLibrary("z");
+
+        if (target_os == .macos) {
+            bench.linkSystemLibrary("iconv");
+            bench.linkSystemLibrary("readline");
+            bench.linkSystemLibrary("ncurses");
+        } else if (target_os == .linux) {
+            bench.linkSystemLibrary("rt");
+            bench.linkSystemLibrary("dl");
+        }
+    } else {
+        bench.linkSystemLibrary("ws2_32");
+        bench.linkSystemLibrary("iphlpapi");
+        bench.linkSystemLibrary("advapi32");
+        bench.linkSystemLibrary("kernel32");
+        bench.linkSystemLibrary("user32");
+        bench.linkSystemLibrary("shell32");
+    }
+
+    b.installArtifact(bench);
+
+    // Run step for benchmark
+    const run_bench = b.addRunArtifact(bench);
+    run_bench.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_bench.addArgs(args);
+    }
+
+    const bench_step = b.step("bench", "Run packet adapter performance benchmark (requires root)");
+    bench_step.dependOn(&run_bench.step);
+
+    // ============================================
+    // 3b. CRYPTO BENCHMARK UTILITY
+    // ============================================
+    const crypto_module = b.createModule(.{
+        .root_source_file = b.path("src/protocol/crypto.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const bench_crypto = b.addExecutable(.{
+        .name = "bench_crypto",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/packet/bench_crypto.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "protocol", .module = crypto_module },
+            },
+        }),
+    });
+
+    bench_crypto.addIncludePath(b.path("src"));
+    bench_crypto.addIncludePath(b.path("src/bridge"));
+    bench_crypto.addIncludePath(b.path("src/bridge/Mayaqua"));
+
+    // Link OpenSSL (system or bundled)
+    if (use_system_ssl) {
+        bench_crypto.linkSystemLibrary("ssl");
+        bench_crypto.linkSystemLibrary("crypto");
+    } else {
+        if (crypto) |c| bench_crypto.linkLibrary(c);
+        if (openssl) |s| bench_crypto.linkLibrary(s);
+    }
+
+    bench_crypto.linkLibC();
+
+    b.installArtifact(bench_crypto);
+
+    // Run step for crypto benchmark
+    const run_bench_crypto = b.addRunArtifact(bench_crypto);
+    run_bench_crypto.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_bench_crypto.addArgs(args);
+    }
+
+    const bench_crypto_step = b.step("bench-crypto", "Run crypto performance benchmark (RC4, AES, ChaCha20)");
+    bench_crypto_step.dependOn(&run_bench_crypto.step);
+
+    // ============================================
+    // 4. FFI LIBRARY (Cross-Platform)
     // ============================================
     const ffi_lib = b.addLibrary(.{
         .name = "softether_ffi",
@@ -475,7 +607,7 @@ pub fn build(b: *std.Build) void {
     ffi_step.dependOn(&b.addInstallArtifact(ffi_lib, .{}).step);
 
     // ============================================
-    // 4. TESTS
+    // 5. TESTS
     // ============================================
 
     // Test for Mayaqua memory module
@@ -706,7 +838,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_macos_adapter_tests.step);
 
     // ============================================
-    // 5. HELP AND INFORMATION
+    // 6. HELP AND INFORMATION
     // ============================================
 
     const help_step = b.step("help", "Show build system help");
@@ -719,6 +851,7 @@ pub fn build(b: *std.Build) void {
         \\Available Build Targets:
         \\  zig build                  - Build all targets (default)
         \\  zig build run              - Build and run VPN client CLI
+        \\  zig build bench            - Run packet adapter performance benchmark (requires root)
         \\  zig build ffi              - Build FFI library only
         \\  zig build test             - Run unit tests
         \\  zig build clean            - Clean build artifacts
