@@ -76,13 +76,13 @@ SoftEther VPN supports password hashing using SHA-0. This is the **recommended m
 # Output:
 # Username: myuser
 # Password: mypassword123
-# Password Hash: "T2kl2mB84H5y2tn7n9qf65/8jXI="
+# Password Hash: "your_base64_encoded_sha1_hash"
 ```
 
 #### Step 2: Use Hash Instead of Password
 ```bash
 # ✅ GOOD: Use hash, not plaintext password
-vpnclient -u myuser --password-hash "T2kl2mB84H5y2tn7n9qf65/8jXI="
+vpnclient -u myuser --password-hash "your_base64_encoded_sha1_hash"
 ```
 
 **Benefits**:
@@ -108,7 +108,7 @@ export SOFTETHER_SERVER="vpn.example.com"
 export SOFTETHER_PORT="443"
 export SOFTETHER_HUB="VPN"
 export SOFTETHER_USER="myuser"
-export SOFTETHER_PASSWORD_HASH="T2kl2mB84H5y2tn7n9qf65/8jXI="
+export SOFTETHER_PASSWORD_HASH="your_base64_encoded_sha1_hash"
 
 # Connect (reads from environment)
 ./vpnclient
@@ -126,7 +126,7 @@ export SOFTETHER_PASSWORD_HASH="T2kl2mB84H5y2tn7n9qf65/8jXI="
 export SOFTETHER_SERVER="vpn.example.com"
 export SOFTETHER_HUB="VPN"
 export SOFTETHER_USER="myuser"
-export SOFTETHER_PASSWORD_HASH="T2kl2mB84H5y2tn7n9qf65/8jXI="
+export SOFTETHER_PASSWORD_HASH="your_base64_encoded_sha1_hash"
 
 # Reload shell config
 source ~/.zshrc  # or ~/.bashrc
@@ -142,7 +142,7 @@ cat > ~/.softether-vpn-env <<'EOF'
 export SOFTETHER_SERVER="vpn.example.com"
 export SOFTETHER_HUB="VPN"
 export SOFTETHER_USER="myuser"
-export SOFTETHER_PASSWORD_HASH="T2kl2mB84H5y2tn7n9qf65/8jXI="
+export SOFTETHER_PASSWORD_HASH="your_base64_encoded_sha1_hash"
 EOF
 
 # Secure the file
