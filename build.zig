@@ -431,6 +431,8 @@ pub fn build(b: *std.Build) void {
     // ============================================
     // 3. FFI LIBRARY (Cross-Platform)
     // ============================================
+
+    // Mobile FFI (generic API for iOS/Android)
     const ffi_lib = b.addLibrary(.{
         .name = "softether_ffi",
         .root_module = b.createModule(.{
@@ -468,14 +470,130 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(ffi_lib);
 
-    // Also install the header
+    // Install generic mobile FFI header
     b.installFile("include/ffi.h", "include/ffi.h");
 
     const ffi_step = b.step("ffi", "Build FFI library (cross-platform)");
     ffi_step.dependOn(&b.addInstallArtifact(ffi_lib, .{}).step);
 
     // ============================================
-    // 4. TESTS
+    // 4. iOS-COMPATIBLE FFI (Rust API Compat)
+    // ============================================
+    // This builds object files that can be linked into an iOS XCFramework.
+    // The iOS app expects the Rust FFI API (softether_client_* functions),
+    // which is provided by ios_compat.zig wrapping ios_adapter_stubs.c.
+
+    // Compile Zig FFI wrapper (ios_compat.zig)
+    const ios_ffi_module = b.createModule(.{
+        .root_source_file = b.path("src/ffi/ios_compat.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const ios_ffi_obj = b.addObject(.{
+        .name = "ios_ffi_zig",
+        .root_module = ios_ffi_module,
+    });
+    ios_ffi_obj.linkLibC();
+    ios_ffi_obj.addIncludePath(b.path("include"));
+    ios_ffi_obj.addIncludePath(b.path("src"));
+    ios_ffi_obj.addIncludePath(b.path("src/bridge"));
+    ios_ffi_obj.addIncludePath(b.path("src/bridge/Mayaqua"));
+    ios_ffi_obj.addIncludePath(b.path("src/bridge/Cedar"));
+
+    // Add iOS SDK configuration
+    if (is_ios) {
+        ios_ffi_obj.addIncludePath(b.path("src/bridge/ios_include"));
+        if (ios_sdk_path) |sdk| {
+            const ios_include = b.fmt("{s}/usr/include", .{sdk});
+            const ios_frameworks = b.fmt("{s}/System/Library/Frameworks", .{sdk});
+            ios_ffi_obj.addSystemIncludePath(.{ .cwd_relative = ios_include });
+            ios_ffi_obj.addFrameworkPath(.{ .cwd_relative = ios_frameworks });
+            ios_ffi_obj.linkFramework("Foundation");
+            ios_ffi_obj.linkFramework("Security");
+        }
+    }
+
+    // Compile C adapter bridge + all SoftEther sources
+    const ios_adapter_module = b.createModule(.{
+        .root_source_file = b.path("src/ffi/ios_adapter_stub_root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const ios_adapter_obj = b.addObject(.{
+        .name = "ios_adapter",
+        .root_module = ios_adapter_module,
+    });
+    ios_adapter_obj.linkLibC();
+    ios_adapter_obj.addIncludePath(b.path("include"));
+    ios_adapter_obj.addIncludePath(b.path("src"));
+    ios_adapter_obj.addIncludePath(b.path("src/bridge"));
+    ios_adapter_obj.addIncludePath(b.path("src/bridge/Mayaqua"));
+    ios_adapter_obj.addIncludePath(b.path("src/bridge/Cedar"));
+
+    // Add all SoftEther C sources
+    ios_adapter_obj.addCSourceFiles(.{
+        .files = c_sources,
+        .flags = c_flags,
+    });
+
+    // Add iOS adapter stubs
+    ios_adapter_obj.addCSourceFile(.{
+        .file = b.path("src/ffi/ios_adapter_stubs.c"),
+        .flags = c_flags,
+    });
+
+    // Link OpenSSL to both objects
+    if (use_system_ssl) {
+        ios_ffi_obj.linkSystemLibrary("ssl");
+        ios_ffi_obj.linkSystemLibrary("crypto");
+        ios_adapter_obj.linkSystemLibrary("ssl");
+        ios_adapter_obj.linkSystemLibrary("crypto");
+    } else {
+        if (crypto) |c| {
+            ios_ffi_obj.linkLibrary(c);
+            ios_adapter_obj.linkLibrary(c);
+        }
+        if (openssl) |s| {
+            ios_ffi_obj.linkLibrary(s);
+            ios_adapter_obj.linkLibrary(s);
+        }
+    }
+
+    // Platform-specific system libraries
+    if (!is_ios and target_os != .windows) {
+        ios_ffi_obj.linkSystemLibrary("pthread");
+        ios_ffi_obj.linkSystemLibrary("z");
+        ios_adapter_obj.linkSystemLibrary("pthread");
+        ios_adapter_obj.linkSystemLibrary("z");
+
+        if (target_os == .macos) {
+            ios_ffi_obj.linkSystemLibrary("iconv");
+            ios_adapter_obj.linkSystemLibrary("iconv");
+        } else if (target_os == .linux) {
+            ios_ffi_obj.linkSystemLibrary("rt");
+            ios_ffi_obj.linkSystemLibrary("dl");
+            ios_adapter_obj.linkSystemLibrary("rt");
+            ios_adapter_obj.linkSystemLibrary("dl");
+        }
+    }
+
+    // Install object files for linking into XCFramework
+    const install_ios_ffi = b.addInstallFileWithDir(ios_ffi_obj.getEmittedBin(), .lib, "ios_ffi.o");
+
+    const install_ios_adapter = b.addInstallFileWithDir(ios_adapter_obj.getEmittedBin(), .lib, "ios_adapter.o");
+
+    // Install iOS-compatible header (Rust FFI drop-in replacement)
+    const install_ios_header = b.addInstallFile(b.path("include/softether_ffi.h"), "include/softether_ffi.h");
+
+    const ios_ffi_step = b.step("ios-ffi", "Build iOS-compatible FFI library (softether_client_* API)");
+    ios_ffi_step.dependOn(&install_ios_ffi.step);
+    ios_ffi_step.dependOn(&install_ios_adapter.step);
+    ios_ffi_step.dependOn(&install_ios_header.step);
+
+    // ============================================
+    // 5. TESTS
     // ============================================
 
     // Test for Mayaqua memory module
@@ -706,7 +824,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_macos_adapter_tests.step);
 
     // ============================================
-    // 5. HELP AND INFORMATION
+    // 6. HELP AND INFORMATION
     // ============================================
 
     const help_step = b.step("help", "Show build system help");

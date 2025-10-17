@@ -596,6 +596,46 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
         // Inspect packet type
         const char* packet_type = "UNKNOWN";
         const UCHAR* pkt = (const UCHAR*)data;
+        
+        // 🔥 ALWAYS log ICMP packets (all of them, not just first 20)
+        bool is_icmp = false;
+        if (size >= 34 && pkt[12] == 0x08 && pkt[13] == 0x00 && pkt[23] == 1) {
+            is_icmp = true;
+            printf("[PutPacket] 🎯 ICMP PACKET (packet #%d, %u bytes):\n  ", put_count, size);
+            for (UINT i = 0; i < size && i < 80; i++) {
+                printf("%02x ", pkt[i]);
+                if ((i + 1) % 16 == 0) printf("\n  ");
+            }
+            printf("\n");
+            printf("  [IP] Src=%d.%d.%d.%d Dst=%d.%d.%d.%d Proto=1 (ICMP)\n",
+                   pkt[26], pkt[27], pkt[28], pkt[29],  // Source IP
+                   pkt[30], pkt[31], pkt[32], pkt[33]); // Dest IP
+            printf("  [ICMP] Type=%d Code=%d", pkt[34], pkt[35]);
+            if (pkt[34] == 0) printf(" (ECHO REPLY) 🎉\n");
+            else if (pkt[34] == 8) printf(" (ECHO REQUEST)\n");
+            else if (pkt[34] == 3) printf(" (DEST UNREACHABLE)\n");
+            else if (pkt[34] == 11) printf(" (TIME EXCEEDED)\n");
+            else printf("\n");
+        }
+        
+        // DEBUG: Hex dump first 80 bytes of first 20 non-ICMP packets
+        if (!is_icmp && put_count <= 20) {
+            printf("[PutPacket] HEX DUMP (packet #%d, %u bytes):\n  ", put_count, size);
+            for (UINT i = 0; i < size && i < 80; i++) {
+                printf("%02x ", pkt[i]);
+                if ((i + 1) % 16 == 0) printf("\n  ");
+            }
+            printf("\n");
+            
+            // Parse IP header if IPv4
+            if (size >= 34 && pkt[12] == 0x08 && pkt[13] == 0x00) {
+                printf("  [IP] Src=%d.%d.%d.%d Dst=%d.%d.%d.%d Proto=%d\n",
+                       pkt[26], pkt[27], pkt[28], pkt[29],  // Source IP
+                       pkt[30], pkt[31], pkt[32], pkt[33],  // Dest IP
+                       pkt[23]);                             // Protocol
+            }
+        }
+        
         if (size >= 14) {
             uint16_t ethertype = (pkt[12] << 8) | pkt[13];
             if (ethertype == 0x0800) {
@@ -607,13 +647,28 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                         // Check ICMP type (offset 34 in Ethernet frame)
                         if (size >= 35) {
                             uint8_t icmp_type = pkt[34];
-                            if (icmp_type == 0) packet_type = "ICMP-REPLY";
+                            if (icmp_type == 0) {
+                                packet_type = "ICMP-REPLY";
+                                printf("[PutPacket] 🎉 ICMP ECHO REPLY RECEIVED! size=%u\n", size);
+                            }
                             else if (icmp_type == 8) packet_type = "ICMP-REQUEST";
                         }
                     }
                     else if (ip_proto == 6) packet_type = "TCP";
                     else if (ip_proto == 17) packet_type = "UDP";
-                    else packet_type = "IPv4-Other";
+                    else {
+                        // DEBUG: Unknown IPv4 protocol - print details
+                        printf("[PutPacket] ⚠️  UNKNOWN IPv4 Protocol: %d (size=%u)\n", ip_proto, size);
+                        printf("  Ethernet: dst=%02x:%02x:%02x:%02x:%02x:%02x src=%02x:%02x:%02x:%02x:%02x:%02x type=0x%04x\n",
+                               pkt[0], pkt[1], pkt[2], pkt[3], pkt[4], pkt[5],
+                               pkt[6], pkt[7], pkt[8], pkt[9], pkt[10], pkt[11],
+                               ethertype);
+                        printf("  IP: ver=%d hdrlen=%d proto=%d src=%d.%d.%d.%d dst=%d.%d.%d.%d\n",
+                               (pkt[14] >> 4), ((pkt[14] & 0x0F) * 4), pkt[23],
+                               pkt[26], pkt[27], pkt[28], pkt[29],
+                               pkt[30], pkt[31], pkt[32], pkt[33]);
+                        packet_type = "IPv4-Other";
+                    }
                 }
             } else if (ethertype == 0x0806) packet_type = "ARP";
             else if (ethertype == 0x86DD) packet_type = "IPv6";

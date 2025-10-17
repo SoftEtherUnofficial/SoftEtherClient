@@ -115,6 +115,16 @@ pub const MacOSTunDevice = struct {
         else
             return error.InvalidPacket;
 
+        // Debug: Log write syscall details
+        const SyscallDebug = struct {
+            var write_count: usize = 0;
+        };
+        SyscallDebug.write_count += 1;
+        if (SyscallDebug.write_count <= 20) {
+            const ip_proto = if (ip_packet.len >= 20) ip_packet[9] else 0;
+            std.log.info("[SYSCALL #{d}] write() to fd={d} len={d}+4 proto={d}", .{ SyscallDebug.write_count, self.fd, ip_packet.len, ip_proto });
+        }
+
         // Add AF header
         var packet_with_header: [2052]u8 = undefined; // 4 + 2048
         std.mem.writeInt(u32, packet_with_header[0..4], af, .big);
@@ -122,7 +132,12 @@ pub const MacOSTunDevice = struct {
 
         const bytes_written = try posix.write(self.fd, packet_with_header[0 .. 4 + ip_packet.len]);
         if (bytes_written != 4 + ip_packet.len) {
+            std.log.err("[SYSCALL] Incomplete write! Expected {d}, got {d}", .{ 4 + ip_packet.len, bytes_written });
             return error.IncompleteWrite;
+        }
+
+        if (SyscallDebug.write_count <= 20) {
+            std.log.info("[SYSCALL #{d}] ✅ write() returned {d} bytes", .{ SyscallDebug.write_count, bytes_written });
         }
     }
 

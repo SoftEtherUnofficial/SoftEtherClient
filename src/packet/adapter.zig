@@ -334,7 +334,7 @@ pub const ZigPacketAdapter = struct {
         return self.recv_queue.popBatch(out);
     }
 
-    /// Put packet for transmission
+    /// Put packet for transmission (RX: server → TUN device)
     pub fn putPacket(self: *ZigPacketAdapter, data: []const u8) bool {
         // ✅ WAVE 5 PHASE 1: Check for DHCP packets from VPN server
         // If this is a DHCP OFFER or ACK, process it with translator
@@ -345,6 +345,20 @@ pub const ZigPacketAdapter = struct {
                 if (ip_proto == 17) { // UDP
                     const udp_dest_port = (@as(u16, data[14 + 20 + 2]) << 8) | data[14 + 20 + 3];
                     if (udp_dest_port == 68) { // DHCP client port
+                        // 🔥 CRITICAL FIX: Learn gateway MAC from DHCP packets BEFORE returning!
+                        // DHCP packets from gateway contain the MAC we need to learn
+                        if (data.len >= 34) {
+                            const src_ip = std.mem.readInt(u32, data[26..30], .big);
+                            logInfo("[DHCP INTERCEPT] src_ip=0x{X:0>8}, checking for gateway", .{src_ip});
+
+                            // Check if from gateway (10.21.0.1 = 0x0A150001)
+                            if ((src_ip & 0xFFFFFF00) == 0x0A150000 and (src_ip & 0xFF) == 1) {
+                                const src_mac = data[6..12];
+                                logInfo("[DHCP INTERCEPT] ✅ Gateway DHCP packet! Learning MAC...", .{});
+                                self.tun_device.learnGatewayMac(src_mac, src_ip);
+                            }
+                        }
+
                         // TODO: Process DHCP packet with translator
                         // self.tun_adapter.translator.processDhcpPacket(data) catch |err| { logInfo("⚠️  DHCP processing error: {}", .{err}); };
                         // Don't write DHCP packets to TUN device (they're Layer 2 only)
@@ -354,7 +368,7 @@ pub const ZigPacketAdapter = struct {
             }
         }
 
-        // Get buffer from pool
+        // Get buffer from pool (ORIGINAL QUEUE-BASED APPROACH)
         const buffer = self.packet_pool.alloc() orelse return false;
 
         // Copy packet data directly (Ethernet frame from SoftEther)
@@ -372,7 +386,7 @@ pub const ZigPacketAdapter = struct {
         };
 
         if (!self.send_queue.push(pkt)) {
-            _ = self.stats.send_queue_drops.fetchAdd(1, .monotonic); // Ignore return value
+            _ = self.stats.send_queue_drops.fetchAdd(1, .monotonic);
             self.packet_pool.free(buffer);
             return false;
         }
@@ -565,41 +579,66 @@ export fn zig_adapter_write_sync(adapter: *ZigPacketAdapter) isize {
         // Pop packet from send queue
         const pkt = adapter.send_queue.pop() orelse break;
 
-        // Write to TUN device (prepend 4-byte AF_INET header for macOS)
-        var write_buf: [2048]u8 = undefined;
+        // **FIX**: SoftEther sends L2 Ethernet frames, TUN device expects L3 IP packets
+        // The tun_device.writeEthernet() function handles the L2→L3 translation:
+        // 1. Strips 14-byte Ethernet header
+        // 2. Extracts IP packet
+        // 3. Adds 4-byte AF_INET header for macOS utun
+        // 4. Writes to TUN device
+        //
+        // So we just pass the full Ethernet frame and let the translator do its job!
 
-        // **CRITICAL**: TUN expects raw IP packets, but SoftEther sends Ethernet frames!
-        // We must strip the 14-byte Ethernet header before writing to TUN.
-        const ETHERNET_HEADER_SIZE = 14;
-
-        // Skip Ethernet header if packet is large enough
-        if (pkt.len < ETHERNET_HEADER_SIZE) {
-            adapter.packet_pool.free(pkt.data);
-            continue;
-        }
-
-        // macOS utun requires 4-byte AF_INET header in **network byte order (big-endian)**
-        // AF_INET = 2, so htonl(2) = 0x00000002 in network order
-        // CRITICAL: Must be big-endian, not little-endian!
-        write_buf[0] = 0x00;
-        write_buf[1] = 0x00;
-        write_buf[2] = 0x00;
-        write_buf[3] = 0x02; // AF_INET = 2
-
-        // Copy IP packet (skip Ethernet header) after AF_INET header
-        const ip_packet_len = pkt.len - ETHERNET_HEADER_SIZE;
-        const write_len = ip_packet_len + 4; // 4-byte AF_INET + IP packet
-
-        if (write_len > write_buf.len) {
-            // Packet too large, free buffer and skip
-            adapter.packet_pool.free(pkt.data);
-            continue;
-        }
-
-        @memcpy(write_buf[4..write_len], pkt.data[ETHERNET_HEADER_SIZE..pkt.len]);
-
-        // Write Ethernet frame to TUN device (it will convert to IP packet internally)
+        // Write Ethernet frame to TUN device (automatic L2→L3 translation)
         const eth_frame = pkt.data[0..pkt.len];
+
+        // Debug: Log ALL packets through write_sync
+        const DebugState = struct {
+            var count: usize = 0;
+        };
+        DebugState.count += 1;
+        if (DebugState.count <= 20 or eth_frame.len >= 34) {
+            const ethertype_debug = if (eth_frame.len >= 14) (@as(u16, eth_frame[12]) << 8) | eth_frame[13] else 0;
+            const proto_name = if (ethertype_debug == 0x0800) "IPv4" else if (ethertype_debug == 0x0806) "ARP" else "OTHER";
+            logInfo("[write_sync #{d}] Got packet len={d} type=0x{x:0>4} ({s})", .{ DebugState.count, pkt.len, ethertype_debug, proto_name });
+        }
+
+        // 🔥 CRITICAL: Learn gateway MAC from packets BEFORE writing to TUN
+        if (eth_frame.len >= 34) { // Min Ethernet + IP header
+            const ethertype = (@as(u16, eth_frame[12]) << 8) | eth_frame[13];
+            if (ethertype == 0x0800) { // IPv4
+                const src_ip = std.mem.readInt(u32, eth_frame[26..30], .big);
+
+                // DEBUG: Log every packet to see if gateway detection works
+                logInfo("[ADAPTER MAC CHECK] src_ip=0x{X:0>8}, checking against 0x0A150001", .{src_ip});
+
+                // Check if from gateway (10.21.0.1 = 0x0A150001)
+                if ((src_ip & 0xFFFFFF00) == 0x0A150000 and (src_ip & 0xFF) == 1) {
+                    const src_mac = eth_frame[6..12];
+                    logInfo("[ADAPTER] ✅ Gateway packet detected! Learning MAC...", .{});
+                    adapter.tun_device.learnGatewayMac(src_mac, src_ip);
+                }
+
+                // Debug: Log ALL ICMP packets to diagnose ping failure
+                const ip_proto = eth_frame[14 + 9];
+                if (ip_proto == 1) { // ICMP
+                    const icmp_type = eth_frame[34];
+                    const dst_ip = std.mem.readInt(u32, eth_frame[30..34], .big);
+                    logInfo("[RX ICMP] type={} src={}.{}.{}.{} dst={}.{}.{}.{} len={}", .{
+                        icmp_type,
+                        (src_ip >> 24) & 0xFF,
+                        (src_ip >> 16) & 0xFF,
+                        (src_ip >> 8) & 0xFF,
+                        src_ip & 0xFF,
+                        (dst_ip >> 24) & 0xFF,
+                        (dst_ip >> 16) & 0xFF,
+                        (dst_ip >> 8) & 0xFF,
+                        dst_ip & 0xFF,
+                        eth_frame.len,
+                    });
+                }
+            }
+        }
+
         adapter.tun_device.writeEthernet(eth_frame) catch |err| {
             if (err == error.WouldBlock) {
                 // TUN device full, re-queue packet and stop
