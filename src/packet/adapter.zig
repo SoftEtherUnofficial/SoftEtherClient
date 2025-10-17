@@ -362,7 +362,7 @@ pub const ZigPacketAdapter = struct {
 
         for (packets) |packet| {
             // Convert Ethernet to IP if needed and write
-            self.tun_device.writeEthernet(packet) catch |err| {
+            self.tun_adapter.writeEthernet(packet) catch |err| {
                 logError("Batch write error at packet {d}: {}", .{ written, err });
                 break; // Stop on first error
             };
