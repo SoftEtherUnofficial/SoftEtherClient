@@ -431,7 +431,139 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cli.step);
 
     // ============================================
-    // 3. FFI LIBRARY (Cross-Platform)
+    // 3. BENCHMARK UTILITY (Performance Testing)
+    // ============================================
+    const bench = b.addExecutable(.{
+        .name = "bench_adapter",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/packet/bench_adapter.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "adapter", .module = packet_adapter_module },
+            },
+        }),
+    });
+
+    bench.addIncludePath(b.path("src"));
+    bench.addIncludePath(b.path("src/bridge"));
+    bench.addIncludePath(b.path("src/bridge/Mayaqua"));
+    bench.addIncludePath(b.path("src/bridge/Cedar"));
+
+    // Link OpenSSL (system or bundled)
+    if (use_system_ssl) {
+        bench.linkSystemLibrary("ssl");
+        bench.linkSystemLibrary("crypto");
+    } else {
+        if (crypto) |c| bench.linkLibrary(c);
+        if (openssl) |s| bench.linkLibrary(s);
+    }
+
+    bench.addCSourceFiles(.{
+        .files = c_sources,
+        .flags = c_flags,
+    });
+
+    // Add NativeStack for non-iOS builds
+    if (!is_ios) {
+        bench.addCSourceFiles(.{
+            .files = native_stack_sources,
+            .flags = c_flags,
+        });
+    }
+
+    // Add ZigTapTun wrapper
+    bench.addObject(taptun_wrapper);
+
+    // NOTE: Don't add packet_adapter_obj here - it's already included via the adapter module import
+    // bench.addObject(packet_adapter_obj);  // This would cause duplicate symbols
+
+    bench.linkLibC();
+
+    // Platform-specific system libraries
+    if (target_os != .windows) {
+        bench.linkSystemLibrary("pthread");
+        bench.linkSystemLibrary("z");
+
+        if (target_os == .macos) {
+            bench.linkSystemLibrary("iconv");
+            bench.linkSystemLibrary("readline");
+            bench.linkSystemLibrary("ncurses");
+        } else if (target_os == .linux) {
+            bench.linkSystemLibrary("rt");
+            bench.linkSystemLibrary("dl");
+        }
+    } else {
+        bench.linkSystemLibrary("ws2_32");
+        bench.linkSystemLibrary("iphlpapi");
+        bench.linkSystemLibrary("advapi32");
+        bench.linkSystemLibrary("kernel32");
+        bench.linkSystemLibrary("user32");
+        bench.linkSystemLibrary("shell32");
+    }
+
+    b.installArtifact(bench);
+
+    // Run step for benchmark
+    const run_bench = b.addRunArtifact(bench);
+    run_bench.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_bench.addArgs(args);
+    }
+
+    const bench_step = b.step("bench", "Run packet adapter performance benchmark (requires root)");
+    bench_step.dependOn(&run_bench.step);
+
+    // ============================================
+    // 3b. CRYPTO BENCHMARK UTILITY
+    // ============================================
+    const crypto_module = b.createModule(.{
+        .root_source_file = b.path("src/protocol/crypto.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const bench_crypto = b.addExecutable(.{
+        .name = "bench_crypto",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/packet/bench_crypto.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "protocol", .module = crypto_module },
+            },
+        }),
+    });
+
+    bench_crypto.addIncludePath(b.path("src"));
+    bench_crypto.addIncludePath(b.path("src/bridge"));
+    bench_crypto.addIncludePath(b.path("src/bridge/Mayaqua"));
+
+    // Link OpenSSL (system or bundled)
+    if (use_system_ssl) {
+        bench_crypto.linkSystemLibrary("ssl");
+        bench_crypto.linkSystemLibrary("crypto");
+    } else {
+        if (crypto) |c| bench_crypto.linkLibrary(c);
+        if (openssl) |s| bench_crypto.linkLibrary(s);
+    }
+
+    bench_crypto.linkLibC();
+
+    b.installArtifact(bench_crypto);
+
+    // Run step for crypto benchmark
+    const run_bench_crypto = b.addRunArtifact(bench_crypto);
+    run_bench_crypto.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_bench_crypto.addArgs(args);
+    }
+
+    const bench_crypto_step = b.step("bench-crypto", "Run crypto performance benchmark (RC4, AES, ChaCha20)");
+    bench_crypto_step.dependOn(&run_bench_crypto.step);
+
+    // ============================================
+    // 4. FFI LIBRARY (Cross-Platform)
     // ============================================
 
     // Mobile FFI (generic API for iOS/Android)
@@ -477,122 +609,6 @@ pub fn build(b: *std.Build) void {
 
     const ffi_step = b.step("ffi", "Build FFI library (cross-platform)");
     ffi_step.dependOn(&b.addInstallArtifact(ffi_lib, .{}).step);
-
-    // ============================================
-    // 4. iOS-COMPATIBLE FFI (Rust API Compat)
-    // ============================================
-    // This builds object files that can be linked into an iOS XCFramework.
-    // The iOS app expects the Rust FFI API (softether_client_* functions),
-    // which is provided by ios_compat.zig wrapping ios_adapter_stubs.c.
-
-    // Compile Zig FFI wrapper (ios_compat.zig)
-    const ios_ffi_module = b.createModule(.{
-        .root_source_file = b.path("src/ffi/ios_compat.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const ios_ffi_obj = b.addObject(.{
-        .name = "ios_ffi_zig",
-        .root_module = ios_ffi_module,
-    });
-    ios_ffi_obj.linkLibC();
-    ios_ffi_obj.addIncludePath(b.path("include"));
-    ios_ffi_obj.addIncludePath(b.path("src"));
-    ios_ffi_obj.addIncludePath(b.path("src/bridge"));
-    ios_ffi_obj.addIncludePath(b.path("src/bridge/Mayaqua"));
-    ios_ffi_obj.addIncludePath(b.path("src/bridge/Cedar"));
-
-    // Add iOS SDK configuration
-    if (is_ios) {
-        ios_ffi_obj.addIncludePath(b.path("src/bridge/ios_include"));
-        if (ios_sdk_path) |sdk| {
-            const ios_include = b.fmt("{s}/usr/include", .{sdk});
-            const ios_frameworks = b.fmt("{s}/System/Library/Frameworks", .{sdk});
-            ios_ffi_obj.addSystemIncludePath(.{ .cwd_relative = ios_include });
-            ios_ffi_obj.addFrameworkPath(.{ .cwd_relative = ios_frameworks });
-            ios_ffi_obj.linkFramework("Foundation");
-            ios_ffi_obj.linkFramework("Security");
-        }
-    }
-
-    // Compile C adapter bridge + all SoftEther sources
-    const ios_adapter_module = b.createModule(.{
-        .root_source_file = b.path("src/ffi/ios_adapter_stub_root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const ios_adapter_obj = b.addObject(.{
-        .name = "ios_adapter",
-        .root_module = ios_adapter_module,
-    });
-    ios_adapter_obj.linkLibC();
-    ios_adapter_obj.addIncludePath(b.path("include"));
-    ios_adapter_obj.addIncludePath(b.path("src"));
-    ios_adapter_obj.addIncludePath(b.path("src/bridge"));
-    ios_adapter_obj.addIncludePath(b.path("src/bridge/Mayaqua"));
-    ios_adapter_obj.addIncludePath(b.path("src/bridge/Cedar"));
-
-    // Add all SoftEther C sources
-    ios_adapter_obj.addCSourceFiles(.{
-        .files = c_sources,
-        .flags = c_flags,
-    });
-
-    // Add iOS adapter stubs
-    ios_adapter_obj.addCSourceFile(.{
-        .file = b.path("src/ffi/ios_adapter_stubs.c"),
-        .flags = c_flags,
-    });
-
-    // Link OpenSSL to both objects
-    if (use_system_ssl) {
-        ios_ffi_obj.linkSystemLibrary("ssl");
-        ios_ffi_obj.linkSystemLibrary("crypto");
-        ios_adapter_obj.linkSystemLibrary("ssl");
-        ios_adapter_obj.linkSystemLibrary("crypto");
-    } else {
-        if (crypto) |c| {
-            ios_ffi_obj.linkLibrary(c);
-            ios_adapter_obj.linkLibrary(c);
-        }
-        if (openssl) |s| {
-            ios_ffi_obj.linkLibrary(s);
-            ios_adapter_obj.linkLibrary(s);
-        }
-    }
-
-    // Platform-specific system libraries
-    if (!is_ios and target_os != .windows) {
-        ios_ffi_obj.linkSystemLibrary("pthread");
-        ios_ffi_obj.linkSystemLibrary("z");
-        ios_adapter_obj.linkSystemLibrary("pthread");
-        ios_adapter_obj.linkSystemLibrary("z");
-
-        if (target_os == .macos) {
-            ios_ffi_obj.linkSystemLibrary("iconv");
-            ios_adapter_obj.linkSystemLibrary("iconv");
-        } else if (target_os == .linux) {
-            ios_ffi_obj.linkSystemLibrary("rt");
-            ios_ffi_obj.linkSystemLibrary("dl");
-            ios_adapter_obj.linkSystemLibrary("rt");
-            ios_adapter_obj.linkSystemLibrary("dl");
-        }
-    }
-
-    // Install object files for linking into XCFramework
-    const install_ios_ffi = b.addInstallFileWithDir(ios_ffi_obj.getEmittedBin(), .lib, "ios_ffi.o");
-
-    const install_ios_adapter = b.addInstallFileWithDir(ios_adapter_obj.getEmittedBin(), .lib, "ios_adapter.o");
-
-    // Install iOS-compatible header (Rust FFI drop-in replacement)
-    const install_ios_header = b.addInstallFile(b.path("include/softether_ffi.h"), "include/softether_ffi.h");
-
-    const ios_ffi_step = b.step("ios-ffi", "Build iOS-compatible FFI library (softether_client_* API)");
-    ios_ffi_step.dependOn(&install_ios_ffi.step);
-    ios_ffi_step.dependOn(&install_ios_adapter.step);
-    ios_ffi_step.dependOn(&install_ios_header.step);
 
     // ============================================
     // 5. TESTS
@@ -839,6 +855,7 @@ pub fn build(b: *std.Build) void {
         \\Available Build Targets:
         \\  zig build                  - Build all targets (default)
         \\  zig build run              - Build and run VPN client CLI
+        \\  zig build bench            - Run packet adapter performance benchmark (requires root)
         \\  zig build ffi              - Build FFI library only
         \\  zig build test             - Run unit tests
         \\  zig build clean            - Clean build artifacts

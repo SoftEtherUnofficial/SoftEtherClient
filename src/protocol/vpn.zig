@@ -3,10 +3,9 @@
 // Phase 3: Protocol Layer - Task 1
 
 const std = @import("std");
-// Use module imports instead of file paths to avoid conflicts
-const http = @import("../net/http.zig"); // Keep file import for http (not in socket module)
-// const socket = @import("../net/socket.zig"); // Commented out - conflicts with socket module
-// connection module not needed - we use socket directly
+// Use module imports - http module is provided by build.zig
+const http = @import("http");
+// Note: socket and connection modules available if needed via build.zig module system
 
 /// VPN protocol version
 pub const VpnVersion = struct {
