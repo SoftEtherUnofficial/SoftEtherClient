@@ -312,9 +312,16 @@ void SessionMain(SESSION *s)
 						s->Hub->LastCommTime = SystemTime64();
 					}
 					Unlock(s->Hub->lock);
-
-					update_hub_last_comm = false;
 				}
+			}
+			
+			// **CRITICAL FIX**: Update session LastCommTime to prevent timeout
+			// When packets are sent/received, update_hub_last_comm is set to true
+			// This prevents ERR_SESSION_TIMEOUT (error 13) from killing active sessions
+			if (update_hub_last_comm)
+			{
+				s->LastCommTime = Tick64();
+				update_hub_last_comm = false;
 			}
 		}
 
@@ -480,11 +487,26 @@ void SessionMain(SESSION *s)
 
 				update_hub_last_comm = true;
 
+				// 🔥 DEBUG: Check if this is an ICMP packet
+				if (packet_size >= 34) {
+					UCHAR *pkt = (UCHAR *)packet;
+					USHORT eth_type = (pkt[12] << 8) | pkt[13];
+					if (eth_type == 0x0800) { // IPv4
+						UCHAR ip_proto = pkt[23];
+						if (ip_proto == 1) { // ICMP
+							UCHAR icmp_type = pkt[34];
+							printf("[SessionMain TX] 📤 Got ICMP packet from GetNextPacket: type=%d size=%u\n", icmp_type, packet_size);
+						}
+					}
+				}
+
 				if ((c->CurrentSendQueueSize > MAX_BUFFERING_PACKET_SIZE) ||
 					block_all_packets)
 				{
 //					WHERE;
 					// Discard because it exceeded the buffer size limit
+					printf("[SessionMain TX] ⚠️  DROPPING packet size=%u (queue_size=%u > max=%u or blocked=%d)\n",
+						packet_size, c->CurrentSendQueueSize, MAX_BUFFERING_PACKET_SIZE, block_all_packets);
 					Free(packet);
 				}
 				else
@@ -545,9 +567,20 @@ void SessionMain(SESSION *s)
 					{
 						c->CurrentSendQueueSize += b->Size;
 						InsertQueue(q, b);
+						
+						// 🔥 DEBUG: Confirm ICMP packet queued
+						if (packet_size >= 34) {
+							UCHAR *pkt = (UCHAR *)packet;
+							USHORT eth_type = (pkt[12] << 8) | pkt[13];
+							if (eth_type == 0x0800 && pkt[23] == 1) { // IPv4 + ICMP
+								printf("[SessionMain TX] ✅ ICMP packet QUEUED to SendBlocks (queue_size=%u)\n", c->CurrentSendQueueSize);
+							}
+						}
 					}
 					else
 					{
+						printf("[SessionMain TX] ⚠️  DROPPING packet size=%u (queue full: %u items)\n",
+							packet_size, q ? q->num_item : 0);
 						FreeBlock(b);
 					}
 				}

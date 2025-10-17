@@ -1297,6 +1297,16 @@ void ConnectionSend(CONNECTION *c, UINT64 now)
 
 								while ((b = GetNext(q)))
 								{
+									// 🔥 DEBUG: Check if this block contains ICMP
+									if (b->Size >= 34) {
+										UCHAR *pkt = (UCHAR *)b->Buf;
+										USHORT eth_type = (pkt[12] << 8) | pkt[13];
+										if (eth_type == 0x0800 && pkt[23] == 1) { // IPv4 + ICMP
+											UCHAR icmp_type = pkt[34];
+											printf("[ConnectionSend] 📤 Writing ICMP type=%d to TCP socket (size=%u)\n", icmp_type, b->Size);
+										}
+									}
+									
 									// Size data
 									UINT size_data;
 									size_data = Endian32(b->Size);
@@ -2198,11 +2208,31 @@ DISCONNECT_THIS_TCP:
 						data = MallocFast(ts->NextBlockSize);
 						Copy(data, buf, ts->NextBlockSize);
 						PROBE_DATA2("ReadFifo 2", buf, ts->NextBlockSize);
+						
+						// 🔥 DEBUG: Log ALL packets received from TCP socket
+						printf("[ConnectionReceive] 📥 Got packet from TCP: size=%u\n", ts->NextBlockSize);
+						
 						ReadFifo(ts->RecvFifo, NULL, ts->NextBlockSize);
 						block = NewBlock(data, ts->NextBlockSize, s->UseCompress ? -1 : 0);
 
 						UPDATE_LAST_COMM_TIME(c->Session->LastCommTime, now);
 						UPDATE_LAST_COMM_TIME(ts->LastCommTime, now);
+
+						// 🔥 DEBUG: Log ICMP packets received from TCP socket
+						if (block->Size >= 34) {
+							UCHAR *pkt = block->Buf;
+							UINT ethertype = (pkt[12] << 8) | pkt[13];
+							if (ethertype == 0x0800) { // IPv4
+								UCHAR ip_proto = pkt[23];
+								if (ip_proto == 1) { // ICMP
+									UCHAR icmp_type = pkt[34];
+									printf("[ConnectionReceive] 📥 RX ICMP from TCP socket: type=%d size=%u\n", icmp_type, block->Size);
+									if (icmp_type == 0) {
+										printf("[ConnectionReceive] 🎉🎉 ICMP ECHO REPLY! Queuing to ReceivedBlocks...\n");
+									}
+								}
+							}
+						}
 
 						if (block->Size > MAX_PACKET_SIZE)
 						{
@@ -2667,6 +2697,22 @@ DISCONNECT_THIS_TCP:
 					}
 					else
 					{
+						// 🔥 DEBUG: Check if this is an ICMP reply
+						if (ret >= 34) {
+							UCHAR *pkt = (UCHAR *)data;
+							UINT ethertype = (pkt[12] << 8) | pkt[13];
+							if (ethertype == 0x0800) { // IPv4
+								UCHAR ip_proto = pkt[23];
+								if (ip_proto == 1) { // ICMP
+									UCHAR icmp_type = pkt[34];
+									printf("[ConnectionReceive] 📥 RX ICMP from server: type=%d size=%u\n", icmp_type, ret);
+									if (icmp_type == 0) {
+										printf("[ConnectionReceive] 🎉 ICMP ECHO REPLY from server! Queuing to ReceivedBlocks...\n");
+									}
+								}
+							}
+						}
+						
 						// Add the packet to queue
 						BLOCK *block = NewBlock(data, ret, 0);
 

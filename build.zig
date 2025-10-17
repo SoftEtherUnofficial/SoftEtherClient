@@ -375,6 +375,8 @@ pub fn build(b: *std.Build) void {
         .root_module = packet_adapter_module,
     });
     packet_adapter_obj.addIncludePath(b.path("src/bridge"));
+    packet_adapter_obj.addIncludePath(b.path("src/bridge/Mayaqua"));
+    packet_adapter_obj.addIncludePath(b.path("src/bridge/Cedar"));
 
     // Link libc for C imports and allocator functions
     packet_adapter_obj.linkLibC();
@@ -563,6 +565,8 @@ pub fn build(b: *std.Build) void {
     // ============================================
     // 4. FFI LIBRARY (Cross-Platform)
     // ============================================
+
+    // Mobile FFI (generic API for iOS/Android)
     const ffi_lib = b.addLibrary(.{
         .name = "softether_ffi",
         .root_module = b.createModule(.{
@@ -600,7 +604,7 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(ffi_lib);
 
-    // Also install the header
+    // Install generic mobile FFI header
     b.installFile("include/ffi.h", "include/ffi.h");
 
     const ffi_step = b.step("ffi", "Build FFI library (cross-platform)");
