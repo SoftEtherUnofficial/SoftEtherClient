@@ -550,7 +550,8 @@ pub fn build(b: *std.Build) void {
 
     bench_crypto.linkLibC();
 
-    b.installArtifact(bench_crypto);
+    // Temporarily disabled due to OpenSSL RC4 deprecation
+    // b.installArtifact(bench_crypto);
 
     // Run step for crypto benchmark
     const run_bench_crypto = b.addRunArtifact(bench_crypto);

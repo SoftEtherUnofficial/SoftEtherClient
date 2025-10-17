@@ -571,13 +571,51 @@ pub fn main() !void {
         const username = args.gen_hash_user.?;
         const password = args.gen_hash_pass.?;
 
-        // TODO: Implement password hashing in Zig
-        // The generatePasswordHash function needs to be completed
-        std.debug.print("✗ Password hash generation not yet implemented\n", .{});
-        std.debug.print("  Username: {s}\n", .{username});
-        std.debug.print("  Password: {s}\n", .{password});
-        std.debug.print("  TODO: Port SoftEther's HashPassword algorithm to Zig\n", .{});
-        std.process.exit(1);
+        // Import crypto module for password hashing
+        const crypto = @import("protocol/crypto.zig");
+        
+        // SoftEther's HashPassword combines: password + UPPERCASE(username)
+        // Then hashes with SHA-0
+        
+        // Convert username to uppercase
+        var username_upper_buf: [256]u8 = undefined;
+        if (username.len > username_upper_buf.len) {
+            std.debug.print("✗ Username too long (max 256 characters)\n", .{});
+            std.process.exit(1);
+        }
+        const username_upper = std.ascii.upperString(&username_upper_buf, username);
+        
+        // Combine password + uppercase_username
+        var combined_buf: [512]u8 = undefined;
+        if (password.len + username_upper.len > combined_buf.len) {
+            std.debug.print("✗ Combined password+username too long (max 512 characters)\n", .{});
+            std.process.exit(1);
+        }
+        @memcpy(combined_buf[0..password.len], password);
+        @memcpy(combined_buf[password.len..password.len + username_upper.len], username_upper);
+        const combined = combined_buf[0..password.len + username_upper.len];
+        
+        // Hash with SHA-0 (SoftEther standard)
+        var hashed: [20]u8 = undefined;
+        crypto.KeyDerivation.hashPassword(combined, &hashed);
+        
+        // Encode to base64 for storage
+        const base64_encoder = std.base64.standard.Encoder;
+        var encoded: [base64_encoder.calcSize(20)]u8 = undefined;
+        const encoded_hash = base64_encoder.encode(&encoded, &hashed);
+        
+        std.debug.print("✓ Password hash generated successfully\n", .{});
+        std.debug.print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n", .{});
+        std.debug.print("Username: {s}\n", .{username});
+        std.debug.print("Password Hash (base64):\n", .{});
+        std.debug.print("{s}\n", .{encoded_hash});
+        std.debug.print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n", .{});
+        std.debug.print("Add this to your config.json:\n", .{});
+        std.debug.print("  \"username\": \"{s}\",\n", .{username});
+        std.debug.print("  \"password_hash\": \"{s}\"\n\n", .{encoded_hash});
+        std.debug.print("Or use environment variable:\n", .{});
+        std.debug.print("  export SOFTETHER_PASSWORD_HASH=\"{s}\"\n", .{encoded_hash});
+        std.process.exit(0);
     }
 
     // Validate required arguments (using config file fallback values)
