@@ -375,6 +375,8 @@ pub fn build(b: *std.Build) void {
         .root_module = packet_adapter_module,
     });
     packet_adapter_obj.addIncludePath(b.path("src/bridge"));
+    packet_adapter_obj.addIncludePath(b.path("src/bridge/Mayaqua"));
+    packet_adapter_obj.addIncludePath(b.path("src/bridge/Cedar"));
 
     // Link libc for C imports and allocator functions
     packet_adapter_obj.linkLibC();
