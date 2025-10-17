@@ -20,7 +20,7 @@
 #include "packet_utils.h"  // WAVE 4 packet builders
 #include "Mayaqua/Mayaqua.h"
 #include "Cedar/Cedar.h"
-#include "logging.h"
+#include "Mayaqua/logging.h"  // Use existing Mayaqua logging system
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -129,7 +129,7 @@ PACKET_ADAPTER* NewZigPacketAdapter(void) {
     // Allocate PACKET_ADAPTER structure
     PACKET_ADAPTER* pa = ZeroMalloc(sizeof(PACKET_ADAPTER));
     if (!pa) {
-        printf("[●] ERROR: Failed to allocate packet adapter\n");
+        LOG_ERROR("ADAPTER", "Failed to allocate packet adapter");
         return NULL;
     }
     
@@ -151,14 +151,14 @@ PACKET_ADAPTER* NewZigPacketAdapter(void) {
 // Initialize adapter
 static bool ZigAdapterInit(SESSION* s) {
     if (!s) {
-        printf("[●] ERROR: Session is NULL\n");
+        LOG_ERROR("ADAPTER", "Session is NULL");
         return false;
     }
     
     // Allocate context
     ZIG_ADAPTER_CONTEXT* ctx = ZeroMalloc(sizeof(ZIG_ADAPTER_CONTEXT));
     if (!ctx) {
-        printf("[●] ERROR: Failed to allocate adapter context\n");
+        LOG_ERROR("ADAPTER", "Failed to allocate adapter context");
         return false;
     }
     
@@ -168,7 +168,7 @@ static bool ZigAdapterInit(SESSION* s) {
     // Create cancel handle
     ctx->cancel = NewCancel();
     if (!ctx->cancel) {
-        printf("[●] ERROR: Failed to create cancel handle\n");
+        LOG_ERROR("ADAPTER", "Failed to create cancel handle");
         Free(ctx);
         return false;
     }
@@ -188,22 +188,22 @@ static bool ZigAdapterInit(SESSION* s) {
             send_slots = 64;
             pool_size = 128;
             batch_size = 64;
-            printf("[ZigAdapterInit] ⚡ Performance: LATENCY profile (gaming/VoIP, 64/64 buffers)\n");
+            LOG_INFO("INIT", "Performance: LATENCY profile (gaming/VoIP, 64/64 buffers)");
         } else if (strcmp(profile_env, "throughput") == 0) {
             ctx->perf_profile = PERF_PROFILE_THROUGHPUT;
             recv_slots = 512;
             send_slots = 256;
             pool_size = 1024;
             batch_size = 256;
-            printf("[ZigAdapterInit] 📊 Performance: THROUGHPUT profile (downloads, 512/256 buffers)\n");
+            LOG_INFO("INIT", "Performance: THROUGHPUT profile (downloads, 512/256 buffers)");
         } else {
             ctx->perf_profile = PERF_PROFILE_BALANCED;
-            printf("[ZigAdapterInit] ⚖️  Performance: BALANCED profile (128/128 buffers)\n");
+            LOG_INFO("INIT", "Performance: BALANCED profile (128/128 buffers)");
         }
     } else {
         // Default: balanced profile
         ctx->perf_profile = PERF_PROFILE_BALANCED;
-        printf("[ZigAdapterInit] ⚖️  Performance: BALANCED profile (default, 128/128 buffers)\n");
+        LOG_INFO("INIT", "Performance: BALANCED profile (default, 128/128 buffers)");
     }
     
     // Configure Zig adapter with profile-based settings
@@ -219,7 +219,7 @@ static bool ZigAdapterInit(SESSION* s) {
     // Create Zig adapter
     ctx->zig_adapter = zig_adapter_create(&config);
     if (!ctx->zig_adapter) {
-        printf("[●] ERROR: Failed to create Zig adapter\n");
+        LOG_ERROR("ADAPTER", "Failed to create Zig adapter");
         ReleaseCancel(ctx->cancel);
         Free(ctx);
         return false;
@@ -227,7 +227,7 @@ static bool ZigAdapterInit(SESSION* s) {
     
     // Open TUN device
     if (!zig_adapter_open(ctx->zig_adapter)) {
-        printf("[●] ERROR: Failed to open TUN device\n");
+        LOG_ERROR("TUN", "Failed to open TUN device");
         zig_adapter_destroy(ctx->zig_adapter);
         ReleaseCancel(ctx->cancel);
         Free(ctx);
@@ -305,7 +305,7 @@ static bool ZigAdapterInit(SESSION* s) {
                 token = strtok(NULL, ",");
             }
             free(routes);
-            printf("[ZigAdapterInit] 📍 IPv4 Include Routes: %d routes configured\n", 
+            LOG_DEBUG("ROUTING", "IPv4 Include Routes: %d routes configured", 
                    ctx->routing_config.advanced.ipv4.include_count);
         }
         
@@ -323,7 +323,7 @@ static bool ZigAdapterInit(SESSION* s) {
                 token = strtok(NULL, ",");
             }
             free(routes);
-            printf("[ZigAdapterInit] 🚫 IPv4 Exclude Routes: %d routes configured\n", 
+            LOG_DEBUG("ROUTING", "IPv4 Exclude Routes: %d routes configured", 
                    ctx->routing_config.advanced.ipv4.exclude_count);
         }
         
@@ -345,7 +345,7 @@ static bool ZigAdapterInit(SESSION* s) {
                     token = strtok(NULL, ",");
                 }
                 free(routes);
-                printf("[ZigAdapterInit] 📍 IPv6 Include Routes: %d routes configured\n", 
+                LOG_DEBUG("ROUTING", "IPv6 Include Routes: %d routes configured", 
                        ctx->routing_config.advanced.ipv6.include_count);
             }
             
@@ -362,15 +362,15 @@ static bool ZigAdapterInit(SESSION* s) {
                     token = strtok(NULL, ",");
                 }
                 free(routes);
-                printf("[ZigAdapterInit] 🚫 IPv6 Exclude Routes: %d routes configured\n", 
+                LOG_DEBUG("ROUTING", "IPv6 Exclude Routes: %d routes configured", 
                        ctx->routing_config.advanced.ipv6.exclude_count);
             }
         }
         
-        printf("[ZigAdapterInit] 🔧 Advanced Routing: ENABLED\n");
+        LOG_DEBUG("ROUTING", "Advanced Routing: ENABLED");
     }
     
-    printf("[ZigAdapterInit] 🌐 Routing Mode: %s\n", 
+    LOG_INFO("ROUTING", "Routing Mode: %s", 
            ctx->routing_config.send_all_traffic ? "FULL TUNNEL (all traffic)" : 
            ctx->routing_config.advanced.enabled ? "ADVANCED (custom rules)" : 
            "SPLIT TUNNEL (VPN network only)");
@@ -398,14 +398,14 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
     static int read_count = 0;
     
     if (!s || !s->PacketAdapter || !s->PacketAdapter->Param) {
-        printf("[ZigAdapterGetNextPacket] ERROR: Invalid session/adapter\n");
+        LOG_ERROR("ADAPTER", "Invalid session/adapter");
         return 0;
     }
     
     ZIG_ADAPTER_CONTEXT* ctx = (ZIG_ADAPTER_CONTEXT*)s->PacketAdapter->Param;
     
     if (ctx->halt) {
-        printf("[ZigAdapterGetNextPacket] Adapter halted\n");
+        LOG_DEBUG("ADAPTER", "Adapter halted");
         return 0;
     }
     
@@ -488,7 +488,7 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
     ssize_t bytes_read = zig_adapter_read_sync(ctx->zig_adapter, temp_buf, sizeof(temp_buf));
     
     if (bytes_read < 0) {
-        printf("[ZigAdapterGetNextPacket] ERROR: read_sync returned %zd\n", bytes_read);
+        LOG_ERROR("ADAPTER", "read_sync returned %zd", bytes_read);
         return 0;
     }
     
@@ -559,7 +559,7 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
     // Copy packet data for SoftEther
     UCHAR* pkt_copy = Malloc(bytes_read);
     if (!pkt_copy) {
-        printf("[ZigAdapterGetNextPacket] Failed to allocate packet buffer\n");
+        LOG_ERROR("ADAPTER", "Failed to allocate packet buffer");
         return 0;
     }
     
@@ -659,12 +659,12 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                     else if (ip_proto == 17) packet_type = "UDP";
                     else {
                         // DEBUG: Unknown IPv4 protocol - print details
-                        printf("[PutPacket] ⚠️  UNKNOWN IPv4 Protocol: %d (size=%u)\n", ip_proto, size);
-                        printf("  Ethernet: dst=%02x:%02x:%02x:%02x:%02x:%02x src=%02x:%02x:%02x:%02x:%02x:%02x type=0x%04x\n",
+                        LOG_WARN("PACKET", "UNKNOWN IPv4 Protocol: %d (size=%u)", ip_proto, size);
+                        LOG_WARN("PACKET", "  Ethernet: dst=%02x:%02x:%02x:%02x:%02x:%02x src=%02x:%02x:%02x:%02x:%02x:%02x type=0x%04x",
                                pkt[0], pkt[1], pkt[2], pkt[3], pkt[4], pkt[5],
                                pkt[6], pkt[7], pkt[8], pkt[9], pkt[10], pkt[11],
                                ethertype);
-                        printf("  IP: ver=%d hdrlen=%d proto=%d src=%d.%d.%d.%d dst=%d.%d.%d.%d\n",
+                        LOG_WARN("PACKET", "  IP: ver=%d hdrlen=%d proto=%d src=%d.%d.%d.%d dst=%d.%d.%d.%d",
                                (pkt[14] >> 4), ((pkt[14] & 0x0F) * 4), pkt[23],
                                pkt[26], pkt[27], pkt[28], pkt[29],
                                pkt[30], pkt[31], pkt[32], pkt[33]);
@@ -744,10 +744,10 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                             // DHCP ACK received - store subnet mask and configure interface
                             ctx->subnet_mask = subnet_mask;
                             
-                            printf("[●] DHCP: Assigned IP %u.%u.%u.%u\n",
+                            LOG_INFO("DHCP", "Assigned IP %u.%u.%u.%u",
                                    (offered_ip >> 24) & 0xFF, (offered_ip >> 16) & 0xFF,
                                    (offered_ip >> 8) & 0xFF, offered_ip & 0xFF);
-                            printf("[●] DHCP: Subnet mask %u.%u.%u.%u\n",
+                            LOG_INFO("DHCP", "Subnet mask %u.%u.%u.%u",
                                    (subnet_mask >> 24) & 0xFF, (subnet_mask >> 16) & 0xFF,
                                    (subnet_mask >> 8) & 0xFF, subnet_mask & 0xFF);
                             
@@ -781,7 +781,7 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                     uint32_t vpn_network = offered_ip & subnet_mask;
                                     uint32_t vpn_netmask = subnet_mask;
                                     
-                                    printf("[●] VPN: Network %u.%u.%u.%u/%d\n",
+                                    LOG_INFO("VPN", "Network %u.%u.%u.%u/%d",
                                            (vpn_network >> 24) & 0xFF, (vpn_network >> 16) & 0xFF,
                                            (vpn_network >> 8) & 0xFF, vpn_network & 0xFF,
                                            __builtin_popcount(vpn_netmask));
@@ -800,7 +800,7 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                     // Method 1: Try to get hostname from session
                                     if (ctx->session && ctx->session->ClientOption && ctx->session->ClientOption->Hostname[0] != '\0') {
                                         strncpy(server_hostname, ctx->session->ClientOption->Hostname, sizeof(server_hostname) - 1);
-                                        printf("[●] VPN: Server hostname from session: %s\n", server_hostname);
+                                        LOG_INFO("VPN", "Server hostname from session: %s", server_hostname);
                                     }
                                     
                                     // Fallback: Check environment variable for hostname
@@ -808,14 +808,14 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                         const char* hostname_env = getenv("VPN_SERVER_HOSTNAME");
                                         if (hostname_env) {
                                             strncpy(server_hostname, hostname_env, sizeof(server_hostname) - 1);
-                                            printf("[●] VPN: Server hostname from env: %s\n", server_hostname);
+                                            LOG_INFO("VPN", "Server hostname from env: %s", server_hostname);
                                         }
                                     }
                                     
                                     // Step 3: Configure routing based on routing_config
                                     if (enable_full_tunnel && strlen(server_hostname) > 0) {
-                                        printf("[●] VPN: Configuring full tunnel mode (routing all traffic through VPN)\n");
-                                        printf("[●] VPN: Server hostname: %s\n", server_hostname);
+                                        LOG_INFO("VPN", "Configuring full tunnel mode (routing all traffic through VPN)");
+                                        LOG_INFO("VPN", "Server hostname: %s", server_hostname);
                                         
                                         // Get original default gateway
                                         FILE* gw_pipe = popen("netstat -rn | grep '^default' | head -1 | awk '{print $2}'", "r");
@@ -829,7 +829,7 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                         }
                                         
                                         if (strlen(orig_gateway) > 0) {
-                                            printf("[●] VPN: Original gateway: %s\n", orig_gateway);
+                                            LOG_INFO("VPN", "Original gateway: %s", orig_gateway);
                                             
                                             // Resolve VPN server hostname to IP
                                             char resolve_cmd[512];
@@ -848,8 +848,8 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                             
                                             // Add host route for VPN server through original gateway (protects VPN connection)
                                             if (strlen(server_ip_str) > 0) {
-                                                printf("[●] VPN: Server IP: %s\n", server_ip_str);
-                                                printf("[●] VPN: Adding protected route for VPN server via %s\n", orig_gateway);
+                                                LOG_INFO("VPN", "Server IP: %s", server_ip_str);
+                                                LOG_INFO("VPN", "Adding protected route for VPN server via %s", orig_gateway);
                                                 
                                                 char protect_cmd[256];
                                                 snprintf(protect_cmd, sizeof(protect_cmd), 
@@ -859,7 +859,7 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                             }
                                             
                                             // Delete current default route
-                                            printf("[●] VPN: Removing old default route\n");
+                                            LOG_INFO("VPN", "Removing old default route");
                                             system("route delete default 2>/dev/null");
                                             
                                             // Add VPN as new default route
@@ -870,15 +870,15 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                                     (server_ip >> 8) & 0xFF, server_ip & 0xFF);
                                             
                                             if (system(default_route_cmd) == 0) {
-                                                printf("[●] VPN: ✅ Full tunnel mode active - ALL traffic now goes through VPN\n");
+                                                LOG_INFO("VPN", "Full tunnel mode active - ALL traffic now goes through VPN");
                                             } else {
-                                                printf("[●] WARNING: Failed to set VPN as default route\n");
+                                                LOG_WARN("VPN", "Failed to set VPN as default route");
                                             }
                                         } else {
-                                            printf("[●] WARNING: Could not determine original gateway\n");
+                                            LOG_WARN("VPN", "Could not determine original gateway");
                                         }
                                     } else if (ctx->routing_config.advanced.enabled) {
-                                        printf("[●] VPN: Configuring advanced routing rules\n");
+                                        LOG_INFO("VPN", "Configuring advanced routing rules");
                                         
                                         // Get original default gateway for exclude routes
                                         FILE* gw_pipe = popen("netstat -rn | grep '^default' | head -1 | awk '{print $2}'", "r");
@@ -903,10 +903,10 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                                         server_ip & 0xFF);
                                                 int ret = system(cmd);
                                                 if (ret == 0) {
-                                                    printf("[●] VPN: ✅ Added IPv4 include route: %s\n",
+                                                    LOG_INFO("VPN", "Added IPv4 include route: %s",
                                                           ctx->routing_config.advanced.ipv4.include[i].cidr);
                                                 } else {
-                                                    printf("[●] WARNING: Failed to add IPv4 include route: %s\n",
+                                                    LOG_WARN("VPN", "Failed to add IPv4 include route: %s",
                                                           ctx->routing_config.advanced.ipv4.include[i].cidr);
                                                 }
                                             }
@@ -920,10 +920,10 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                                             orig_gateway);
                                                     int ret = system(cmd);
                                                     if (ret == 0) {
-                                                        printf("[●] VPN: ✅ Added IPv4 exclude route: %s via %s\n",
+                                                        LOG_INFO("VPN", "Added IPv4 exclude route: %s via %s",
                                                               ctx->routing_config.advanced.ipv4.exclude[i].cidr, orig_gateway);
                                                     } else {
-                                                        printf("[●] WARNING: Failed to add IPv4 exclude route: %s\n",
+                                                        LOG_WARN("VPN", "Failed to add IPv4 exclude route: %s",
                                                               ctx->routing_config.advanced.ipv4.exclude[i].cidr);
                                                     }
                                                 }
@@ -948,10 +948,10 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                                         ctx->routing_config.advanced.ipv6.include[i].cidr);
                                                 int ret = system(cmd);
                                                 if (ret == 0) {
-                                                    printf("[●] VPN: ✅ Added IPv6 include route: %s\n",
+                                                    LOG_INFO("VPN", "Added IPv6 include route: %s",
                                                           ctx->routing_config.advanced.ipv6.include[i].cidr);
                                                 } else {
-                                                    printf("[●] WARNING: Failed to add IPv6 include route: %s\n",
+                                                    LOG_WARN("VPN", "Failed to add IPv6 include route: %s",
                                                           ctx->routing_config.advanced.ipv6.include[i].cidr);
                                                 }
                                             }
@@ -965,22 +965,22 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                                             orig_gateway6);
                                                     int ret = system(cmd);
                                                     if (ret == 0) {
-                                                        printf("[●] VPN: ✅ Added IPv6 exclude route: %s via %s\n",
+                                                        LOG_INFO("VPN", "Added IPv6 exclude route: %s via %s",
                                                               ctx->routing_config.advanced.ipv6.exclude[i].cidr, orig_gateway6);
                                                     } else {
-                                                        printf("[●] WARNING: Failed to add IPv6 exclude route: %s\n",
+                                                        LOG_WARN("VPN", "Failed to add IPv6 exclude route: %s",
                                                               ctx->routing_config.advanced.ipv6.exclude[i].cidr);
                                                     }
                                                 }
                                             }
                                         }
                                         
-                                        printf("[●] VPN: ✅ Advanced routing configured\n");
+                                        LOG_INFO("VPN", "Advanced routing configured");
                                     } else {
-                                        printf("[●] VPN: Interface configured, routes active (split tunnel mode)\n");
+                                        LOG_INFO("VPN", "Interface configured, routes active (split tunnel mode)");
                                     }
                                 } else {
-                                    printf("[●] ERROR: Interface configuration failed (code %d)\n", result);
+                                    LOG_ERROR("ADAPTER", "Interface configuration failed (code %d)", result);
                                 }
                             }
                         }
@@ -1047,7 +1047,7 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
 
 // Free adapter resources
 static void ZigAdapterFree(SESSION* s) {
-    printf("[ZigAdapterFree] Freeing Zig adapter\n");
+    LOG_DEBUG("ADAPTER", "Freeing Zig adapter");
     
     if (!s || !s->PacketAdapter || !s->PacketAdapter->Param) {
         return;
@@ -1075,7 +1075,7 @@ static void ZigAdapterFree(SESSION* s) {
     Free(ctx);
     s->PacketAdapter->Param = NULL;
     
-    printf("[ZigAdapterFree] ✅ Cleanup complete (WAVE 5 PHASE 1)\n");
+    LOG_INFO("ADAPTER", "Cleanup complete (WAVE 5 PHASE 1)");
 }
 
 // ========================================================================
