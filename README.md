@@ -107,13 +107,16 @@ sudo -E ./zig-out/bin/vpnclient
 ### Prerequisites
 
 - **Zig**: 0.15.1 or later ([download](https://ziglang.org/download/))
-- **OpenSSL**: 3.0+ (system package manager)
+- **System SSL Library**: OpenSSL 3.0+ or LibreSSL (via package manager)
 - **Root/Admin privileges**: Required for TUN device creation
 
 ### System Dependencies
 
+**Important:** This project uses **system SSL libraries only** (no embedded OpenSSL).  
+Install OpenSSL/LibreSSL via your system package manager before building:
+
 ```bash
-# macOS
+# macOS (OpenSSL via Homebrew)
 brew install openssl@3
 
 # Ubuntu/Debian
@@ -125,7 +128,11 @@ sudo dnf install openssl-devel
 
 # Windows
 # Download OpenSSL from https://slproweb.com/products/Win32OpenSSL.html
+# Install to C:\OpenSSL-Win64
 ```
+
+**Note:** The build system automatically links against system SSL libraries.  
+No manual configuration or embedded dependencies required.
 
 ### Build
 

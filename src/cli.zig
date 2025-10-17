@@ -336,6 +336,14 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Initialize logging system from environment
+    const log = @import("log.zig");
+    log.initFromEnv(allocator) catch |err| {
+        std.debug.print("Warning: Failed to initialize logging: {any}\n", .{err});
+        // Continue with default config
+    };
+    defer log.deinit();
+
     // Initialize SoftEther VPN bridge system
     softether.init(false) catch |err| {
         std.debug.print("✗ Failed to initialize SoftEther libraries: {any}\n", .{err});
@@ -573,10 +581,10 @@ pub fn main() !void {
 
         // Import crypto module for password hashing
         const crypto = @import("protocol/crypto.zig");
-        
+
         // SoftEther's HashPassword combines: password + UPPERCASE(username)
         // Then hashes with SHA-0
-        
+
         // Convert username to uppercase
         var username_upper_buf: [256]u8 = undefined;
         if (username.len > username_upper_buf.len) {
@@ -584,7 +592,7 @@ pub fn main() !void {
             std.process.exit(1);
         }
         const username_upper = std.ascii.upperString(&username_upper_buf, username);
-        
+
         // Combine password + uppercase_username
         var combined_buf: [512]u8 = undefined;
         if (password.len + username_upper.len > combined_buf.len) {
@@ -592,18 +600,18 @@ pub fn main() !void {
             std.process.exit(1);
         }
         @memcpy(combined_buf[0..password.len], password);
-        @memcpy(combined_buf[password.len..password.len + username_upper.len], username_upper);
-        const combined = combined_buf[0..password.len + username_upper.len];
-        
+        @memcpy(combined_buf[password.len .. password.len + username_upper.len], username_upper);
+        const combined = combined_buf[0 .. password.len + username_upper.len];
+
         // Hash with SHA-0 (SoftEther standard)
         var hashed: [20]u8 = undefined;
         crypto.KeyDerivation.hashPassword(combined, &hashed);
-        
+
         // Encode to base64 for storage
         const base64_encoder = std.base64.standard.Encoder;
         var encoded: [base64_encoder.calcSize(20)]u8 = undefined;
         const encoded_hash = base64_encoder.encode(&encoded, &hashed);
-        
+
         std.debug.print("✓ Password hash generated successfully\n", .{});
         std.debug.print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n", .{});
         std.debug.print("Username: {s}\n", .{username});

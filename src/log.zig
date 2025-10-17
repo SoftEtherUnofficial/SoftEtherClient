@@ -2,14 +2,16 @@ const std = @import("std");
 
 /// Log levels matching SoftEther's logging system
 pub const LogLevel = enum(u8) {
-    debug = 0,
-    info = 1,
-    warn = 2,
-    err = 3,
-    fatal = 4,
+    trace = 0, // Very verbose, packet-level detail
+    debug = 1, // Detailed diagnostic information
+    info = 2, // Normal operational messages
+    warn = 3, // Warning conditions
+    err = 4, // Error conditions
+    fatal = 5, // Fatal errors
 
     pub fn toString(self: LogLevel) []const u8 {
         return switch (self) {
+            .trace => "TRACE",
             .debug => "DEBUG",
             .info => "INFO",
             .warn => "WARN",
@@ -20,12 +22,23 @@ pub const LogLevel = enum(u8) {
 
     pub fn toColor(self: LogLevel) []const u8 {
         return switch (self) {
+            .trace => "\x1b[90m", // Dark gray
             .debug => "\x1b[36m", // Cyan
             .info => "\x1b[32m", // Green
             .warn => "\x1b[33m", // Yellow
             .err => "\x1b[31m", // Red
             .fatal => "\x1b[35m", // Magenta
         };
+    }
+
+    pub fn fromString(str: []const u8) ?LogLevel {
+        if (std.mem.eql(u8, str, "TRACE") or std.mem.eql(u8, str, "trace")) return .trace;
+        if (std.mem.eql(u8, str, "DEBUG") or std.mem.eql(u8, str, "debug")) return .debug;
+        if (std.mem.eql(u8, str, "INFO") or std.mem.eql(u8, str, "info")) return .info;
+        if (std.mem.eql(u8, str, "WARN") or std.mem.eql(u8, str, "warn")) return .warn;
+        if (std.mem.eql(u8, str, "ERROR") or std.mem.eql(u8, str, "error")) return .err;
+        if (std.mem.eql(u8, str, "FATAL") or std.mem.eql(u8, str, "fatal")) return .fatal;
+        return null;
     }
 };
 
@@ -71,10 +84,63 @@ pub const LoggerConfig = struct {
     show_file_location: bool = false,
     output_file: ?std.fs.File = null,
     mutex: std.Thread.Mutex = .{},
+
+    /// Category-specific log level overrides
+    category_levels: std.AutoHashMap(LogCategory, LogLevel) = undefined,
+    allocator: ?std.mem.Allocator = null,
 };
 
 /// Global logger instance
 var global_config: LoggerConfig = .{};
+var config_initialized: bool = false;
+
+/// Initialize logger with configuration from environment variables
+pub fn initFromEnv(allocator: std.mem.Allocator) !void {
+    global_config.allocator = allocator;
+    global_config.category_levels = std.AutoHashMap(LogCategory, LogLevel).init(allocator);
+    config_initialized = true;
+
+    // Check LOG_LEVEL environment variable
+    if (std.process.getEnvVarOwned(allocator, "LOG_LEVEL")) |level_str| {
+        defer allocator.free(level_str);
+        if (LogLevel.fromString(level_str)) |level| {
+            global_config.level = level;
+        }
+    } else |_| {
+        // Default to INFO level
+        global_config.level = .info;
+    }
+
+    // Check LOG_COLORS environment variable
+    if (std.process.getEnvVarOwned(allocator, "LOG_COLORS")) |colors_str| {
+        defer allocator.free(colors_str);
+        global_config.use_colors = std.mem.eql(u8, colors_str, "1") or
+            std.mem.eql(u8, colors_str, "true") or
+            std.mem.eql(u8, colors_str, "yes");
+    } else |_| {}
+
+    // Check LOG_TIMESTAMPS environment variable
+    if (std.process.getEnvVarOwned(allocator, "LOG_TIMESTAMPS")) |ts_str| {
+        defer allocator.free(ts_str);
+        global_config.show_timestamps = std.mem.eql(u8, ts_str, "1") or
+            std.mem.eql(u8, ts_str, "true") or
+            std.mem.eql(u8, ts_str, "yes");
+    } else |_| {}
+}
+
+/// Initialize logger with manual configuration
+pub fn initConfig(config: LoggerConfig) void {
+    global_config = config;
+    config_initialized = true;
+}
+
+/// Deinitialize logger and free resources
+pub fn deinit() void {
+    if (config_initialized and global_config.allocator != null) {
+        global_config.category_levels.deinit();
+        config_initialized = false;
+    }
+}
 
 /// Initialize logger with configuration
 pub fn init(config: LoggerConfig) void {
@@ -86,6 +152,15 @@ pub fn setLevel(level: LogLevel) void {
     global_config.mutex.lock();
     defer global_config.mutex.unlock();
     global_config.level = level;
+}
+
+/// Set minimum log level for a specific category
+pub fn setCategoryLevel(category: LogCategory, level: LogLevel) void {
+    global_config.mutex.lock();
+    defer global_config.mutex.unlock();
+    if (config_initialized and global_config.allocator != null) {
+        global_config.category_levels.put(category, level) catch {};
+    }
 }
 
 /// Enable/disable colors
@@ -123,9 +198,18 @@ fn logMessage(
     global_config.mutex.lock();
     defer global_config.mutex.unlock();
 
-    // Check if this level should be logged
+    // Check global minimum log level first
     if (@intFromEnum(level) < @intFromEnum(global_config.level)) {
         return;
+    }
+
+    // Check category-specific log level override
+    if (config_initialized and global_config.allocator != null) {
+        if (global_config.category_levels.get(category)) |cat_level| {
+            if (@intFromEnum(level) < @intFromEnum(cat_level)) {
+                return;
+            }
+        }
     }
 
     // For tests, use a buffer instead of stderr
@@ -183,6 +267,10 @@ fn logMessage(
 }
 
 /// Convenience logging functions
+pub fn trace(category: LogCategory, comptime fmt: []const u8, args: anytype) void {
+    logMessage(.trace, category, fmt, args, @src());
+}
+
 pub fn debug(category: LogCategory, comptime fmt: []const u8, args: anytype) void {
     logMessage(.debug, category, fmt, args, @src());
 }
@@ -206,6 +294,10 @@ pub fn fatal(category: LogCategory, comptime fmt: []const u8, args: anytype) voi
 /// Scoped logger for specific modules
 pub fn Scoped(comptime default_category: LogCategory) type {
     return struct {
+        pub fn trace(comptime fmt: []const u8, args: anytype) void {
+            logMessage(.trace, default_category, fmt, args, @src());
+        }
+
         pub fn debug(comptime fmt: []const u8, args: anytype) void {
             logMessage(.debug, default_category, fmt, args, @src());
         }
@@ -265,19 +357,27 @@ pub const Timer = struct {
     }
 };
 
-/// Hex dump utility for debugging packets
+/// Hex dump utility for debugging packets (only at TRACE level)
 pub fn hexDump(
     category: LogCategory,
     data: []const u8,
     prefix: []const u8,
 ) void {
-    _ = category; // Reserved for future categorization
-
     global_config.mutex.lock();
     defer global_config.mutex.unlock();
 
-    if (@intFromEnum(LogLevel.debug) < @intFromEnum(global_config.level)) {
+    // Only show hex dumps at TRACE level
+    if (@intFromEnum(LogLevel.trace) < @intFromEnum(global_config.level)) {
         return;
+    }
+
+    // Check category-specific log level override
+    if (config_initialized and global_config.allocator != null) {
+        if (global_config.category_levels.get(category)) |cat_level| {
+            if (@intFromEnum(LogLevel.trace) < @intFromEnum(cat_level)) {
+                return;
+            }
+        }
     }
 
     const is_test = @import("builtin").is_test;

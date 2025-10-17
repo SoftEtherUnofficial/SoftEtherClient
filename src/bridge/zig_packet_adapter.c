@@ -515,29 +515,29 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
                             if (icmp_type == 0) packet_type = "ICMP-REPLY";
                             else if (icmp_type == 8) {
                                 packet_type = "ICMP-REQUEST";
-                                // Dump first ICMP request for debugging
-                                static int icmp_dump_count = 0;
-                                if (icmp_dump_count == 0) {
-                                    printf("\n[ICMP DEBUG] First ICMP request packet (%zd bytes):\n", bytes_read);
-                                    printf("  Ethernet Header:\n");
-                                    printf("    Dst MAC: %02x:%02x:%02x:%02x:%02x:%02x\n", 
-                                           temp_buf[0], temp_buf[1], temp_buf[2], temp_buf[3], temp_buf[4], temp_buf[5]);
-                                    printf("    Src MAC: %02x:%02x:%02x:%02x:%02x:%02x\n", 
-                                           temp_buf[6], temp_buf[7], temp_buf[8], temp_buf[9], temp_buf[10], temp_buf[11]);
-                                    printf("    EtherType: 0x%04x\n", (temp_buf[12] << 8) | temp_buf[13]);
-                                    if (bytes_read >= 34) {
-                                        printf("  IP Header:\n");
-                                        printf("    Src IP: %d.%d.%d.%d\n", temp_buf[26], temp_buf[27], temp_buf[28], temp_buf[29]);
-                                        printf("    Dst IP: %d.%d.%d.%d\n", temp_buf[30], temp_buf[31], temp_buf[32], temp_buf[33]);
-                                        printf("    Protocol: %d (ICMP)\n", temp_buf[23]);
-                                    }
-                                    if (bytes_read >= 36) {
-                                        printf("  ICMP Header:\n");
-                                        printf("    Type: %d (Echo Request)\n", temp_buf[34]);
-                                        printf("    Code: %d\n", temp_buf[35]);
-                                    }
-                                    icmp_dump_count++;
-                                }
+                                // // Dump first ICMP request for debugging
+                                // static int icmp_dump_count = 0;
+                                // if (icmp_dump_count == 0) {
+                                //     printf("\n[ICMP DEBUG] First ICMP request packet (%zd bytes):\n", bytes_read);
+                                //     printf("  Ethernet Header:\n");
+                                //     printf("    Dst MAC: %02x:%02x:%02x:%02x:%02x:%02x\n", 
+                                //            temp_buf[0], temp_buf[1], temp_buf[2], temp_buf[3], temp_buf[4], temp_buf[5]);
+                                //     printf("    Src MAC: %02x:%02x:%02x:%02x:%02x:%02x\n", 
+                                //            temp_buf[6], temp_buf[7], temp_buf[8], temp_buf[9], temp_buf[10], temp_buf[11]);
+                                //     printf("    EtherType: 0x%04x\n", (temp_buf[12] << 8) | temp_buf[13]);
+                                //     if (bytes_read >= 34) {
+                                //         printf("  IP Header:\n");
+                                //         printf("    Src IP: %d.%d.%d.%d\n", temp_buf[26], temp_buf[27], temp_buf[28], temp_buf[29]);
+                                //         printf("    Dst IP: %d.%d.%d.%d\n", temp_buf[30], temp_buf[31], temp_buf[32], temp_buf[33]);
+                                //         printf("    Protocol: %d (ICMP)\n", temp_buf[23]);
+                                //     }
+                                //     if (bytes_read >= 36) {
+                                //         printf("  ICMP Header:\n");
+                                //         printf("    Type: %d (Echo Request)\n", temp_buf[34]);
+                                //         printf("    Code: %d\n", temp_buf[35]);
+                                //     }
+                                //     icmp_dump_count++;
+                                // }
                             }
                             else packet_type = "ICMP-OTHER";
                         } else {
@@ -551,8 +551,9 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
             } else if (ethertype == 0x0806) packet_type = "ARP";
             else if (ethertype == 0x86DD) packet_type = "IPv6";
         }
-        printf("[GetNextPacket] 📤 Read %zd bytes (%s) from TUN → VPN server (count=%d)\n", 
-               bytes_read, packet_type, read_count);
+        // Uncomment this code below to print each packet log
+        // printf("[GetNextPacket] 📤 Read %zd bytes (%s) from TUN → VPN server (count=%d)\n", 
+        //        bytes_read, packet_type, read_count);
     }
     
     // Copy packet data for SoftEther
@@ -597,44 +598,44 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
         const char* packet_type = "UNKNOWN";
         const UCHAR* pkt = (const UCHAR*)data;
         
-        // 🔥 ALWAYS log ICMP packets (all of them, not just first 20)
-        bool is_icmp = false;
-        if (size >= 34 && pkt[12] == 0x08 && pkt[13] == 0x00 && pkt[23] == 1) {
-            is_icmp = true;
-            printf("[PutPacket] 🎯 ICMP PACKET (packet #%d, %u bytes):\n  ", put_count, size);
-            for (UINT i = 0; i < size && i < 80; i++) {
-                printf("%02x ", pkt[i]);
-                if ((i + 1) % 16 == 0) printf("\n  ");
-            }
-            printf("\n");
-            printf("  [IP] Src=%d.%d.%d.%d Dst=%d.%d.%d.%d Proto=1 (ICMP)\n",
-                   pkt[26], pkt[27], pkt[28], pkt[29],  // Source IP
-                   pkt[30], pkt[31], pkt[32], pkt[33]); // Dest IP
-            printf("  [ICMP] Type=%d Code=%d", pkt[34], pkt[35]);
-            if (pkt[34] == 0) printf(" (ECHO REPLY) 🎉\n");
-            else if (pkt[34] == 8) printf(" (ECHO REQUEST)\n");
-            else if (pkt[34] == 3) printf(" (DEST UNREACHABLE)\n");
-            else if (pkt[34] == 11) printf(" (TIME EXCEEDED)\n");
-            else printf("\n");
-        }
+        // // 🔥 ALWAYS log ICMP packets (all of them, not just first 20)
+        // bool is_icmp = false;
+        // if (size >= 34 && pkt[12] == 0x08 && pkt[13] == 0x00 && pkt[23] == 1) {
+        //     is_icmp = true;
+        //     // printf("[PutPacket] 🎯 ICMP PACKET (packet #%d, %u bytes):\n  ", put_count, size);
+        //     // for (UINT i = 0; i < size && i < 80; i++) {
+        //     //     printf("%02x ", pkt[i]);
+        //     //     if ((i + 1) % 16 == 0) printf("\n  ");
+        //     // }
+        //     // printf("\n");
+        //     printf("  [IP] Src=%d.%d.%d.%d Dst=%d.%d.%d.%d Proto=1 (ICMP)\n",
+        //            pkt[26], pkt[27], pkt[28], pkt[29],  // Source IP
+        //            pkt[30], pkt[31], pkt[32], pkt[33]); // Dest IP
+        //     printf("  [ICMP] Type=%d Code=%d", pkt[34], pkt[35]);
+        //     if (pkt[34] == 0) printf(" (ECHO REPLY) 🎉\n");
+        //     else if (pkt[34] == 8) printf(" (ECHO REQUEST)\n");
+        //     else if (pkt[34] == 3) printf(" (DEST UNREACHABLE)\n");
+        //     else if (pkt[34] == 11) printf(" (TIME EXCEEDED)\n");
+        //     else printf("\n");
+        // }
         
-        // DEBUG: Hex dump first 80 bytes of first 20 non-ICMP packets
-        if (!is_icmp && put_count <= 20) {
-            printf("[PutPacket] HEX DUMP (packet #%d, %u bytes):\n  ", put_count, size);
-            for (UINT i = 0; i < size && i < 80; i++) {
-                printf("%02x ", pkt[i]);
-                if ((i + 1) % 16 == 0) printf("\n  ");
-            }
-            printf("\n");
+        // // DEBUG: Hex dump first 80 bytes of first 20 non-ICMP packets
+        // if (!is_icmp && put_count <= 20) {
+        //     printf("[PutPacket] HEX DUMP (packet #%d, %u bytes):\n  ", put_count, size);
+        //     for (UINT i = 0; i < size && i < 80; i++) {
+        //         printf("%02x ", pkt[i]);
+        //         if ((i + 1) % 16 == 0) printf("\n  ");
+        //     }
+        //     printf("\n");
             
-            // Parse IP header if IPv4
-            if (size >= 34 && pkt[12] == 0x08 && pkt[13] == 0x00) {
-                printf("  [IP] Src=%d.%d.%d.%d Dst=%d.%d.%d.%d Proto=%d\n",
-                       pkt[26], pkt[27], pkt[28], pkt[29],  // Source IP
-                       pkt[30], pkt[31], pkt[32], pkt[33],  // Dest IP
-                       pkt[23]);                             // Protocol
-            }
-        }
+        //     // Parse IP header if IPv4
+        //     if (size >= 34 && pkt[12] == 0x08 && pkt[13] == 0x00) {
+        //         printf("  [IP] Src=%d.%d.%d.%d Dst=%d.%d.%d.%d Proto=%d\n",
+        //                pkt[26], pkt[27], pkt[28], pkt[29],  // Source IP
+        //                pkt[30], pkt[31], pkt[32], pkt[33],  // Dest IP
+        //                pkt[23]);                             // Protocol
+        //     }
+        // }
         
         if (size >= 14) {
             uint16_t ethertype = (pkt[12] << 8) | pkt[13];
@@ -649,7 +650,7 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                             uint8_t icmp_type = pkt[34];
                             if (icmp_type == 0) {
                                 packet_type = "ICMP-REPLY";
-                                printf("[PutPacket] 🎉 ICMP ECHO REPLY RECEIVED! size=%u\n", size);
+                                // printf("[PutPacket] 🎉 ICMP ECHO REPLY RECEIVED! size=%u\n", size);
                             }
                             else if (icmp_type == 8) packet_type = "ICMP-REQUEST";
                         }
@@ -673,8 +674,9 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
             } else if (ethertype == 0x0806) packet_type = "ARP";
             else if (ethertype == 0x86DD) packet_type = "IPv6";
         }
-        printf("[PutPacket] 📥 Received %u bytes (%s) from VPN server → TUN (count=%d)\n", 
-               size, packet_type, put_count);
+        // Uncomment the code below to see each PutPacket
+        // printf("[PutPacket] 📥 Received %u bytes (%s) from VPN server → TUN (count=%d)\n", 
+        //        size, packet_type, put_count);
     }
     
     // ✅ WAVE 5 PHASE 1: Detect DHCP OFFER/ACK to transition state machine
@@ -784,12 +786,12 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                            (vpn_network >> 8) & 0xFF, vpn_network & 0xFF,
                                            __builtin_popcount(vpn_netmask));
                                     
-                                    // Step 1: Add route for VPN network
-                                    if (zig_adapter_configure_routes(ctx->zig_adapter, server_ip, vpn_network, vpn_netmask)) {
-                                        printf("[●] VPN: VPN network route configured\n");
-                                    } else {
-                                        printf("[●] WARNING: VPN network route configuration failed\n");
-                                    }
+                                    // // Step 1: Add route for VPN network
+                                    // if (zig_adapter_configure_routes(ctx->zig_adapter, server_ip, vpn_network, vpn_netmask)) {
+                                    //     printf("[●] VPN: VPN network route configured\n");
+                                    // } else {
+                                    //     printf("[●] WARNING: VPN network route configuration failed\n");
+                                    // }
                                     
                                     // Step 2: Get VPN server hostname from session (to add protected route)
                                     char server_hostname[256] = {0};
@@ -991,18 +993,19 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
     // Write packet to queue
     bool result = zig_adapter_put_packet(ctx->zig_adapter, (const uint8_t*)data, (uint64_t)size);
     
+    // Commented this code below to reduce log weight
     // **CRITICAL FIX**: Immediately flush send_queue to TUN device
     // Without this, packets from VPN server sit in queue and never reach TUN!
     // This is why ping showed requests (GetNextPacket reads from TUN) but no replies
     // (PutPacket queued but never wrote to TUN)
-    ssize_t written = zig_adapter_write_sync(ctx->zig_adapter);
-    if (written > 0) {
-        static int packet_count = 0;
-        packet_count++;
-        if (packet_count <= 20) {  // Log first 20 packets only
-            printf("[ZigAdapterPutPacket] ✅ Wrote %zd packets to TUN (total=%d)\n", written, packet_count);
-        }
-    }
+    // ssize_t written = zig_adapter_write_sync(ctx->zig_adapter);
+    // if (written > 0) {
+    //     static int packet_count = 0;
+    //     packet_count++;
+    //     if (packet_count <= 20) {  // Log first 20 packets only
+    //         printf("[ZigAdapterPutPacket] ✅ Wrote %zd packets to TUN (total=%d)\n", written, packet_count);
+    //     }
+    // }
     
     if (!result) {
         // Queue full - force flush and retry

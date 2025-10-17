@@ -13,13 +13,7 @@ pub fn build(b: *std.Build) void {
     const target_os = target.result.os.tag;
     const is_ios = target_os == .ios;
 
-    // Build option for SSL: use system OpenSSL on native macOS/Linux, OpenSSL-Zig for iOS/cross-compile
-    const is_native_desktop = (target_os == .macos or target_os == .linux) and
-        target.result.cpu.arch == std.Target.Cpu.Arch.aarch64;
-    const use_system_ssl = b.option(bool, "system-ssl", "Use system OpenSSL instead of OpenSSL-Zig (default: true for native macOS/Linux)") orelse
-        is_native_desktop;
-
-    // iOS SDK configuration for OpenSSL-Zig
+    // iOS SDK configuration (for framework linking)
     const ios_sdk_path = if (is_ios) blk: {
         if (target.result.cpu.arch == .aarch64 and target.result.abi == .simulator) {
             break :blk "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk";
@@ -30,40 +24,14 @@ pub fn build(b: *std.Build) void {
         }
     } else null;
 
-    // Get OpenSSL dependency (conditional based on use_system_ssl)
-    const openssl_dep = if (!use_system_ssl) b.dependency("openssl", .{
-        .target = target,
-        .optimize = optimize,
-    }) else null;
-    const openssl = if (openssl_dep) |dep| blk: {
-        const ssl_lib = dep.artifact("ssl");
-        // Add iOS SDK sysroot for OpenSSL-Zig
-        if (ios_sdk_path) |sdk| {
-            const ios_include = b.fmt("{s}/usr/include", .{sdk});
-            const ios_frameworks = b.fmt("{s}/System/Library/Frameworks", .{sdk});
-            ssl_lib.addSystemIncludePath(.{ .cwd_relative = ios_include });
-            ssl_lib.addFrameworkPath(.{ .cwd_relative = ios_frameworks });
-            // iOS doesn't have CoreServices, use Foundation instead
-            ssl_lib.linkFramework("Foundation");
-            ssl_lib.linkFramework("Security");
-        }
-        break :blk ssl_lib;
-    } else null;
-
-    const crypto = if (openssl_dep) |dep| blk: {
-        const crypto_lib = dep.artifact("crypto");
-        // Add iOS SDK sysroot for OpenSSL-Zig
-        if (ios_sdk_path) |sdk| {
-            const ios_include = b.fmt("{s}/usr/include", .{sdk});
-            const ios_frameworks = b.fmt("{s}/System/Library/Frameworks", .{sdk});
-            crypto_lib.addSystemIncludePath(.{ .cwd_relative = ios_include });
-            crypto_lib.addFrameworkPath(.{ .cwd_relative = ios_frameworks });
-            // iOS doesn't have CoreServices, use Foundation instead
-            crypto_lib.linkFramework("Foundation");
-            crypto_lib.linkFramework("Security");
-        }
-        break :blk crypto_lib;
-    } else null;
+    // ============================================
+    // SSL/Crypto Strategy: SYSTEM LIBRARIES ONLY
+    // ============================================
+    // All platforms (macOS, Linux, iOS, Android) use their system-provided
+    // OpenSSL/BoringSSL libraries via linkSystemLibrary("ssl") and linkSystemLibrary("crypto").
+    // No embedded OpenSSL-Zig dependency - cleaner build, better security updates.
+    // For iOS: Link against iOS SDK's libssl/libcrypto
+    // For Android: Link against Android NDK's libssl/libcrypto
 
     // Base C flags (common to all platforms)
     const base_c_flags = &[_][]const u8{
@@ -306,14 +274,9 @@ pub fn build(b: *std.Build) void {
     cli.addIncludePath(b.path("src/bridge/VGate"));
     // NOTE: All C source files are in src/bridge/, no dependency on SoftEtherVPN_Stable!
 
-    // Link OpenSSL (system or bundled)
-    if (use_system_ssl) {
-        cli.linkSystemLibrary("ssl");
-        cli.linkSystemLibrary("crypto");
-    } else {
-        if (crypto) |c| cli.linkLibrary(c);
-        if (openssl) |s| cli.linkLibrary(s);
-    }
+    // Link system OpenSSL libraries (all platforms use system SSL)
+    cli.linkSystemLibrary("ssl");
+    cli.linkSystemLibrary("crypto");
 
     cli.addCSourceFiles(.{
         .files = c_sources,
@@ -450,14 +413,9 @@ pub fn build(b: *std.Build) void {
     bench.addIncludePath(b.path("src/bridge/Mayaqua"));
     bench.addIncludePath(b.path("src/bridge/Cedar"));
 
-    // Link OpenSSL (system or bundled)
-    if (use_system_ssl) {
-        bench.linkSystemLibrary("ssl");
-        bench.linkSystemLibrary("crypto");
-    } else {
-        if (crypto) |c| bench.linkLibrary(c);
-        if (openssl) |s| bench.linkLibrary(s);
-    }
+    // Link system OpenSSL libraries
+    bench.linkSystemLibrary("ssl");
+    bench.linkSystemLibrary("crypto");
 
     bench.addCSourceFiles(.{
         .files = c_sources,
@@ -539,14 +497,9 @@ pub fn build(b: *std.Build) void {
     bench_crypto.addIncludePath(b.path("src/bridge"));
     bench_crypto.addIncludePath(b.path("src/bridge/Mayaqua"));
 
-    // Link OpenSSL (system or bundled)
-    if (use_system_ssl) {
-        bench_crypto.linkSystemLibrary("ssl");
-        bench_crypto.linkSystemLibrary("crypto");
-    } else {
-        if (crypto) |c| bench_crypto.linkLibrary(c);
-        if (openssl) |s| bench_crypto.linkLibrary(s);
-    }
+    // Link system OpenSSL libraries
+    bench_crypto.linkSystemLibrary("ssl");
+    bench_crypto.linkSystemLibrary("crypto");
 
     bench_crypto.linkLibC();
 
@@ -594,14 +547,9 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    // Link OpenSSL (system or bundled)
-    if (use_system_ssl) {
-        ffi_lib.linkSystemLibrary("ssl");
-        ffi_lib.linkSystemLibrary("crypto");
-    } else {
-        if (crypto) |c| ffi_lib.linkLibrary(c);
-        if (openssl) |s| ffi_lib.linkLibrary(s);
-    }
+    // Link system OpenSSL libraries
+    ffi_lib.linkSystemLibrary("ssl");
+    ffi_lib.linkSystemLibrary("crypto");
 
     b.installArtifact(ffi_lib);
 

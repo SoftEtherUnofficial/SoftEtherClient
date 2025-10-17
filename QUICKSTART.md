@@ -2,13 +2,16 @@
 
 This guide shows how to quickly get started with the VPN client on each platform.
 
+> **Important:** This client uses **system SSL libraries only** (OpenSSL 3.0+ or LibreSSL).  
+> Install via your system package manager before building. No embedded dependencies.
+
 ## macOS (Intel & Apple Silicon)
 
 ### Installation
 
 ```bash
-# Install dependencies
-brew install zig openssl@3
+# Install dependencies (system SSL + Zig)
+brew install openssl@3 zig
 
 # Clone and build
 cd /path/to/SoftEtherVPN_Stable/zig
@@ -57,7 +60,7 @@ tar xf zig-linux-x86_64-0.15.1.tar.xz
 sudo mv zig-linux-x86_64-0.15.1 /opt/zig
 export PATH=$PATH:/opt/zig
 
-# Install dependencies
+# Install dependencies (system SSL libraries required)
 sudo apt update
 sudo apt install libssl-dev build-essential
 
@@ -147,10 +150,13 @@ Same as Debian/Ubuntu (see above).
 2. Extract to `C:\zig`
 3. Add `C:\zig` to system PATH
 
-**Step 2: Install OpenSSL**
+**Step 2: Install OpenSSL (System Library Required)**
+
+> **Important:** System OpenSSL is required. The build links against system libraries.
 
 1. Download from https://slproweb.com/products/Win32OpenSSL.html
 2. Install "Win64 OpenSSL v3.x.x" to `C:\OpenSSL-Win64`
+3. Verify: `C:\OpenSSL-Win64\bin\openssl.exe version` should show OpenSSL 3.x
 
 **Step 3: Install TAP-Windows6 Driver**
 

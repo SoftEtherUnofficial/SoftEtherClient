@@ -2,6 +2,9 @@
 
 This document provides detailed instructions for building the SoftEther VPN Zig client on different platforms.
 
+> **Important:** This client requires **system SSL libraries** (OpenSSL 3.0+ or LibreSSL).  
+> No embedded OpenSSL - always uses system-provided libraries via package manager.
+
 ## Platform Support Matrix
 
 | Platform | Architecture | Status | TUN Device | Build Tested |
@@ -20,7 +23,7 @@ This document provides detailed instructions for building the SoftEther VPN Zig 
 # Install Zig
 brew install zig
 
-# Install OpenSSL
+# Install system OpenSSL (required for SSL/TLS)
 brew install openssl@3
 
 # Verify installation
@@ -37,7 +40,7 @@ tar xf zig-linux-x86_64-0.15.1.tar.xz
 sudo mv zig-linux-x86_64-0.15.1 /opt/zig
 export PATH=$PATH:/opt/zig
 
-# Install OpenSSL development libraries
+# Install system OpenSSL development libraries (required)
 sudo apt update
 sudo apt install libssl-dev build-essential
 
@@ -54,7 +57,7 @@ tar xf zig-linux-x86_64-0.15.1.tar.xz
 sudo mv zig-linux-x86_64-0.15.1 /opt/zig
 export PATH=$PATH:/opt/zig
 
-# Install OpenSSL development libraries
+# Install system OpenSSL development libraries (required)
 sudo dnf install openssl-devel gcc make
 
 # TUN/TAP is built into the kernel (no extra package needed)
@@ -66,7 +69,7 @@ sudo dnf install openssl-devel gcc make
 # Install Zig (download from ziglang.org)
 # Extract to C:\zig and add to PATH
 
-# Install OpenSSL
+# Install system OpenSSL (required)
 # Download from: https://slproweb.com/products/Win32OpenSSL.html
 # Install "Win64 OpenSSL v3.x.x" to C:\OpenSSL-Win64
 
@@ -129,10 +132,14 @@ zig build -Dtarget=aarch64-macos -Doptimize=ReleaseFast
 
 ### Notes on Cross-Compilation
 
-1. **OpenSSL Dependencies**: Cross-compilation requires OpenSSL libraries for the target platform. You may need to:
-   - Use static linking: Add `-Dtarget-static` flag
-   - Provide target-specific libraries: Set paths in build.zig
-   - Use zig-provided libs when available
+1. **System SSL Libraries Required**: This project uses system SSL libraries (OpenSSL 3.0+ or LibreSSL).
+   - Cross-compilation requires SSL libraries for the **target platform**
+   - Options for cross-compilation:
+     - Install target platform's SSL libraries (e.g., cross-compile OpenSSL)
+     - Use static linking with pre-built SSL libraries for target
+     - Build on the target platform directly (recommended for simplicity)
+   - The build system links against system libraries via `linkSystemLibrary("ssl")` and `linkSystemLibrary("crypto")`
+   - No embedded OpenSSL dependency - always uses system-provided libraries
 
 2. **System Libraries**: Platform-specific libraries (pthread, ws2_32, etc.) are handled automatically by build.zig
 

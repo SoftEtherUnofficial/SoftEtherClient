@@ -257,13 +257,13 @@ pub const ZigPacketAdapter = struct {
 
     /// Put packet for transmission
     pub fn putPacket(self: *ZigPacketAdapter, data: []const u8) bool {
-        // Log ALL incoming packets for debugging
-        if (data.len >= 34) {
-            const ip_proto = data[14 + 9]; // IP protocol at offset 23 (14 Ethernet + 9 IP header)
-            if (ip_proto == 1) { // ICMP
-                logInfo("📥 putPacket: RECEIVED ICMP packet from SoftEther, len={d} bytes", .{data.len});
-            }
-        }
+        // // Log ALL incoming packets for debugging
+        // if (data.len >= 34) {
+        //     const ip_proto = data[14 + 9]; // IP protocol at offset 23 (14 Ethernet + 9 IP header)
+        //     if (ip_proto == 1) { // ICMP
+        //         logInfo("📥 putPacket: RECEIVED ICMP packet from SoftEther, len={d} bytes", .{data.len});
+        //     }
+        // }
 
         // Get buffer from pool
         const buffer = self.packet_pool.alloc() orelse return false;
@@ -282,13 +282,13 @@ pub const ZigPacketAdapter = struct {
             .timestamp = @intCast(std.time.nanoTimestamp()),
         };
 
-        // Log ICMP packets being queued
-        if (data.len >= 14 + 20) {
-            const ip_proto = data[14 + 9];
-            if (ip_proto == 1) {
-                logInfo("📬 putPacket: Queuing ICMP packet for TUN write, len={d} bytes", .{data.len});
-            }
-        }
+        // // Log ICMP packets being queued
+        // if (data.len >= 14 + 20) {
+        //     const ip_proto = data[14 + 9];
+        //     if (ip_proto == 1) {
+        //         logInfo("📬 putPacket: Queuing ICMP packet for TUN write, len={d} bytes", .{data.len});
+        //     }
+        // }
 
         if (!self.send_queue.push(pkt)) {
             _ = self.stats.send_queue_drops.fetchAdd(1, .monotonic);
@@ -826,22 +826,22 @@ export fn zig_adapter_configure_routing(
     return true;
 }
 
-/// Configure VPN routes (new C bridge API - ZIGSE-80)
-/// server_ip: VPN server IP (host byte order) for protected route
-/// vpn_network: VPN network address (host byte order)
-/// vpn_netmask: VPN netmask (host byte order)
-export fn zig_adapter_configure_routes(
-    adapter: *ZigPacketAdapter,
-    server_ip: u32,
-    vpn_network: u32,
-    vpn_netmask: u32,
-) bool {
-    _ = adapter;
-    _ = server_ip;
-    _ = vpn_network;
-    _ = vpn_netmask;
-    // TODO: Implement route configuration
-    // For now, just return true to satisfy the C bridge
-    logInfo("zig_adapter_configure_routes called (stub)", .{});
-    return true;
-}
+// /// Configure VPN routes (new C bridge API - ZIGSE-80)
+// /// server_ip: VPN server IP (host byte order) for protected route
+// /// vpn_network: VPN network address (host byte order)
+// /// vpn_netmask: VPN netmask (host byte order)
+// export fn zig_adapter_configure_routes(
+//     adapter: *ZigPacketAdapter,
+//     server_ip: u32,
+//     vpn_network: u32,
+//     vpn_netmask: u32,
+// ) bool {
+//     _ = adapter;
+//     _ = server_ip;
+//     _ = vpn_network;
+//     _ = vpn_netmask;
+//     // TODO: Implement route configuration
+//     // For now, just return true to satisfy the C bridge
+//     logInfo("zig_adapter_configure_routes called (stub)", .{});
+//     return true;
+// }

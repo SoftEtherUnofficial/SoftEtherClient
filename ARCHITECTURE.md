@@ -243,11 +243,19 @@ const tick64_file = switch (target_os) {
 
 ### Library Dependencies
 
+**System SSL Libraries:** This project uses **system-provided SSL libraries only** (no embedded dependencies).  
+All platforms link dynamically against system OpenSSL 3.0+ or LibreSSL via `linkSystemLibrary()`.
+
 | Platform | System Libraries |
 |----------|------------------|
 | macOS | `ssl`, `crypto`, `pthread`, `z`, `iconv`, `readline`, `ncurses` |
 | Linux | `ssl`, `crypto`, `pthread`, `z`, `rt`, `dl` |
 | Windows | `ssl`, `crypto`, `ws2_32`, `iphlpapi`, `advapi32` |
+
+**Notes:**
+- SSL libraries (`ssl`, `crypto`) must be installed via system package manager before building
+- No OpenSSL-Zig or embedded SSL dependencies - always uses system libraries
+- Mobile platforms (iOS/Android) also use system SSL libraries
 
 ## Packet Flow Architecture
 
