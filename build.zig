@@ -217,6 +217,82 @@ pub fn build(b: *std.Build) void {
         "src/bridge/Cedar/AzureServer.c", // Azure relay server
     };
 
+    // iOS-specific source list for FFI (excludes files with system() calls)
+    const c_sources_ios_ffi = &[_][]const u8{
+        // Bridge wrapper layer (exclude zig_packet_adapter.c - uses system())
+        "src/bridge/unix_bridge.c",
+        "src/bridge/security_utils.c",
+        "src/bridge/packet_utils.c",
+        "src/bridge/session_helper.c",
+        packet_adapter_src,
+        // "src/bridge/zig_packet_adapter.c", // EXCLUDED: uses system() unavailable on iOS
+        "src/bridge/Mayaqua/logging.c",
+        "src/bridge/Cedar/client_bridge.c",
+        "src/bridge/zig_bridge.c",
+
+        // Essential Mayaqua layer
+        "src/bridge/Mayaqua/Mayaqua.c",
+        "src/bridge/Mayaqua/Memory.c",
+        "src/bridge/Mayaqua/Str.c",
+        "src/bridge/Mayaqua/Object.c",
+        "src/bridge/Mayaqua/OS.c",
+        "src/bridge/Mayaqua/FileIO.c",
+        "src/bridge/Mayaqua/Kernel.c",
+        "src/bridge/Mayaqua/Network.c",
+        "src/bridge/Mayaqua/TcpIp.c",
+        "src/bridge/Mayaqua/Encrypt.c",
+        "src/bridge/Mayaqua/Secure.c",
+        "src/bridge/Mayaqua/Pack.c",
+        "src/bridge/Mayaqua/Cfg.c",
+        "src/bridge/Mayaqua/Table.c",
+        "src/bridge/Mayaqua/Tracking.c",
+        "src/bridge/Mayaqua/Internat.c",
+
+        // Essential Cedar layer
+        "src/bridge/Cedar/Cedar.c",
+        "src/bridge/Cedar/Client.c",
+        "src/bridge/Cedar/Protocol.c",
+        "src/bridge/Cedar/Connection.c",
+        "src/bridge/Cedar/Session.c",
+        "src/bridge/Cedar/Account.c",
+        "src/bridge/Cedar/Virtual.c",
+        "src/bridge/Cedar/NullLan.c",
+        "src/bridge/Cedar/Hub.c",
+        "src/bridge/Cedar/Listener.c",
+        "src/bridge/Cedar/Logging.c",
+        "src/bridge/Cedar/Admin.c",
+        "src/bridge/Cedar/Command.c",
+        "src/bridge/Cedar/Sam.c",
+        "src/bridge/Cedar/Server.c",
+        "src/bridge/Cedar/Layer3.c",
+        "src/bridge/Cedar/Link.c",
+        "src/bridge/Cedar/Bridge.c",
+        "src/bridge/Cedar/BridgeUnix.c",
+        "src/bridge/Cedar/UdpAccel.c",
+        "src/bridge/Cedar/SecureNAT.c",
+        "src/bridge/Cedar/Nat.c",
+        "src/bridge/Cedar/Database.c",
+        "src/bridge/Cedar/Remote.c",
+        "src/bridge/Cedar/Console.c",
+        "src/bridge/Cedar/Radius.c",
+        "src/bridge/Cedar/DDNS.c",
+        "src/bridge/Cedar/EtherLog.c",
+        "src/bridge/Cedar/WebUI.c",
+        "src/bridge/Cedar/WaterMark.c",
+        "src/bridge/Cedar/Interop_OpenVPN.c",
+        "src/bridge/Cedar/Interop_SSTP.c",
+        "src/bridge/Cedar/IPsec.c",
+        "src/bridge/Cedar/IPsec_IKE.c",
+        "src/bridge/Cedar/IPsec_IkePacket.c",
+        "src/bridge/Cedar/IPsec_L2TP.c",
+        "src/bridge/Cedar/IPsec_PPP.c",
+        "src/bridge/Cedar/IPsec_EtherIP.c",
+        "src/bridge/Cedar/IPsec_IPC.c",
+        "src/bridge/Cedar/AzureClient.c",
+        "src/bridge/Cedar/AzureServer.c",
+        timing_src.?, // macOS/iOS timing file
+    };
+
     // Use client-only source list with platform-specific files
     const c_sources = if (target_os == .macos or target_os == .ios) blk: {
         // macOS/iOS needs timing file
@@ -566,11 +642,14 @@ pub fn build(b: *std.Build) void {
     // 4. FFI LIBRARY (Cross-Platform)
     // ============================================
 
+    // Choose FFI entry point based on platform
+    const ffi_root = if (is_ios) "src/ffi/ios_compat.zig" else "src/ffi/ffi.zig";
+
     // Mobile FFI (generic API for iOS/Android)
     const ffi_lib = b.addLibrary(.{
         .name = "softether_ffi",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/ffi/ffi.zig"),
+            .root_source_file = b.path(ffi_root),
             .target = target,
             .optimize = optimize,
         }),
@@ -579,6 +658,11 @@ pub fn build(b: *std.Build) void {
     ffi_lib.linkLibC();
     ffi_lib.addIncludePath(b.path("include"));
     ffi_lib.addIncludePath(b.path("src"));
+    // ffi_lib.addIncludePath(b.path("SoftEtherVPN_Stable/src/Mayaqua"));
+    // ffi_lib.addIncludePath(b.path("SoftEtherVPN_Stable/src/Cedar"));
+    ffi_lib.addIncludePath(b.path("src/bridge"));
+    ffi_lib.addIncludePath(b.path("src/bridge/Mayaqua"));
+    ffi_lib.addIncludePath(b.path("src/bridge/Cedar"));
 
     // Add iOS SDK configuration for FFI
     if (is_ios) {
@@ -591,6 +675,25 @@ pub fn build(b: *std.Build) void {
             ffi_lib.linkFramework("Foundation");
             ffi_lib.linkFramework("Security");
         }
+
+        // Add C source files for iOS (adapter stubs, bridge, and all SoftEther sources)
+        ffi_lib.addCSourceFile(.{
+            .file = b.path("src/ffi/ios_adapter_stubs.c"),
+            .flags = c_flags,
+        });
+        ffi_lib.addCSourceFile(.{
+            .file = b.path("src/bridge/softether_bridge.c"),
+            .flags = c_flags,
+        });
+        ffi_lib.addCSourceFile(.{
+            .file = b.path("src/ffi/ios_stubs.c"),
+            .flags = c_flags,
+        });
+        // Add all SoftEther C sources (iOS-specific list excludes system() calls)
+        ffi_lib.addCSourceFiles(.{
+            .files = c_sources_ios_ffi,
+            .flags = c_flags,
+        });
     }
 
     // Link OpenSSL (system or bundled)

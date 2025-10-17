@@ -4,7 +4,7 @@
  * This header provides the same API as the Rust FFI implementation,
  * allowing iOS PacketTunnelProvider to work with the Zig backend.
  * 
- * Drop-in replacement for RustFramework/include/softether_ffi.h
+ * Drop-in replacement for ZigFramework/include/softether_ffi.h
  */
 
 #pragma once
@@ -314,5 +314,3 @@ bool softether_client_is_valid_handle(softether_client_t* handle);
 #ifdef __cplusplus
 }
 #endif
-
-#endif // SOFTETHER_FFI_H

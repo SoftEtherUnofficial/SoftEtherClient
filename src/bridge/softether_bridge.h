@@ -488,6 +488,23 @@ uint32_t vpn_bridge_calculate_backoff(const VpnBridgeClient* client);
  */
 int vpn_bridge_reset_reconnect_state(VpnBridgeClient* client);
 
+/**
+ * Get the IPC (Inter-Process Communication) object for DHCP queries.
+ * This provides access to network configuration from DHCP server.
+ * 
+ * @param client The VPN client
+ * @return Pointer to IPC object, or NULL if not available
+ */
+void* vpn_bridge_get_ipc(const VpnBridgeClient* client);
+
+/**
+ * Get the global VPN client instance (for internal use by stubs).
+ * Returns the first non-NULL client that was created.
+ * 
+ * @return Pointer to global VPN client, or NULL if none exists
+ */
+VpnBridgeClient* vpn_bridge_get_global_client(void);
+
 #ifdef __cplusplus
 }
 #endif

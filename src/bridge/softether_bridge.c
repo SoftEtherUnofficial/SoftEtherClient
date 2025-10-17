@@ -54,6 +54,7 @@
  * ============================================ */
 
 static uint32_t g_initialized = 0;  // 0 = false, 1 = true
+static VpnBridgeClient* g_global_client = NULL;  // Global client for stubs to access
 
 /* ============================================
  * Client Structure
@@ -253,6 +254,11 @@ VpnBridgeClient* vpn_bridge_create_client(void) {
         return NULL;
     }
     
+    // Set as global client if not already set (for stubs to access IPC)
+    if (g_global_client == NULL) {
+        g_global_client = client;
+    }
+    
     LOG_DEBUG("VPN", "Client created successfully");
     return client;
 }
@@ -276,6 +282,11 @@ void vpn_bridge_free_client(VpnBridgeClient* client) {
         }
     }
     client->dns_server_count = 0;
+    
+    // Clear global client if this was it
+    if (g_global_client == client) {
+        g_global_client = NULL;
+    }
     
     // Free real SoftEther CLIENT structure
     // NOTE: If we already disconnected, skip CiCleanupClient as it may access freed resources
@@ -1380,5 +1391,22 @@ int vpn_bridge_set_use_zig_adapter(VpnBridgeClient* client, int use_zig_adapter)
                  client->use_zig_adapter ? "Zig (experimental)" : "C (default)");
     
     return VPN_BRIDGE_SUCCESS;
+}
+
+/**
+ * Get the IPC object for DHCP network configuration queries
+ */
+void* vpn_bridge_get_ipc(const VpnBridgeClient* client) {
+    if (!client) {
+        return NULL;
+    }
+    return client->softether_ipc;
+}
+
+/**
+ * Get the global VPN client instance (for internal use by stubs)
+ */
+VpnBridgeClient* vpn_bridge_get_global_client(void) {
+    return g_global_client;
 }
 

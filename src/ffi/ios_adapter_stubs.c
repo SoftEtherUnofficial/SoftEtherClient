@@ -20,6 +20,7 @@
 #include "../bridge/Cedar/Connection.h"
 #include "../bridge/Cedar/NullLan.h"
 #include "../bridge/session_helper.h"
+#include "../bridge/softether_bridge.h"
 #include "../../include/zig_packet_adapter.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -1016,50 +1017,39 @@ char* zig_adapter_get_network_settings_json(void* adapter) {
     if (!adapter) return NULL;
     
     AdapterContext* ctx = (AdapterContext*)adapter;
-    SESSION *s = get_session_safely();
     
-    // Default values if session not available
+    // Get the global VPN client to access IPC
+    VpnBridgeClient* client = vpn_bridge_get_global_client();
+    IPC* ipc = client ? (IPC*)vpn_bridge_get_ipc(client) : NULL;
+    
+    // Default values if IPC not available
     char ip_str[64] = "0.0.0.0";
     char mask_str[64] = "255.255.255.0";
     char gateway_str[64] = "0.0.0.0";
-    char dns_str[256] = "\"8.8.8.8\",\"8.8.4.4\"";
+    char dns_str[256] = "\"8.8.8.8\",\"1.1.1.1\"";  // Default DNS servers
     char mac_str[32] = "00:00:00:00:00:00";
     
-    if (s != NULL) {
-        // Thread-safe extraction with lock
-        if (s->lock) Lock(s->lock);
+    if (ipc != NULL && IsZeroIP(&ipc->ClientIPAddress) == false) {
+        // Use the DHCP-assigned IP from IPC
+        IPToStr(ip_str, sizeof(ip_str), &ipc->ClientIPAddress);
         
-        // Get client IP from SESSION (this is the assigned IP)
-        if (s->ClientIP[0] != '\0') {
-            StrCpy(ip_str, sizeof(ip_str), s->ClientIP);
+        // Get subnet mask from IPC
+        if (IsZeroIP(&ipc->SubnetMask) == false) {
+            IPToStr(mask_str, sizeof(mask_str), &ipc->SubnetMask);
         }
         
-        // Get MAC address for IPC virtual adapter
+        // Get gateway from IPC
+        if (IsZeroIP(&ipc->DefaultGateway) == false) {
+            IPToStr(gateway_str, sizeof(gateway_str), &ipc->DefaultGateway);
+        }
+        
+        // DNS is handled by iOS - use defaults or query from policy/server options
+        // For now, use public DNS servers (iOS will override these anyway)
+        
+        // Get MAC address from IPC
         snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                 s->IpcMacAddress[0], s->IpcMacAddress[1], s->IpcMacAddress[2],
-                 s->IpcMacAddress[3], s->IpcMacAddress[4], s->IpcMacAddress[5]);
-        
-        // Get DNS server if available
-        if (s->DefaultDns.addr[0] != 0) {
-            // Format IP address from DefaultDns
-            char dns1[64];
-            IPToStr(dns1, sizeof(dns1), &s->DefaultDns);
-            snprintf(dns_str, sizeof(dns_str), "\"%s\"", dns1);
-        }
-        
-        // For NullLan adapter, subnet is typically /24 or derived from Hub
-        // We use a reasonable default since SESSION doesn't expose subnet directly
-        StrCpy(mask_str, sizeof(mask_str), "255.255.255.0");
-        
-        // Gateway is typically the server IP or .1 in the same subnet
-        // Use a heuristic: replace last octet with .1
-        StrCpy(gateway_str, sizeof(gateway_str), ip_str);
-        char *last_dot = StrRChr(gateway_str, '.');
-        if (last_dot != NULL) {
-            StrCpy(last_dot + 1, sizeof(gateway_str) - (last_dot + 1 - gateway_str), "1");
-        }
-        
-        if (s->lock) Unlock(s->lock);
+                 ipc->MacAddress[0], ipc->MacAddress[1], ipc->MacAddress[2],
+                 ipc->MacAddress[3], ipc->MacAddress[4], ipc->MacAddress[5]);
     }
     
     // Build JSON response
