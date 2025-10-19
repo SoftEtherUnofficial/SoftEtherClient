@@ -312,6 +312,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Add include paths to the module itself (for @cImport in adapter.zig)
+    // This is required for the logging.h header used by the adapter
+    packet_adapter_module.addIncludePath(b.path("src"));
+    packet_adapter_module.addIncludePath(b.path("src/bridge"));
+    packet_adapter_module.addIncludePath(b.path("src/bridge/Mayaqua"));
+    packet_adapter_module.addIncludePath(b.path("src/bridge/Cedar"));
+
     // Add iOS SDK paths to the module itself (for @cImport in dependencies)
     if (is_ios) {
         if (ios_sdk_path) |sdk| {
@@ -333,6 +340,7 @@ pub fn build(b: *std.Build) void {
     // Add taptun dependency for L2/L3 translation (legacy, will be removed)
     packet_adapter_module.addImport("taptun", taptun_module);
 
+    // Zig packet adapter object (for C bridge client integration)
     const packet_adapter_obj = b.addObject(.{
         .name = "zig_packet_adapter",
         .root_module = packet_adapter_module,
@@ -776,6 +784,46 @@ pub fn build(b: *std.Build) void {
 
     const run_macos_adapter_tests = b.addRunArtifact(macos_adapter_tests);
 
+    // Test for Pack serialization (Phase 1 migration from Rust)
+    const pack_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tests/test_pack.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    // Add pack module as import
+    const pack_mod = b.createModule(.{
+        .root_source_file = b.path("src/mayaqua/pack.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    pack_tests.root_module.addImport("pack_impl", pack_mod);
+
+    const run_pack_tests = b.addRunArtifact(pack_tests);
+
+    // Test for Time utilities (Phase 1 migration from Rust)
+    const time_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/mayaqua/time.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_time_tests = b.addRunArtifact(time_tests);
+
+    // Test for Error handling (Phase 1 migration from Rust)
+    const error_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/mayaqua/error.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_error_tests = b.addRunArtifact(error_tests);
+
     // Main test step
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_memory_tests.step);
@@ -789,6 +837,9 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_crypto_tests.step);
     test_step.dependOn(&run_integration_tests.step);
     test_step.dependOn(&run_macos_adapter_tests.step);
+    test_step.dependOn(&run_pack_tests.step);
+    test_step.dependOn(&run_time_tests.step);
+    test_step.dependOn(&run_error_tests.step);
 
     // ============================================
     // 6. HELP AND INFORMATION

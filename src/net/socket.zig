@@ -97,9 +97,20 @@ pub const TcpSocket = struct {
     stats: SocketStats,
     connected: bool,
 
-    /// Connect to remote host
+    /// Connect to remote host (supports both IP addresses and hostnames)
     pub fn connect(allocator: std.mem.Allocator, host: []const u8, port: u16) !TcpSocket {
-        const addr = try std.net.Address.parseIp(host, port);
+        // Try parsing as IP first, otherwise do DNS resolution
+        const addr = std.net.Address.parseIp(host, port) catch blk: {
+            // DNS resolution required
+            const list = try std.net.getAddressList(allocator, host, port);
+            defer list.deinit();
+
+            if (list.addrs.len == 0) {
+                return error.InvalidIPAddressFormat;
+            }
+
+            break :blk list.addrs[0];
+        };
         const stream = try std.net.tcpConnectToAddress(addr);
 
         // Get local address from socket
@@ -171,7 +182,12 @@ pub const TcpSocket = struct {
     pub fn recvAll(self: *TcpSocket, buffer: []u8) !void {
         if (!self.connected) return error.NotConnected;
 
-        try self.stream.reader().readNoEof(buffer);
+        var total: usize = 0;
+        while (total < buffer.len) {
+            const n = try self.stream.read(buffer[total..]);
+            if (n == 0) return error.EndOfStream;
+            total += n;
+        }
         self.stats.bytes_received += buffer.len;
         self.stats.packets_received += 1;
     }

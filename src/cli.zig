@@ -25,7 +25,9 @@ extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int
 const VERSION = "1.0.0";
 
 // Global client pointer for signal handler
-var g_client: ?*VpnClient = null;
+// Using anyopaque to support both VpnClient (Pure Zig) and VpnBridgeClient (C bridge)
+var g_client: ?*anyopaque = null;
+var g_client_is_bridge: bool = true; // Track which type of client we're using
 var g_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true);
 var g_cleanup_done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 var g_shutdown_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
@@ -60,8 +62,10 @@ fn printUsage() void {
         \\    --no-compress           Disable compression
         \\    -d, --daemon            Run as daemon (background)
         \\    --profile               Enable performance profiling
-        \\    --use-zig-adapter       Use Zig packet adapter (default, 10x faster)
-        \\    --use-c-adapter         Use legacy C adapter (fallback)
+        \\    --use-zig-adapter       Use Zig packet adapter (default, high-performance)
+        \\    --use-c-adapter         Use C packet adapter (legacy fallback)
+        \\    --use-c                 Use C Bridge VPN stack (default, stable, production-ready)
+        \\    --use-pure-zig          Use pure Zig VPN stack (experimental, under development)
         \\    --log-level <LEVEL>     Set log verbosity: silent, error, warn, info, debug, trace (default: info)
         \\
         \\  Reconnection Options:
@@ -274,6 +278,8 @@ fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
             result.use_zig_adapter = true;
         } else if (std.mem.eql(u8, arg, "--use-c-adapter")) {
             result.use_zig_adapter = false;
+        } else if (std.mem.eql(u8, arg, "--use-c")) {
+            result.use_pure_zig = false; // Explicitly use C+Zig hybrid (default)
         } else if (std.mem.eql(u8, arg, "--use-pure-zig")) {
             result.use_pure_zig = true;
         } else if (std.mem.eql(u8, arg, "--log-level")) {
@@ -732,7 +738,8 @@ pub fn main() !void {
         std.debug.print("Max Connections: {d}\n", .{args.max_connection});
     }
     std.debug.print("IP Version:    {s}\n", .{args.ip_version});
-    std.debug.print("VPN Mode:      {s}\n", .{if (args.use_pure_zig) "Pure Zig (Experimental)" else "C Bridge (Stable)"});
+    std.debug.print("VPN Mode:      {s}\n", .{if (args.use_pure_zig) "Pure Zig (Experimental)" else "C Bridge (Production Ready ✅)"});
+    std.debug.print("Packet Adapter: {s}\n", .{if (args.use_zig_adapter) "Zig (High Performance)" else "C (Legacy)"});
     std.debug.print("Buffer Sizes:  RX={d} TX={d} slots\n", .{ final_recv_buffer_slots, final_send_buffer_slots });
 
     if (static_ip) |sip| {
@@ -760,30 +767,91 @@ pub fn main() !void {
 
     std.debug.print("─────────────────────────────────────────────\n\n", .{});
 
-    // Pure Zig mode is temporarily disabled due to incomplete implementation
     if (args.use_pure_zig) {
-        std.debug.print("✗ Pure Zig VPN client is not yet complete.\n", .{});
-        std.debug.print("   Please use the stable C bridge mode (default).\n", .{});
-        std.process.exit(1);
+        // Pure Zig VPN client (experimental, under development)
+        std.debug.print("⚠️  WARNING: Using Pure Zig VPN stack (experimental, under development)\n", .{});
+        std.debug.print("⚠️  This mode has known issues with Pack serialization (error code 3)\n", .{});
+        std.debug.print("⚠️  For production use, please use the default C Bridge mode\n\n", .{});
+
+        const PureZigClient = @import("client_pure.zig");
+        var pure_client = PureZigClient.PureZigVpnClient.init(allocator, vpn_config) catch |err| {
+            std.debug.print("✗ Failed to initialize Pure Zig VPN client: {any}\n", .{err});
+            std.process.exit(1);
+        };
+        defer pure_client.deinit();
+
+        std.debug.print("Establishing VPN connection (Pure Zig mode)...\n", .{});
+        pure_client.connect() catch |err| {
+            std.debug.print("✗ Connection failed: {any}\n", .{err});
+            std.process.exit(1);
+        };
+
+        std.debug.print("✓ Pure Zig VPN connection established\n", .{});
+        std.debug.print("⚠️  Pure Zig mode is experimental - expect issues!\n", .{});
+        std.debug.print("Press Ctrl+C to disconnect.\n", .{});
+
+        // Keep connection alive
+        while (true) {
+            std.Thread.sleep(1_000_000_000); // 1 second
+        }
     }
 
     // C Bridge VPN client (stable, default)
-    var vpn_client = VpnClient.init(allocator, vpn_config) catch |err| {
-        std.debug.print("✗ Failed to initialize VPN client: {any}\n", .{err});
+    // Using the REAL C bridge from softether.zig, not the Pure Zig wrapper
+    std.debug.print("Establishing VPN connection...\n", .{});
+
+    var vpn_bridge = softether.VpnBridgeClient.init(allocator) catch |err| {
+        std.debug.print("✗ Failed to initialize C bridge VPN client: {any}\n", .{err});
         std.process.exit(1);
     };
-    // Note: defer vpn_client.deinit() is NOT here - we handle it manually for daemon mode
+    errdefer vpn_bridge.deinit();
 
-    // Connect to VPN server
-    std.debug.print("Establishing VPN connection...\n", .{});
-    vpn_client.connect() catch |err| {
-        vpn_client.deinit();
+    // Configure connection parameters
+    if (use_password_hash) {
+        vpn_bridge.configureWithHash(server, final_port, hub, username, password) catch |err| {
+            vpn_bridge.deinit();
+            std.debug.print("✗ Failed to configure VPN client: {any}\n", .{err});
+            std.process.exit(1);
+        };
+    } else {
+        vpn_bridge.configure(server, final_port, hub, username, password) catch |err| {
+            vpn_bridge.deinit();
+            std.debug.print("✗ Failed to configure VPN client: {any}\n", .{err});
+            std.process.exit(1);
+        };
+    }
+
+    // Set max connections if specified
+    if (args.max_connection > 0) {
+        vpn_bridge.setMaxConnection(args.max_connection) catch |err| {
+            std.debug.print("Warning: Failed to set max connections: {any}\n", .{err});
+        };
+    }
+
+    // Configure IP version preference
+    const bridge_ip_version: softether.IpVersion = switch (ip_version) {
+        .auto => .AUTO,
+        .ipv4 => .IPV4_ONLY,
+        .ipv6 => .IPV6_ONLY,
+        .dual => .AUTO, // Use AUTO for dual-stack
+    };
+    vpn_bridge.setIpVersion(bridge_ip_version) catch |err| {
+        std.debug.print("Warning: Failed to set IP version: {any}\n", .{err});
+    };
+
+    // Set packet adapter preference
+    vpn_bridge.use_zig_adapter = args.use_zig_adapter;
+
+    // Connect to VPN server (C bridge handles authentication internally)
+    vpn_bridge.connect() catch |err| {
+        vpn_bridge.deinit();
         std.debug.print("✗ Connection failed: {any}\n", .{err});
         std.process.exit(1);
     };
 
     // Set up signal handler for Ctrl+C and graceful termination
-    g_client = &vpn_client;
+    g_client = @ptrCast(vpn_bridge);
+    g_client_is_bridge = true;
 
     // Configure signal handling (Windows uses different API)
     if (builtin.os.tag != .windows) {
@@ -816,8 +884,8 @@ pub fn main() !void {
     // Start monitoring thread to watch for shutdown signals
     // This is more reliable than relying on signal delivery to C code
     const MonitorThread = struct {
-        fn run(vpn_client_ptr: *VpnClient) void {
-            _ = vpn_client_ptr;
+        fn run(client_ptr: *anyopaque) void {
+            _ = client_ptr;
             while (true) {
                 std.Thread.sleep(500 * std.time.ns_per_ms); // Check every 500ms (reduced CPU usage)
 
@@ -871,7 +939,7 @@ pub fn main() !void {
         }
     };
 
-    const monitor_thread = std.Thread.spawn(.{}, MonitorThread.run, .{&vpn_client}) catch |err| {
+    const monitor_thread = std.Thread.spawn(.{}, MonitorThread.run, .{@as(*anyopaque, @ptrCast(vpn_bridge))}) catch |err| {
         std.debug.print("Warning: Failed to start monitoring thread: {}\n", .{err});
         return err;
     };
@@ -882,39 +950,10 @@ pub fn main() !void {
     // The adapter is initialized asynchronously, so we need to wait for it
     std.Thread.sleep(100 * std.time.ns_per_ms); // 100ms should be enough
 
-    // Get dynamic network information
-    const device_name_buf = vpn_client.getDeviceName() catch |err| blk: {
-        std.debug.print("Warning: Could not get device name: {any}\n", .{err});
-        break :blk [_]u8{0} ** 64;
-    };
-    const device_name_end = std.mem.indexOfScalar(u8, &device_name_buf, 0) orelse device_name_buf.len;
-    const device_name = device_name_buf[0..device_name_end];
-
-    const learned_ip = vpn_client.getLearnedIp() catch 0;
-    const gateway_mac = vpn_client.getGatewayMac() catch null;
-
     // Display connection status
-    std.debug.print("Connection Status: {s}\n", .{@tagName(vpn_client.getStatus())});
-    std.debug.print("TUN Device:        {s}\n", .{device_name});
-
-    if (learned_ip != 0) {
-        std.debug.print("Learned IP:        {}.{}.{}.{}\n", .{
-            (learned_ip >> 24) & 0xFF,
-            (learned_ip >> 16) & 0xFF,
-            (learned_ip >> 8) & 0xFF,
-            learned_ip & 0xFF,
-        });
-    } else {
-        std.debug.print("Learned IP:        (not yet detected)\n", .{});
-    }
-
-    if (gateway_mac) |mac| {
-        std.debug.print("Gateway MAC:       {X:0>2}:{X:0>2}:{X:0>2}:{X:0>2}:{X:0>2}:{X:0>2}\n\n", .{
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
-        });
-    } else {
-        std.debug.print("Gateway MAC:       (not yet learned)\n\n", .{});
-    }
+    std.debug.print("Connection Status: {s}\n", .{@tagName(vpn_bridge.getStatus())});
+    std.debug.print("TUN Device:        (C bridge - check with ifconfig/ip addr)\n", .{});
+    std.debug.print("Learned IP:        (will be assigned via DHCP)\n\n", .{});
 
     // Show network information
     std.debug.print("✅ Network Configuration\n", .{});
@@ -939,7 +978,7 @@ pub fn main() !void {
 
         if (pid < 0) {
             std.debug.print("✗ Failed to fork process\n", .{});
-            vpn_client.deinit();
+            vpn_bridge.deinit();
             std.process.exit(1);
         }
 
@@ -951,7 +990,7 @@ pub fn main() !void {
             std.debug.print("─────────────────────────────────────────────\n", .{});
 
             // Parent exits - child continues in background
-            vpn_client.deinit(); // Parent doesn't need the vpn_client anymore
+            vpn_bridge.deinit(); // Parent doesn't need the vpn_bridge anymore
             return;
         }
 
@@ -963,7 +1002,7 @@ pub fn main() !void {
         const devnull = std.fs.openFileAbsolute("/dev/null", .{ .mode = .read_write }) catch {
             // Can't print here - stdout might be closed
             // Continue anyway with inherited file descriptors
-            daemonLoop(&vpn_client);
+            daemonLoop(@ptrCast(vpn_bridge));
         };
         defer devnull.close();
 
@@ -972,7 +1011,7 @@ pub fn main() !void {
         std.posix.dup2(devnull.handle, std.posix.STDERR_FILENO) catch {};
 
         // Keep connection alive in background forever
-        daemonLoop(&vpn_client);
+        daemonLoop(@ptrCast(vpn_bridge));
     }
 
     // Foreground mode: wait for Ctrl+C
@@ -986,7 +1025,7 @@ pub fn main() !void {
 
     // Configure reconnection
     if (args.reconnect) {
-        try vpn_client.enableReconnect(
+        try vpn_bridge.enableReconnect(
             args.max_reconnect_attempts,
             args.min_backoff,
             args.max_backoff,
@@ -997,84 +1036,29 @@ pub fn main() !void {
             std.debug.print("Auto-reconnect enabled (unlimited, backoff {d}-{d}s)\n", .{ args.min_backoff, args.max_backoff });
         }
     } else {
-        try vpn_client.disableReconnect();
+        vpn_bridge.disableReconnect();
         std.debug.print("Auto-reconnect disabled\n", .{});
     }
 
-    // Main monitoring/reconnection loop
+    // Main monitoring loop (C bridge handles reconnection internally)
     if (args.profile) {
-        monitorWithProfiling(allocator, &vpn_client);
+        monitorWithProfiling(allocator, @ptrCast(vpn_bridge));
     } else {
-        // Main loop with reconnection support
+        // Simple monitoring loop - C bridge maintains connection
         while (g_running.load(.acquire)) {
-            if (vpn_client.isConnected()) {
-                // Connected - normal monitoring
-                std.Thread.sleep(100 * std.time.ns_per_ms); // Check every 100ms for faster response
-            } else {
-                // Disconnected - check if we should reconnect
-                const reconnect_info = vpn_client.getReconnectInfo() catch {
-                    std.debug.print("[!] Failed to get reconnection info\n", .{});
-                    break;
-                };
-
-                if (!reconnect_info.should_reconnect) {
-                    // User disconnect, disabled, or max retries exceeded
-                    if (reconnect_info.enabled and
-                        reconnect_info.max_attempts > 0 and
-                        reconnect_info.attempt >= reconnect_info.max_attempts)
-                    {
-                        std.debug.print("\n[!] Max reconnection attempts ({d}) exceeded\n", .{reconnect_info.max_attempts});
-                    }
-                    break;
-                }
-
-                // Calculate how long to wait
-                const current_time: u64 = @intCast(std.time.milliTimestamp());
-                if (current_time < reconnect_info.next_retry_time) {
-                    const wait_ms: u64 = reconnect_info.next_retry_time - current_time;
-                    const wait_s = wait_ms / 1000;
-
-                    if (reconnect_info.max_attempts > 0) {
-                        std.debug.print("\n[●] Connection lost, reconnecting in {d}s (attempt {d}/{d})...\n", .{ wait_s, reconnect_info.attempt + 1, reconnect_info.max_attempts });
-                    } else {
-                        std.debug.print("\n[●] Connection lost, reconnecting in {d}s (attempt {d})...\n", .{ wait_s, reconnect_info.attempt + 1 });
-                    }
-
-                    // Wait with periodic checks for Ctrl+C
-                    var remaining_ms = wait_ms;
-                    while (remaining_ms > 0 and g_running.load(.acquire)) {
-                        const sleep_ms = @min(remaining_ms, 500);
-                        const sleep_ns: u64 = @as(u64, sleep_ms) * @as(u64, std.time.ns_per_ms);
-                        std.Thread.sleep(sleep_ns);
-                        remaining_ms -|= sleep_ms;
-                    }
-
-                    if (!g_running.load(.acquire)) {
-                        break; // User pressed Ctrl+C during wait
-                    }
-                }
-
-                // Attempt reconnection
-                std.debug.print("[●] Reconnecting...\n", .{});
-                vpn_client.connect() catch |err| {
-                    std.debug.print("[!] Reconnection failed: {}\n", .{err});
-                    continue; // Will retry in next iteration
-                };
-
-                std.debug.print("[✓] Reconnection successful!\n", .{});
-            }
+            std.Thread.sleep(100 * std.time.ns_per_ms); // Check every 100ms for shutdown signal
         }
     }
 
     // Only cleanup if signal handler hasn't already done it
     if (!g_cleanup_done.load(.acquire)) {
-        if (vpn_client.isConnected()) {
+        if (vpn_bridge.isConnected()) {
             std.debug.print("\n[●] Disconnecting...\n", .{});
         } else {
             std.debug.print("\n[●] Cleaning up...\n", .{});
         }
         g_cleanup_done.store(true, .release);
-        vpn_client.deinit();
+        vpn_bridge.deinit();
         std.debug.print("[✓] Cleanup complete\n", .{});
     } else {
         // Signal handler called disconnect(), now call deinit() to free resources
@@ -1085,9 +1069,9 @@ pub fn main() !void {
         monitor_thread.join();
         std.debug.print("[DEBUG] Monitor thread finished\n", .{});
 
-        std.debug.print("[DEBUG] About to call vpn_client.deinit()...\n", .{});
-        vpn_client.deinit();
-        std.debug.print("[DEBUG] vpn_client.deinit() returned\n", .{});
+        std.debug.print("[DEBUG] About to call vpn_bridge.deinit()...\n", .{});
+        vpn_bridge.deinit();
+        std.debug.print("[DEBUG] vpn_bridge.deinit() returned\n", .{});
         std.debug.print("[✓] VPN connection terminated\n", .{});
         std.debug.print("[✓] Resources released\n", .{});
         std.debug.print("\n", .{});
@@ -1102,9 +1086,10 @@ pub fn main() !void {
 }
 
 // Background daemon loop - runs forever until killed
-fn daemonLoop(vpn_client_ptr: *VpnClient) noreturn {
+fn daemonLoop(client_ptr: *anyopaque) noreturn {
+    const vpn_bridge: *softether.VpnBridgeClient = @ptrCast(@alignCast(client_ptr));
     while (g_running.load(.acquire)) {
-        if (!vpn_client_ptr.isConnected()) {
+        if (!vpn_bridge.isConnected()) {
             // Connection lost - exit with error code
             std.process.exit(1);
         }
@@ -1115,7 +1100,8 @@ fn daemonLoop(vpn_client_ptr: *VpnClient) noreturn {
 }
 
 // Monitor connection with performance profiling
-fn monitorWithProfiling(allocator: std.mem.Allocator, vpn_client: *VpnClient) void {
+fn monitorWithProfiling(allocator: std.mem.Allocator, client_ptr: *anyopaque) void {
+    const vpn_bridge: *softether.VpnBridgeClient = @ptrCast(@alignCast(client_ptr));
     var metrics = profiling.Metrics.init(allocator);
     defer metrics.deinit();
 
@@ -1125,13 +1111,9 @@ fn monitorWithProfiling(allocator: std.mem.Allocator, vpn_client: *VpnClient) vo
 
     std.debug.print("\n", .{});
 
-    while (vpn_client.isConnected() and g_running.load(.acquire)) {
+    while (vpn_bridge.isConnected() and g_running.load(.acquire)) {
         // Get current stats from VPN client
-        const info = vpn_client.getConnectionInfo() catch |err| {
-            std.debug.print("Error getting connection info: {any}\n", .{err});
-            std.Thread.sleep(1000 * std.time.ns_per_ms);
-            continue;
-        };
+        const info = vpn_bridge.getConnectionInfo();
 
         // Calculate delta
         const bytes_rx_delta = info.bytes_received -| last_bytes_rx;
