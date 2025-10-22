@@ -74,13 +74,14 @@ pub fn build(b: *std.Build) void {
     std.debug.print("\n", .{});
 
     // Platform-specific packet adapter and timing files
-    const packet_adapter_file = switch (target_os) {
+    // Note: When USE_ZIG_ADAPTER=1, we don't need the C packet adapter anymore
+    const packet_adapter_file = if (!use_zig_adapter) switch (target_os) {
         .ios => "src/bridge/ios/packet_adapter_ios.c",
         .macos => "src/bridge/packet_adapter_macos.c",
         .linux => "src/bridge/packet_adapter_linux.c",
         .windows => "src/bridge/packet_adapter_windows.c",
         else => "src/bridge/packet_adapter_linux.c", // fallback
-    };
+    } else null;
 
     const tick64_file = switch (target_os) {
         .macos, .ios => "src/bridge/tick64_macos.c",
@@ -89,23 +90,24 @@ pub fn build(b: *std.Build) void {
         else => "src/bridge/tick64_linux.c", // fallback
     };
 
-    const c_sources = &[_][]const u8{
+    // Common C sources (used by both Zig and C adapter modes)
+    const common_sources = [_][]const u8{
         "src/bridge/softether_bridge.c",
         "src/bridge/unix_bridge.c",
         tick64_file,
-        packet_adapter_file,
+        // packet_adapter_file conditionally added in c_sources below
         "src/bridge/zig_packet_adapter.c", // Zig adapter wrapper
         "src/bridge/logging.c", // Phase 2: Log level system
         "src/bridge/security_utils.c", // Phase 3: Secure password handling
         "src/bridge/client_bridge.c", // NEW: Zig adapter bridge (replaces VLanGetPacketAdapter)
         "src/bridge/zig_bridge.c", // NEW: C wrapper for Zig packet adapter
-        "src/bridge/Mayaqua/Mayaqua.c",
-        "src/bridge/Mayaqua/Memory.c",
+        "src/bridge/Mayaqua/Mayaqua.c", // PATCHED: Skips InitTick64() (line 587)
+        "src/bridge/Mayaqua/Memory.c", // PATCHED: Bypasses memory guard corruption (removed src/bridge override)
         "SoftEtherVPN/src/Mayaqua/Str.c",
-        "src/bridge/Mayaqua/Object.c",
+        "src/bridge/Mayaqua/Object.c", // PATCHED: Adds pointer validation
         "SoftEtherVPN/src/Mayaqua/OS.c",
         "SoftEtherVPN/src/Mayaqua/FileIO.c",
-        "src/bridge/Mayaqua/Kernel.c",
+        "src/bridge/Mayaqua/Kernel.c", // PATCHED: Fixes use-after-free ThreadPoolProc
         "SoftEtherVPN/src/Mayaqua/Network.c",
         "SoftEtherVPN/src/Mayaqua/TcpIp.c",
         "SoftEtherVPN/src/Mayaqua/Encrypt.c",
@@ -117,10 +119,10 @@ pub fn build(b: *std.Build) void {
         "SoftEtherVPN/src/Mayaqua/Microsoft.c",
         "SoftEtherVPN/src/Mayaqua/Internat.c",
         "SoftEtherVPN/src/Cedar/Cedar.c",
-        "src/bridge/Cedar/Client.c",
-        "src/bridge/Cedar/Protocol.c",
+        "src/bridge/Cedar/Client.c", // PATCHED: USE_ZIG_ADAPTER, NoSaveLog=true, Eraser null check
+        "src/bridge/Cedar/Protocol.c", // PATCHED
         "SoftEtherVPN/src/Cedar/Connection.c",
-        "src/bridge/Cedar/Session.c",
+        "src/bridge/Cedar/Session.c", // PATCHED
         "SoftEtherVPN/src/Cedar/Account.c",
         "SoftEtherVPN/src/Cedar/Admin.c",
         "SoftEtherVPN/src/Cedar/Command.c",
@@ -157,6 +159,15 @@ pub fn build(b: *std.Build) void {
         "SoftEtherVPN/src/Cedar/EtherLog.c",
         "SoftEtherVPN/src/Cedar/WebUI.c",
         "SoftEtherVPN/src/Cedar/WaterMark.c",
+    };
+
+    // Build C sources list - conditionally include C packet adapter
+    const c_sources = if (use_zig_adapter) blk: {
+        // Pure Zig adapter - exclude C packet adapter (2667 lines deleted!)
+        break :blk &common_sources;
+    } else blk: {
+        // Legacy C adapter - include it
+        break :blk &common_sources ++ &[_][]const u8{packet_adapter_file.?};
     };
 
     // NativeStack.c uses system() which is unavailable on iOS

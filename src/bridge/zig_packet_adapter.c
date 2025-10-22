@@ -332,58 +332,19 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
         }
         
         if (should_send) {
-            // Build with BOTH C and Zig, compare them
-            UINT c_size = 0;
-            UCHAR* c_pkt = BuildDhcpDiscover(ctx->my_mac, ctx->dhcp_xid, &c_size);
-            
-            size_t zig_size = 0;
-            bool zig_ok = zig_build_dhcp_discover(ctx->my_mac, ctx->dhcp_xid, g_packet_buffer, MAX_PACKET_SIZE, &zig_size);
-            
-            // if (c_pkt && zig_ok) {
-            //     printf("\n=== PACKET COMPARISON ===\n");
-            //     printf("C size: %u, Zig size: %zu\n", c_size, zig_size);
-                
-            //     // Dump IP header (bytes 14-33)
-            //     printf("C   IP header: ");
-            //     for (int i = 14; i < 34; i++) printf("%02x ", c_pkt[i]);
-            //     printf("\nZig IP header: ");
-            //     for (int i = 14; i < 34; i++) printf("%02x ", g_packet_buffer[i]);
-            //     printf("\n");
-                
-            //     // Extract checksums
-            //     USHORT c_csum = (c_pkt[24] << 8) | c_pkt[25];
-            //     USHORT zig_csum = (g_packet_buffer[24] << 8) | g_packet_buffer[25];
-            //     printf("C checksum: 0x%04x, Zig checksum: 0x%04x\n", c_csum, zig_csum);
-                
-            //     if (c_size != zig_size) {
-            //         printf("❌ SIZE MISMATCH!\n");
-            //     } else {
-            //         printf("✅ Sizes match\n");
-            //         // Compare byte by byte
-            //         bool identical = true;
-            //         for (UINT i = 0; i < c_size; i++) {
-            //             if (c_pkt[i] != g_packet_buffer[i]) {
-            //                 printf("❌ Byte %u differs: C=0x%02x, Zig=0x%02x\n", i, c_pkt[i], g_packet_buffer[i]);
-            //                 identical = false;
-            //                 if (i > 10) break; // Limit output
-            //             }
-            //         }
-            //         if (identical) {
-            //             printf("✅ Packets are IDENTICAL!\n");
-            //         }
-            //     }
-            //     printf("=========================\n\n");
-            // }
-            
-            // Use C builder for now
-            if (c_pkt && c_size > 0) {
-                printf("[ZigAdapterGetNextPacket] 📡 Sending DHCP DISCOVER #%u (xid=0x%08x, size=%u) [C BUILDER]\n",
-                       ctx->dhcp_retry_count + 1, ctx->dhcp_xid, c_size);
-                UCHAR* pkt_copy = Malloc(c_size);
-                memcpy(pkt_copy, c_pkt, c_size);
+            // Build DHCP DISCOVER using Pure Zig implementation
+            size_t dhcp_size = 0;
+            if (zig_build_dhcp_discover(ctx->my_mac, ctx->dhcp_xid, g_packet_buffer, MAX_PACKET_SIZE, &dhcp_size)) {
+                printf("[ZigAdapterGetNextPacket] 📡 Sending DHCP DISCOVER #%u (xid=0x%08x, size=%zu) [PURE ZIG]\n",
+                       ctx->dhcp_retry_count + 1, ctx->dhcp_xid, dhcp_size);
+                // Must use Malloc - SoftEther will call Free() on this pointer
+                UCHAR* pkt_copy = Malloc(dhcp_size);
+                memcpy(pkt_copy, g_packet_buffer, dhcp_size);
                 *data = pkt_copy;
                 ctx->last_dhcp_send_time = now;
-                return c_size;
+                return dhcp_size;
+            } else {
+                printf("[ZigAdapterGetNextPacket] ❌ Failed to build DHCP DISCOVER\n");
             }
         }
     }

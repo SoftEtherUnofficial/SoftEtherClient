@@ -94,6 +94,10 @@ pub const ZigPacketAdapter = struct {
     // Adapter state
     state: AdapterState = .created,
 
+    // Keep-alive timer for GARP (Gratuitous ARP)
+    last_keepalive: i64 = 0,
+    keepalive_interval_ns: i64 = 10 * std.time.ns_per_s, // 10 seconds
+
     // Statistics (simple counters, not updated in hot path for performance)
     stats: Stats,
 
@@ -115,6 +119,7 @@ pub const ZigPacketAdapter = struct {
         recv_queue_drops: u64 = 0,
         send_queue_drops: u64 = 0,
         buffer_tracking_failures: u64 = 0,
+        garp_sent: u64 = 0,
 
         pub fn format(
             self: Stats,
@@ -123,7 +128,7 @@ pub const ZigPacketAdapter = struct {
             writer: anytype,
         ) !void {
             try writer.print(
-                "Stats[rx={d}pkt/{d}B, tx={d}pkt/{d}B, err={d}/{d}, drops={d}/{d}]",
+                "Stats[rx={d}pkt/{d}B, tx={d}pkt/{d}B, err={d}/{d}, drops={d}/{d}, garp={d}]",
                 .{
                     self.packets_read,
                     self.bytes_read,
@@ -133,6 +138,7 @@ pub const ZigPacketAdapter = struct {
                     self.write_errors,
                     self.recv_queue_drops,
                     self.send_queue_drops,
+                    self.garp_sent,
                 },
             );
         }
@@ -292,6 +298,88 @@ pub const ZigPacketAdapter = struct {
         return true;
     }
 
+    /// Maintain connection with periodic GARP (Gratuitous ARP)
+    /// Call this regularly (e.g., in read/write loops) to keep connection alive
+    /// Sends GARP every 10 seconds to prevent ARP cache staleness
+    pub fn maintainConnection(self: *ZigPacketAdapter) void {
+        const now: i64 = @intCast(std.time.nanoTimestamp());
+
+        // Check if it's time to send GARP
+        if (now - self.last_keepalive < self.keepalive_interval_ns) {
+            return; // Not time yet
+        }
+
+        // Only send GARP if we have an IP address
+        const our_ip = self.tun_adapter.getLearnedIp() orelse return;
+
+        // Send Gratuitous ARP
+        self.sendGratuitousArp(our_ip) catch |err| {
+            logError("Failed to send GARP: {}", .{err});
+            return;
+        };
+
+        // Update last keepalive time
+        self.last_keepalive = now;
+        self.stats.garp_sent += 1;
+
+        logDebug("✅ GARP keepalive sent (IP: {d}.{d}.{d}.{d})", .{
+            (our_ip >> 24) & 0xFF,
+            (our_ip >> 16) & 0xFF,
+            (our_ip >> 8) & 0xFF,
+            our_ip & 0xFF,
+        });
+    }
+
+    /// Send Gratuitous ARP to announce our presence
+    /// ip_network_order: Our IP address in network byte order (big-endian)
+    fn sendGratuitousArp(self: *ZigPacketAdapter, ip_network_order: u32) !void {
+        // Get our MAC address
+        const our_mac = self.tun_adapter.translator.options.our_mac;
+
+        // Build GARP packet (42 bytes: 14 bytes Ethernet + 28 bytes ARP)
+        var garp_buffer: [42]u8 = undefined;
+        var pos: usize = 0;
+
+        // Ethernet header - broadcast
+        @memset(garp_buffer[pos..][0..6], 0xFF); // Broadcast MAC
+        pos += 6;
+        @memcpy(garp_buffer[pos..][0..6], &our_mac); // Src MAC (our MAC)
+        pos += 6;
+        std.mem.writeInt(u16, garp_buffer[pos..][0..2], 0x0806, .big); // EtherType: ARP
+        pos += 2;
+
+        // ARP packet (28 bytes)
+        std.mem.writeInt(u16, garp_buffer[pos..][0..2], 0x0001, .big); // Hardware type: Ethernet
+        pos += 2;
+        std.mem.writeInt(u16, garp_buffer[pos..][0..2], 0x0800, .big); // Protocol type: IPv4
+        pos += 2;
+        garp_buffer[pos] = 6; // Hardware size
+        pos += 1;
+        garp_buffer[pos] = 4; // Protocol size
+        pos += 1;
+        std.mem.writeInt(u16, garp_buffer[pos..][0..2], 0x0001, .big); // Opcode: Request (GARP uses request)
+        pos += 2;
+
+        // Sender (us) - announce our IP+MAC binding
+        @memcpy(garp_buffer[pos..][0..6], &our_mac); // Sender MAC (our MAC)
+        pos += 6;
+        std.mem.writeInt(u32, garp_buffer[pos..][0..4], ip_network_order, .big); // Sender IP (our IP)
+        pos += 4;
+
+        // Target - GARP uses same IP for target (key characteristic of GARP)
+        @memset(garp_buffer[pos..][0..6], 0x00); // Target MAC (00:00:00:00:00:00 for GARP)
+        pos += 6;
+        std.mem.writeInt(u32, garp_buffer[pos..][0..4], ip_network_order, .big); // Target IP (same as sender - this is GARP!)
+        pos += 4;
+
+        // Send GARP packet via TUN device
+        // GARP is an Ethernet frame, so we need to queue it like any outbound packet
+        const sent = self.putPacket(garp_buffer[0..42]);
+        if (!sent) {
+            return error.QueueFull;
+        }
+    }
+
     /// Configure VPN routing (replaces C bridge route management)
     /// Call after DHCP assigns VPN gateway
     pub fn configureRouting(self: *ZigPacketAdapter, vpn_gateway: [4]u8, vpn_server: ?[4]u8) !void {
@@ -376,6 +464,9 @@ export fn zig_adapter_start(adapter: *ZigPacketAdapter) bool {
 /// **CRITICAL**: TUN devices return raw IP packets, but SoftEther expects Ethernet frames!
 /// We must ADD a 14-byte Ethernet header to each IP packet read from TUN.
 export fn zig_adapter_read_sync(adapter: *ZigPacketAdapter, buffer: [*]u8, buffer_len: usize) isize {
+    // Maintain connection with periodic GARP
+    adapter.maintainConnection();
+
     // Read directly from TUN device (non-blocking)
     const fd = adapter.tun_adapter.device.fd;
 
@@ -466,6 +557,9 @@ export fn zig_adapter_read_sync(adapter: *ZigPacketAdapter, buffer: [*]u8, buffe
 /// Returns number of packets written
 /// PERFORMANCE: Uses vectored I/O (writev) with dynamic batch sizing
 export fn zig_adapter_write_sync(adapter: *ZigPacketAdapter) isize {
+    // Maintain connection with periodic GARP
+    adapter.maintainConnection();
+
     var packets_written: isize = 0;
 
     // Smart batching for both upload and download
@@ -773,6 +867,7 @@ pub const CStats = extern struct {
     recv_queue_drops: u64,
     send_queue_drops: u64,
     buffer_tracking_failures: u64,
+    garp_sent: u64,
 };
 
 export fn zig_adapter_get_stats(adapter: *ZigPacketAdapter, out_stats: *CStats) void {
@@ -786,6 +881,7 @@ export fn zig_adapter_get_stats(adapter: *ZigPacketAdapter, out_stats: *CStats) 
         .recv_queue_drops = adapter.stats.recv_queue_drops,
         .send_queue_drops = adapter.stats.send_queue_drops,
         .buffer_tracking_failures = adapter.stats.buffer_tracking_failures,
+        .garp_sent = adapter.stats.garp_sent,
     };
 }
 

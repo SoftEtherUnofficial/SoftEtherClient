@@ -665,8 +665,8 @@ int vpn_bridge_connect(VpnBridgeClient* client) {
     
     client->softether_account = account;
     
-    // Set global IP configuration for packet adapter (before creating it)
-    #if defined(UNIX_MACOS) || defined(UNIX_LINUX)
+    // Set global IP configuration for packet adapter (only for C adapter)
+    #if (defined(UNIX_MACOS) || defined(UNIX_LINUX)) && !USE_ZIG_ADAPTER
         extern IP_CONFIG g_ip_config;
         g_ip_config.ip_version = client->ip_version;
         g_ip_config.use_static_ipv4 = client->use_static_ipv4;
@@ -693,14 +693,21 @@ int vpn_bridge_connect(VpnBridgeClient* client) {
     if (client->use_zig_adapter) {
         pa = NewZigPacketAdapter();
         if (pa) {
-            LOG_INFO("VPN", "Using Zig packet adapter (experimental)");
+            LOG_INFO("VPN", "Using Zig packet adapter (pure Zig implementation)");
         } else {
-            LOG_ERROR("VPN", "Failed to create Zig adapter, falling back to C adapter");
-            pa = NewMacOsTunAdapter();
+            LOG_ERROR("VPN", "Failed to create Zig adapter");
+            // No fallback to C adapter when USE_ZIG_ADAPTER=1 (C adapter not compiled)
         }
     } else {
-        pa = NewMacOsTunAdapter();
-        LOG_INFO("VPN", "Using C packet adapter (default)");
+        #if USE_ZIG_ADAPTER
+            // When compiled with USE_ZIG_ADAPTER, always use Zig adapter
+            LOG_INFO("VPN", "Forcing Zig adapter (compiled with USE_ZIG_ADAPTER=1)");
+            pa = NewZigPacketAdapter();
+        #else
+            // Legacy C adapter (packet_adapter_macos.c)
+            pa = NewMacOsTunAdapter();
+            LOG_INFO("VPN", "Using C packet adapter (default)");
+        #endif
     }
     
     if (!pa) {
