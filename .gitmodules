@@ -4,5 +4,5 @@
 	branch = master
 [submodule "deps/taptun"]
 	path = deps/taptun
-	url = https://github.com/SoftEtherUnofficial/ZigTapTun.git
+	url = https://github.com/SoftEtherUnofficial/TapTun.git
 	branch = master

@@ -1,12 +1,13 @@
-// SoftEther VPN Client - CLI Application
-// Production command-line interface for establishing VPN connections
+// SoftEther VPN Client - CLI Application (Desktop)
+// Platform-specific command-line interface using core VPN logic
 
 const std = @import("std");
-const client = @import("client.zig");
-const config = @import("config.zig");
-const errors = @import("errors.zig");
-const profiling = @import("profiling.zig");
-const c = @import("c.zig").c;
+const softether = @import("softether");
+const client = softether.client;
+const config = softether.config;
+const errors = softether.errors;
+const profiling = softether.profiling;
+const c = softether.c.c;
 
 const VpnClient = client.VpnClient;
 const ConnectionConfig = config.ConnectionConfig;

@@ -1,9 +1,9 @@
 const std = @import("std");
-const c_mod = @import("c.zig");
+const c_mod = @import("../c.zig");
 const c = c_mod.c;
-const errors = @import("errors.zig");
-const config = @import("config.zig");
-const types = @import("types.zig");
+const errors = @import("../errors.zig");
+const config = @import("../config.zig");
+const types = @import("../types.zig");
 
 const VpnError = errors.VpnError;
 const ConnectionConfig = config.ConnectionConfig;

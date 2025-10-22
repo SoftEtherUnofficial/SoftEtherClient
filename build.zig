@@ -76,7 +76,7 @@ pub fn build(b: *std.Build) void {
     // Platform-specific packet adapter and timing files
     // Note: When USE_ZIG_ADAPTER=1, we don't need the C packet adapter anymore
     const packet_adapter_file = if (!use_zig_adapter) switch (target_os) {
-        .ios => "src/bridge/ios/packet_adapter_ios.c",
+        .ios => "src/platforms/ios/adapter/packet_adapter_ios.c",
         .macos => "src/bridge/packet_adapter_macos.c",
         .linux => "src/bridge/packet_adapter_linux.c",
         .windows => "src/bridge/packet_adapter_windows.c",
@@ -203,7 +203,7 @@ pub fn build(b: *std.Build) void {
     const cli = b.addExecutable(.{
         .name = "vpnclient",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/cli.zig"),
+            .root_source_file = b.path("src/platforms/desktop/cli.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{

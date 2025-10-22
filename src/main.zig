@@ -4,11 +4,14 @@ const std = @import("std");
 pub const c = @import("c.zig");
 pub const errors = @import("errors.zig");
 pub const types = @import("types.zig");
-pub const client = @import("client.zig");
+pub const client = @import("core/client.zig");
+pub const vpn_core = @import("core/vpn_core.zig");
 pub const config = @import("config.zig");
+pub const profiling = @import("profiling.zig");
 
 // Re-export commonly used types
 pub const VpnClient = client.VpnClient;
+pub const VpnCore = vpn_core.VpnCore;
 pub const ConnectionConfig = config.ConnectionConfig;
 pub const AuthMethod = config.AuthMethod;
 pub const VpnError = errors.VpnError;
@@ -34,6 +37,6 @@ test "version string" {
     const allocator = std.testing.allocator;
     const ver = try versionString(allocator);
     defer allocator.free(ver);
-    
+
     try std.testing.expectEqualStrings("0.1.0-dev", ver);
 }
