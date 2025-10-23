@@ -863,6 +863,51 @@ static bool IosAdapterPutPacket(SESSION *s, void *data, UINT size) {
     LOG_INFO("IOS_ADAPTER", "PutPacket: 🔄 Translated L2→L3: %u bytes Ethernet → %d bytes IP (total: %llu)", 
              size, ip_len, ctx->l2_to_l3_translated);
     
+    // Check if this is a DHCP ACK packet - extract IP and configure TapTun
+    if (ip_len >= 20) {
+        const uint8_t* ip_hdr = ip_packet_buf;
+        uint8_t protocol = ip_hdr[9];
+        
+        // UDP (DHCP)
+        if (protocol == 17 && ip_len >= 28) {
+            const uint8_t* udp_hdr = ip_hdr + 20;
+            uint16_t dst_port = (udp_hdr[2] << 8) | udp_hdr[3];
+            
+            // DHCP client port (68)
+            if (dst_port == 68 && ip_len >= 236) {
+                // Parse DHCP message
+                const uint8_t* dhcp = udp_hdr + 8;
+                uint32_t your_ip = (dhcp[16] << 24) | (dhcp[17] << 16) | (dhcp[18] << 8) | dhcp[19];
+                
+                // Check if this is a DHCP ACK (message type in options)
+                bool is_dhcp_ack = false;
+                const uint8_t* options = dhcp + 236;
+                int remaining = ip_len - 256;
+                
+                for (int i = 0; i < remaining && i < 200; ) {
+                    uint8_t opt_type = options[i];
+                    if (opt_type == 255) break; // End
+                    if (opt_type == 0) { i++; continue; } // Pad
+                    
+                    uint8_t opt_len = options[i + 1];
+                    if (opt_type == 53 && opt_len == 1 && options[i + 2] == 5) {
+                        is_dhcp_ack = true;
+                        break;
+                    }
+                    i += 2 + opt_len;
+                }
+                
+                if (is_dhcp_ack && your_ip != 0) {
+                    // Configure TapTun with our IP address
+                    taptun_translator_set_our_ip(ctx->translator, your_ip);
+                    LOG_INFO("IOS_ADAPTER", "PutPacket: 🎯 DHCP ACK received, configured TapTun with IP %u.%u.%u.%u",
+                             (your_ip >> 24) & 0xFF, (your_ip >> 16) & 0xFF, 
+                             (your_ip >> 8) & 0xFF, your_ip & 0xFF);
+                }
+            }
+        }
+    }
+    
     // Enqueue IP packet (non-blocking to avoid stalling SoftEther thread)
     int ret = packet_queue_enqueue(ctx->outgoing_queue, ip_packet_buf, ip_len, false);
     
