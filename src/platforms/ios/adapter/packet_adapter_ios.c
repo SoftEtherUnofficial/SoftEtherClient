@@ -24,6 +24,7 @@
 
 #define MAX_PACKET_QUEUE_SIZE 512
 #define IOS_MAX_PACKET_SIZE 2048
+#define IOS_ADAPTER_PACKET_QUEUE_SIZE 4096  // SoftEther packet queue size (for GetNextPacket/PutPacket)
 
 // ============================================================================
 // Packet Queue (Thread-Safe Circular Buffer)
@@ -207,6 +208,7 @@ typedef struct {
     uint64_t l2_to_l3_translated;  // Statistics: Ethernet→IP conversions
     uint64_t l3_to_l2_translated;  // Statistics: IP→Ethernet conversions
     uint64_t arp_packets_handled;  // Statistics: ARP requests handled internally
+    uint64_t arp_replies_sent;     // Statistics: ARP replies sent back to server
     
     // DHCP state
     DHCPState dhcp_state;
@@ -825,6 +827,34 @@ static bool IosAdapterPutPacket(SESSION *s, void *data, UINT size) {
         if (ctx->arp_packets_handled % 10 == 1) {
             LOG_INFO("IOS_ADAPTER", "PutPacket: 🔧 ARP #%llu handled by TapTun (total: %llu)", put_count, ctx->arp_packets_handled);
         }
+        
+        // Check if TapTun generated an ARP reply to send back to server
+        // ARP replies go back via GetNextPacket (iOS→Server direction)
+        while (taptun_translator_has_arp_reply(ctx->translator)) {
+            uint8_t arp_reply_buf[IOS_MAX_PACKET_SIZE];
+            int arp_len = taptun_translator_pop_arp_reply(
+                ctx->translator,
+                arp_reply_buf,
+                sizeof(arp_reply_buf)
+            );
+            
+            if (arp_len > 0) {
+                // Enqueue ARP reply in incoming_queue (will be sent to server via GetNextPacket)
+                int ret = packet_queue_enqueue(ctx->incoming_queue, arp_reply_buf, arp_len, false);
+                
+                if (ret == 0) {
+                    ctx->arp_replies_sent++;
+                    LOG_INFO("IOS_ADAPTER", "PutPacket: 📤 ARP REPLY #%llu queued for server (%d bytes, queue→GetNextPacket)", 
+                             ctx->arp_replies_sent, arp_len);
+                } else {
+                    LOG_ERROR("IOS_ADAPTER", "PutPacket: ❌ Incoming queue full, ARP reply dropped!");
+                }
+            } else if (arp_len < 0) {
+                LOG_ERROR("IOS_ADAPTER", "PutPacket: ❌ pop_arp_reply failed (error=%d)", arp_len);
+                break;
+            }
+        }
+        
         return true; // Success - ARP handled transparently
     }
     
