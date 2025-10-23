@@ -8,7 +8,7 @@
 //     ↓
 //   **Generic Mobile FFI** (this file)
 //     ↓
-//   Zig Packet Adapter → ZigTapTun → TUN device
+//   Zig Packet Adapter → TapTun → TUN device
 
 const std = @import("std");
 const builtin = @import("builtin");

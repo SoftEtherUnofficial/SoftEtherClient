@@ -225,7 +225,7 @@ Single implementation of:
 ### ✅ Unified Packet Adapter
 
 **Pure Zig adapter** (`src/packet/adapter.zig`) works across all platforms:
-- Desktop: Direct TUN/TAP via ZigTapTun
+- Desktop: Direct TUN/TAP via TapTun
 - iOS: NEPacketTunnelFlow callbacks
 - Android: VpnService file descriptor
 - Windows: TAP-Windows adapter (future)

@@ -53,7 +53,7 @@ typedef struct MACOS_TUN_CONTEXT {
     LOCK *queue_lock;                // Lock for thread-safe queue access
     volatile bool halt;              // Stop flag
     SESSION *session;                // Associated session
-    TranslatorHandle translator;     // ZigTapTun L2↔L3 translator
+    TranslatorHandle translator;     // TapTun L2↔L3 translator
     
 #ifdef USE_ZIG_ADAPTER
     // Zig packet adapter (Phase 1 implementation)

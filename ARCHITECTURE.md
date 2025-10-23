@@ -158,7 +158,7 @@ These files exist only to interface with the legacy SoftEther C codebase and wil
 - Depends on C headers and manual memory management
 
 **Target Implementation** (Zig - Q1 2026):
-- Pure Zig using ZigTapTun library
+- Pure Zig using TapTun library
 - `std.time` for timing with platform-specific optimizations
 - Type-safe, bounds-checked, memory-safe
 - Zero external dependencies except system frameworks
@@ -177,7 +177,7 @@ These files exist only to interface with the legacy SoftEther C codebase and wil
 - Manual ioctl() calls and error handling
 
 **Target Implementation** (Zig - Q1 2026):
-- Pure Zig using ZigTapTun library
+- Pure Zig using TapTun library
 - Native `std.os.linux` APIs with error unions
 - Type-safe ioctl() wrappers
 - Compatible with all Linux distributions
@@ -514,7 +514,7 @@ Phase 1: Foundation          (0-6 months) ← Current Phase
 **Tasks**:
 1. Create `src/platform/` directory structure
 2. Implement `src/platform/macos.zig`
-3. Integrate with ZigTapTun library
+3. Integrate with TapTun library
 4. Write comprehensive tests (100% coverage)
 5. Benchmark against C version (within 5%)
 

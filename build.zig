@@ -188,7 +188,7 @@ pub fn build(b: *std.Build) void {
     // 1. LIBRARY MODULE (for Zig programs)
     // ============================================
 
-    // Add ZigTapTun dependency
+    // Add TapTun dependency
     const taptun = b.dependency("taptun", .{
         .target = target,
         .optimize = optimize,
@@ -248,7 +248,7 @@ pub fn build(b: *std.Build) void {
         });
     }
 
-    // Add ZigTapTun wrapper module
+    // Add TapTun wrapper module
     const taptun_wrapper_module = b.createModule(.{
         .root_source_file = b.path("src/bridge/taptun_wrapper.zig"),
         .target = target,

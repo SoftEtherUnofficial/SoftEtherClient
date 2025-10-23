@@ -1,4 +1,4 @@
-// C-compatible wrapper for ZigTapTun library
+// C-compatible wrapper for TapTun library
 // Allows packet_adapter_macos.c to use Zig L2↔L3 translation
 
 const std = @import("std");

@@ -11,6 +11,7 @@
 #include <Mayaqua/Mayaqua.h>
 #include <Cedar/Cedar.h>
 #include "../../bridge/logging.h"
+#include "../../../TapTun/include/taptun_ffi.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -95,10 +96,11 @@ static int packet_queue_enqueue(PacketQueue* q, const uint8_t* data, uint32_t le
     return 0;
 }
 
-// Dequeue: Returns packet length (>0), 0 if empty, -1 on error
+// Dequeue: Returns packet length (>0), 0 if empty/timeout, -1 on error
 // timeout_ms: 0=non-blocking, -1=blocking, >0=timeout in milliseconds
 static int packet_queue_dequeue(PacketQueue* q, uint8_t* buffer, uint32_t buffer_size, int timeout_ms) {
     if (!q || !buffer || buffer_size < IOS_MAX_PACKET_SIZE) {
+        LOG_ERROR("IOS_ADAPTER", "packet_queue_dequeue: Invalid params: q=%p buffer=%p size=%u", q, buffer, buffer_size);
         return -1;
     }
     
@@ -129,7 +131,12 @@ static int packet_queue_dequeue(PacketQueue* q, uint8_t* buffer, uint32_t buffer
             int ret = pthread_cond_timedwait(&q->cond_not_empty, &q->mutex, &ts);
             if (ret == ETIMEDOUT || q->count == 0) {
                 pthread_mutex_unlock(&q->mutex);
-                return 0; // Timeout/still empty
+                return 0; // Timeout/still empty - NOT AN ERROR
+            }
+            if (ret != 0 && ret != ETIMEDOUT) {
+                LOG_ERROR("IOS_ADAPTER", "packet_queue_dequeue: pthread_cond_timedwait failed: %d", ret);
+                pthread_mutex_unlock(&q->mutex);
+                return -1; // Real error
             }
         }
     }
@@ -140,9 +147,25 @@ static int packet_queue_dequeue(PacketQueue* q, uint8_t* buffer, uint32_t buffer
         }
     }
     
+    // At this point, we must have a packet (unless timeout occurred)
+    if (q->count == 0) {
+        LOG_ERROR("IOS_ADAPTER", "packet_queue_dequeue: Unexpected: count=0 after wait");
+        pthread_mutex_unlock(&q->mutex);
+        return 0;
+    }
+    
     // Dequeue packet
     QueuedPacket* pkt = &q->packets[q->read_idx];
     uint32_t length = pkt->length;
+    
+    if (length == 0 || length > IOS_MAX_PACKET_SIZE) {
+        LOG_ERROR("IOS_ADAPTER", "packet_queue_dequeue: Invalid packet length: %u", length);
+        // Skip this corrupted packet
+        q->read_idx = (q->read_idx + 1) % MAX_PACKET_QUEUE_SIZE;
+        q->count--;
+        pthread_mutex_unlock(&q->mutex);
+        return -1;
+    }
     
     memcpy(buffer, pkt->data, length);
     
@@ -178,6 +201,12 @@ typedef struct {
     
     PacketQueue* incoming_queue;  // iOS → SoftEther (packets from NEPacketTunnelFlow)
     PacketQueue* outgoing_queue;  // SoftEther → iOS (packets to NEPacketTunnelFlow)
+    
+    // TapTun L2↔L3 translator
+    TapTunTranslator* translator;
+    uint64_t l2_to_l3_translated;  // Statistics: Ethernet→IP conversions
+    uint64_t l3_to_l2_translated;  // Statistics: IP→Ethernet conversions
+    uint64_t arp_packets_handled;  // Statistics: ARP requests handled internally
     
     // DHCP state
     DHCPState dhcp_state;
@@ -484,12 +513,12 @@ static void send_dhcp_discover(IOS_ADAPTER_CONTEXT* ctx) {
  */
 int ios_adapter_inject_packet(const uint8_t* data, uint32_t length) {
     if (!global_ios_adapter_ctx || !global_ios_adapter_ctx->initialized) {
-        fprintf(stderr, "[ios_adapter] ERROR: Adapter not initialized\n");
+        LOG_ERROR("IOS_ADAPTER", "inject_packet: Adapter not initialized");
         return -1;
     }
     
     if (!data || length == 0) {
-        fprintf(stderr, "[ios_adapter] ERROR: Invalid packet (data=%p, len=%u)\n", data, length);
+        LOG_ERROR("IOS_ADAPTER", "inject_packet: Invalid packet (data=%p, len=%u)", data, length);
         return -1;
     }
     
@@ -506,7 +535,7 @@ int ios_adapter_inject_packet(const uint8_t* data, uint32_t length) {
         Cancel(ctx->cancel);
     } else {
         ctx->queue_drops_in++;
-        fprintf(stderr, "[ios_adapter] WARNING: Incoming queue full, dropped packet (%u bytes)\n", length);
+        LOG_ERROR("IOS_ADAPTER", "inject_packet: Incoming queue full, dropped packet (%u bytes)", length);
     }
     
     return ret;
@@ -634,8 +663,9 @@ static bool IosAdapterInit(SESSION* s) {
 /**
  * Get cancel handle (for waking up blocked operations)
  */
-static CANCEL* IosAdapterGetCancel(PACKET_ADAPTER* pa) {
-    if (!pa || !pa->Param) return NULL;
+static CANCEL* IosAdapterGetCancel(SESSION *s) {
+    PACKET_ADAPTER *pa = s->PacketAdapter;
+    if (!s || !pa || !pa->Param) return NULL;
     
     IOS_ADAPTER_CONTEXT* ctx = (IOS_ADAPTER_CONTEXT*)pa->Param;
     return ctx->cancel;
@@ -644,78 +674,184 @@ static CANCEL* IosAdapterGetCancel(PACKET_ADAPTER* pa) {
 /**
  * Get next packet from iOS (to send to VPN server)
  * SoftEther calls this repeatedly to poll for incoming packets
+ * 
+ * RETURN VALUES:
+ * - >0: Packet size (success, *data points to packet buffer)
+ * - 0: No packet available (normal, not an error - will be called again)
+ * - UINT_MAX: Fatal error (causes pa_fail=1 and session termination)
  */
-static void* IosAdapterGetNextPacket(PACKET_ADAPTER* pa, UINT* size) {
-    if (!pa || !pa->Param || !size) {
-        return NULL;
+static UINT IosAdapterGetNextPacket(SESSION *s, void **data) {
+    PACKET_ADAPTER *pa = s->PacketAdapter;
+    if (!s || !pa || !pa->Param || !data) {
+        LOG_ERROR("IOS_ADAPTER", "GetNextPacket: FATAL - Invalid parameters (s=%p pa=%p data=%p)", s, pa, data);
+        return INFINITE;
     }
     
     IOS_ADAPTER_CONTEXT* ctx = (IOS_ADAPTER_CONTEXT*)pa->Param;
-    *size = 0;
     
     // Allocate buffer for dequeue
     uint8_t buffer[IOS_MAX_PACKET_SIZE];
     
-    // Try to dequeue packet (with timeout to avoid busy-waiting)
-    int length = packet_queue_dequeue(ctx->incoming_queue, buffer, IOS_MAX_PACKET_SIZE, 50); // 50ms timeout
+    // Try to dequeue packet (with SHORT timeout to avoid blocking SessionMain loop)
+    // Using 10ms timeout - SessionMain expects frequent polling
+    int length = packet_queue_dequeue(ctx->incoming_queue, buffer, IOS_MAX_PACKET_SIZE, 10);
     
-    if (length <= 0) {
-        return NULL; // No packet or error
+    if (length < 0) {
+        // Actual error from dequeue function
+        LOG_ERROR("IOS_ADAPTER", "GetNextPacket: DEQUEUE ERROR (fatal)");
+        return INFINITE;
     }
     
-    // Log ALL packets for troubleshooting
+    if (length == 0) {
+        // Queue empty - this is NORMAL, not an error!
+        // Return 0 to tell SessionMain "no packet right now, try again"
+        static uint64_t empty_count = 0;
+        empty_count++;
+        if (empty_count % 1000 == 0) {
+            LOG_INFO("IOS_ADAPTER", "GetNextPacket: Queue empty (called %llu times with no packet)", empty_count);
+        }
+        return 0; // NO PACKET (not an error!)
+    }
+    
+    // Got a packet!
     static uint64_t get_count = 0;
     get_count++;
-    fprintf(stderr, "[IosAdapterGetNextPacket] 📤 PACKET #%llu TO SERVER: %d bytes (from iOS)\n", get_count, length);
+    LOG_INFO("IOS_ADAPTER", "GetNextPacket: 📤 PACKET #%llu FROM iOS: %d bytes (L3 IP)", get_count, length);
     
-    // Allocate memory for packet (SoftEther will free this with Free())
-    void* packet = Malloc(length);
-    if (!packet) {
-        fprintf(stderr, "[IosAdapterGetNextPacket] ❌ MALLOC FAILED for %d bytes\n", length);
-        return NULL;
+    // Log first 20 bytes of IP packet for debugging (first 3 packets only)
+    if (get_count <= 3 && length >= 20) {
+        LOG_INFO("IOS_ADAPTER", "GetNextPacket: First 20 bytes: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+                 buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6], buffer[7], buffer[8], buffer[9],
+                 buffer[10], buffer[11], buffer[12], buffer[13], buffer[14], buffer[15], buffer[16], buffer[17], buffer[18], buffer[19]);
+        LOG_INFO("IOS_ADAPTER", "GetNextPacket: IP version=%d, header_len=%d", (buffer[0] >> 4), (buffer[0] & 0x0F) * 4);
     }
     
-    memcpy(packet, buffer, length);
-    *size = length;
+    // === TapTun L3→L2 Translation ===
+    // Convert IP packet from iOS to Ethernet frame for SoftEther
+    // iOS NEPacketTunnelProvider provides pure IP packets (L3)
+    // SoftEther SessionMain expects Ethernet frames (L2)
+    uint8_t eth_frame_buf[IOS_MAX_PACKET_SIZE];
     
-    return packet;
+    LOG_INFO("IOS_ADAPTER", "GetNextPacket: Calling taptun_ip_to_ethernet(translator=%p, packet=%p, len=%d, out=%p, out_size=%d)",
+             ctx->translator, buffer, length, eth_frame_buf, (int)sizeof(eth_frame_buf));
+    
+    int eth_len = taptun_ip_to_ethernet(
+        ctx->translator,
+        buffer,
+        length,
+        eth_frame_buf,
+        sizeof(eth_frame_buf)
+    );
+    
+    LOG_INFO("IOS_ADAPTER", "GetNextPacket: taptun_ip_to_ethernet returned: %d", eth_len);
+    
+    if (eth_len < 0) {
+        LOG_ERROR("IOS_ADAPTER", "GetNextPacket: ❌ TapTun L3→L2 translation failed (error=%d)", eth_len);
+        LOG_ERROR("IOS_ADAPTER", "GetNextPacket: Translator=%p, IP packet length=%d", ctx->translator, length);
+        return INFINITE; // Translation error = fatal
+    }
+    
+    // Successfully translated IP→Ethernet
+    ctx->l3_to_l2_translated++;
+    LOG_INFO("IOS_ADAPTER", "GetNextPacket: 🔄 Translated L3→L2: %d bytes IP → %d bytes Ethernet (total: %llu)",
+             length, eth_len, ctx->l3_to_l2_translated);
+    
+    // Allocate memory for Ethernet frame (SoftEther will free this with Free())
+    void* packet = Malloc(eth_len);
+    if (!packet) {
+        LOG_ERROR("IOS_ADAPTER", "GetNextPacket: MALLOC FAILED for %d bytes", eth_len);
+        return INFINITE; // Out of memory = fatal
+    }
+    
+    memcpy(packet, eth_frame_buf, eth_len);
+    *data = packet;
+    
+    LOG_INFO("IOS_ADAPTER", "GetNextPacket: ✅ Returning Ethernet frame #%llu (size=%d, ptr=%p)", get_count, eth_len, packet);
+    return eth_len;
 }
 
 /**
  * Put packet to iOS (received from VPN server)
  * SoftEther calls this when it has a packet to send to the device
+ * 
+ * NOTE: SoftEther may call this with NULL data or size=0 for control/keepalive purposes.
+ * We must return true for these cases to avoid setting pa_fail=1.
  */
-static bool IosAdapterPutPacket(PACKET_ADAPTER* pa, void* data, UINT size) {
-    if (!pa || !pa->Param || !data || size == 0) {
-        fprintf(stderr, "[IosAdapterPutPacket] ❌ CALLED with invalid params: pa=%p data=%p size=%u\n", pa, data, size);
+static bool IosAdapterPutPacket(SESSION *s, void *data, UINT size) {
+    PACKET_ADAPTER *pa = s->PacketAdapter;
+    if (!s || !pa || !pa->Param) {
+        LOG_ERROR("IOS_ADAPTER", "PutPacket: FATAL - Invalid session or adapter (s=%p pa=%p)", s, pa);
         return false;
+    }
+    
+    // Handle NULL/empty packets gracefully - these are control packets (keepalive, etc.)
+    // Returning false here would set pa_fail=1 and kill the session!
+    if (!data || size == 0) {
+        static uint64_t null_count = 0;
+        null_count++;
+        if (null_count % 100 == 1) {
+            LOG_INFO("IOS_ADAPTER", "PutPacket: Control packet (NULL/empty) #%llu - ignoring (this is normal)", null_count);
+        }
+        return true; // Success - don't treat control packets as errors
     }
     
     IOS_ADAPTER_CONTEXT* ctx = (IOS_ADAPTER_CONTEXT*)pa->Param;
     
-    // ALWAYS log for troubleshooting - this function should be called frequently!
+    // Log actual data packets
     static uint64_t put_count = 0;
     put_count++;
-    fprintf(stderr, "[IosAdapterPutPacket] 📩 PACKET #%llu FROM SERVER: %u bytes (THIS IS CRITICAL!)\n", put_count, size);
+    LOG_INFO("IOS_ADAPTER", "PutPacket: 📩 PACKET #%llu FROM SERVER: %u bytes (L2 Ethernet)", put_count, size);
     
-    // Enqueue packet (non-blocking to avoid stalling SoftEther thread)
-    int ret = packet_queue_enqueue(ctx->outgoing_queue, (const uint8_t*)data, size, false);
+    // === TapTun L2→L3 Translation ===
+    // Convert Ethernet frame to IP packet before queuing
+    // iOS NEPacketTunnelProvider expects pure IP packets (L3), not Ethernet (L2)
+    uint8_t ip_packet_buf[IOS_MAX_PACKET_SIZE];
+    int ip_len = taptun_ethernet_to_ip(
+        ctx->translator,
+        (const uint8_t*)data,
+        size,
+        ip_packet_buf,
+        sizeof(ip_packet_buf)
+    );
+    
+    if (ip_len < 0) {
+        LOG_ERROR("IOS_ADAPTER", "PutPacket: ❌ TapTun translation failed for packet #%llu (error=%d)", put_count, ip_len);
+        return false; // Translation error
+    }
+    
+    if (ip_len == 0) {
+        // ARP packet handled internally by TapTun - this is NORMAL!
+        ctx->arp_packets_handled++;
+        if (ctx->arp_packets_handled % 10 == 1) {
+            LOG_INFO("IOS_ADAPTER", "PutPacket: 🔧 ARP #%llu handled by TapTun (total: %llu)", put_count, ctx->arp_packets_handled);
+        }
+        return true; // Success - ARP handled transparently
+    }
+    
+    // Successfully translated Ethernet→IP
+    ctx->l2_to_l3_translated++;
+    LOG_INFO("IOS_ADAPTER", "PutPacket: 🔄 Translated L2→L3: %u bytes Ethernet → %d bytes IP (total: %llu)", 
+             size, ip_len, ctx->l2_to_l3_translated);
+    
+    // Enqueue IP packet (non-blocking to avoid stalling SoftEther thread)
+    int ret = packet_queue_enqueue(ctx->outgoing_queue, ip_packet_buf, ip_len, false);
     
     if (ret != 0) {
         ctx->queue_drops_out++;
-        fprintf(stderr, "[IosAdapterPutPacket] ❌ OUTGOING QUEUE FULL! Dropped packet #%llu (%u bytes)\n", put_count, size);
+        LOG_ERROR("IOS_ADAPTER", "PutPacket: OUTGOING QUEUE FULL! Dropped packet #%llu (%d bytes)", put_count, ip_len);
         return false;
     }
     
-    fprintf(stderr, "[IosAdapterPutPacket] ✅ Packet #%llu enqueued successfully\n", put_count);
+    LOG_INFO("IOS_ADAPTER", "PutPacket: ✅ Packet #%llu enqueued successfully (IP packet ready for iOS)", put_count);
     return true;
 }
 
 /**
  * Free iOS adapter
  */
-static void IosAdapterFree(PACKET_ADAPTER* pa) {
-    if (!pa) return;
+static void IosAdapterFree(SESSION *s) {
+    PACKET_ADAPTER *pa = s->PacketAdapter;
+    if (!s || !pa) return;
     
     printf("[IosAdapterFree] Freeing iOS adapter\n");
     
@@ -728,8 +864,15 @@ static void IosAdapterFree(PACKET_ADAPTER* pa) {
         printf("[IosAdapterFree]   RX: %llu packets (%llu bytes)\n", ctx->packets_received, ctx->bytes_received);
         printf("[IosAdapterFree]   TX: %llu packets (%llu bytes)\n", ctx->packets_sent, ctx->bytes_sent);
         printf("[IosAdapterFree]   Drops: %llu in, %llu out\n", ctx->queue_drops_in, ctx->queue_drops_out);
+        printf("[IosAdapterFree]   TapTun L2→L3: %llu, L3→L2: %llu, ARP: %llu\n",
+               ctx->l2_to_l3_translated, ctx->l3_to_l2_translated, ctx->arp_packets_handled);
         
         // Release resources
+        if (ctx->translator) {
+            taptun_translator_destroy(ctx->translator);
+            ctx->translator = NULL;
+        }
+        
         if (ctx->cancel) {
             ReleaseCancel(ctx->cancel);
         }
@@ -802,6 +945,31 @@ PACKET_ADAPTER* NewIosPacketAdapter(void) {
     
     ctx->initialized = true;
     global_ios_adapter_ctx = ctx;
+    
+    // Generate and store MAC address for TapTun translator
+    uint8_t our_mac[6];
+    our_mac[0] = 0x02; // Locally administered unicast
+    srand((unsigned int)time(NULL));
+    for (int i = 1; i < 6; i++) {
+        our_mac[i] = (uint8_t)(rand() % 256);
+    }
+    memcpy(ctx->dhcp_state.client_mac, our_mac, 6);
+    
+    // Initialize TapTun L2↔L3 translator
+    ctx->translator = taptun_translator_create(our_mac);
+    if (!ctx->translator) {
+        LOG_ERROR("IOS_ADAPTER", "Failed to create TapTun translator");
+        if (ctx->incoming_queue) packet_queue_destroy(ctx->incoming_queue);
+        if (ctx->outgoing_queue) packet_queue_destroy(ctx->outgoing_queue);
+        if (ctx->cancel) ReleaseCancel(ctx->cancel);
+        pthread_mutex_destroy(&ctx->dhcp_mutex);
+        free(ctx);
+        Free(pa);
+        return NULL;
+    }
+    
+    LOG_INFO("IOS_ADAPTER", "✅ TapTun translator initialized (MAC=%02X:%02X:%02X:%02X:%02X:%02X)",
+             our_mac[0], our_mac[1], our_mac[2], our_mac[3], our_mac[4], our_mac[5]);
     
     // Set callbacks
     pa->Init = IosAdapterInit;

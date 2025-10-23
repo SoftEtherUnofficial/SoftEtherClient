@@ -1,5 +1,5 @@
 // High-performance Zig packet adapter for SoftEther VPN
-// Uses ZigTapTun for TUN device + L2↔L3 translation
+// Uses TapTun for TUN device + L2↔L3 translation
 // Adds SoftEther-specific performance optimizations:
 // - Lock-free ring buffers (recv=256, send=256)
 // - Packet pooling (zero-copy where possible)
@@ -70,13 +70,13 @@ const PacketBuffer = struct {
 };
 
 /// High-performance packet adapter for SoftEther VPN
-/// Uses ZigTapTun for device I/O and L2↔L3 translation
+/// Uses TapTun for device I/O and L2↔L3 translation
 /// Adds performance layer: queues, pooling, adaptive scaling, metrics
 pub const ZigPacketAdapter = struct {
     allocator: std.mem.Allocator,
     config: Config,
 
-    // ZigTapTun high-level adapter (handles device + translation)
+    // TapTun high-level adapter (handles device + translation)
     tun_adapter: *taptun.TunAdapter,
 
     // SoftEther-specific performance layer
@@ -178,8 +178,8 @@ pub const ZigPacketAdapter = struct {
         send_queue.* = try RingBuffer(PacketBuffer).init(allocator, config.send_queue_size);
         errdefer send_queue.deinit();
 
-        // Open TUN device with L2/L3 translator (ZigTapTun handles everything!)
-        logDebug("Opening TUN device via ZigTapTun", .{});
+        // Open TUN device with L2/L3 translator (TapTun handles everything!)
+        logDebug("Opening TUN device via TapTun", .{});
         const tun_adapter = try taptun.TunAdapter.open(allocator, .{
             .device = .{
                 .unit = null, // Auto-assign
@@ -217,7 +217,7 @@ pub const ZigPacketAdapter = struct {
     pub fn deinit(self: *ZigPacketAdapter) void {
         // Removed stop() call (no threads to stop)
 
-        // Close ZigTapTun adapter (handles device + translator cleanup)
+        // Close TapTun adapter (handles device + translator cleanup)
         self.tun_adapter.close();
 
         self.packet_pool.deinit();
@@ -234,10 +234,10 @@ pub const ZigPacketAdapter = struct {
         self.allocator.destroy(self);
     }
 
-    /// Open TUN device (now handled by ZigTapTun in init, this is a no-op for compatibility)
+    /// Open TUN device (now handled by TapTun in init, this is a no-op for compatibility)
     pub fn open(self: *ZigPacketAdapter) !void {
         _ = self;
-        // Device is already opened in init() via ZigTapTun
+        // Device is already opened in init() via TapTun
         logDebug("open() called (device already opened in init)", .{});
     }
 
@@ -722,12 +722,12 @@ export fn zig_adapter_get_device_name(adapter: *ZigPacketAdapter, out_buffer: [*
     return copy_len;
 }
 
-/// Get learned IP address from ZigTapTun translator
+/// Get learned IP address from TapTun translator
 export fn zig_adapter_get_learned_ip(adapter: *ZigPacketAdapter) u32 {
     return adapter.tun_adapter.getLearnedIp() orelse 0;
 }
 
-/// Get gateway MAC address from ZigTapTun translator
+/// Get gateway MAC address from TapTun translator
 export fn zig_adapter_get_gateway_mac(adapter: *ZigPacketAdapter, out_mac: [*]u8) bool {
     if (adapter.tun_adapter.getGatewayMac()) |mac| {
         @memcpy(out_mac[0..6], &mac);

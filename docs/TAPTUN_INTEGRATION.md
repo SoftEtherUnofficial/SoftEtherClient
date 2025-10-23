@@ -70,7 +70,7 @@ pub const ZigPacketAdapter = struct {
     tun_adapter: *taptun.TunAdapter,
     
     pub fn init(allocator: Allocator, config: Config) !*ZigPacketAdapter {
-        // Open TUN device with L2/L3 translator (ZigTapTun handles everything!)
+        // Open TUN device with L2/L3 translator (TapTun handles everything!)
         const tun_adapter = try taptun.TunAdapter.open(allocator, .{
             .device = .{
                 .unit = null, // Auto-assign utun number
@@ -406,7 +406,7 @@ taptun_translator_destroy(translator);
 
 **build.zig**:
 ```zig
-// Add ZigTapTun dependency
+// Add TapTun dependency
 const taptun = b.dependency("taptun", .{
     .target = target,
     .optimize = optimize,

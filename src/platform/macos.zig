@@ -4,7 +4,7 @@
 //! replacing the legacy C implementation (packet_adapter_macos.c).
 //!
 //! Features:
-//! - utun device management using ZigTapTun
+//! - utun device management using TapTun
 //! - DHCP client functionality
 //! - ARP handling
 //! - IPv4/IPv6 packet processing
@@ -206,7 +206,7 @@ pub const PacketAdapterState = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        // Open utun device using ZigTapTun
+        // Open utun device using TapTun
         self.device = try taptun.TunDevice.open(self.allocator, unit_hint);
 
         // Note: MTU configuration happens via ifconfig in configureIpAddress // Mark connection start time

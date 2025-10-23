@@ -136,12 +136,14 @@ void SessionMain(SESSION *s)
 	bool is_server_session = false;
 	bool lock_receive_blocks_queue = false;
 	
-	LOG_INFO("SESSION", "🚀 SessionMain STARTED for session: %s", s ? s->Name : "(null)");
+	fprintf(stderr, "[SessionMain] 🚀 SessionMain STARTED for session: %s\n", s ? s->Name : "(null)");
+	fflush(stderr);
 	
 	// Validate arguments
 	if (s == NULL)
 	{
-		LOG_ERROR("SESSION", "❌ CRITICAL: Session pointer is NULL!");
+		fprintf(stderr, "[SessionMain] ❌ CRITICAL: Session pointer is NULL!\n");
+		fflush(stderr);
 		return;
 	}
 
@@ -177,12 +179,14 @@ void SessionMain(SESSION *s)
 
 	pa = s->PacketAdapter;
 	
-	LOG_INFO("SESSION", "📡 Calling pa->Init... pa=%p", pa);
+	fprintf(stderr, "[SessionMain] 📡 Calling pa->Init (adapter initialization)... pa=%p\n", pa);
+	fflush(stderr);
 	
 	if (pa->Init(s) == false)
 	{
 		// Initialization Failed
-		LOG_ERROR("SESSION", "❌ pa->Init FAILED!");
+		fprintf(stderr, "[SessionMain] ❌ pa->Init FAILED! Cleaning up...\n");
+		fflush(stderr);
 		
 		if (s->VLanDeviceErrorCount >= 2)
 		{
@@ -197,7 +201,8 @@ void SessionMain(SESSION *s)
 	}
 	pa_inited = true;
 	
-	LOG_INFO("SESSION", "✅ pa->Init SUCCESS!");
+	fprintf(stderr, "[SessionMain] ✅ pa->Init SUCCESS! Adapter initialized and ready.\n");
+	fflush(stderr);
 
 	if (s->BridgeMode == false)
 	{
@@ -302,15 +307,17 @@ void SessionMain(SESSION *s)
 
 	static UINT64 loop_count = 0;
 	
-	LOG_INFO("SESSION", "🔁 Entering main loop...");
-	LOG_INFO("SESSION", "   pa=%p, ServerMode=%d, pa_inited=%d", pa, s->ServerMode, pa_inited);
+	fprintf(stderr, "[SessionMain] 🔁 Entering main packet processing loop...\n");
+	fprintf(stderr, "[SessionMain]    pa=%p, ServerMode=%d, pa_inited=%d\n", pa, s->ServerMode, pa_inited);
+	fflush(stderr);
 
 	while (true)
 	{
 		loop_count++;
 		
 		if (loop_count <= 5 || loop_count % 100 == 0) {
-			LOG_INFO("SESSION", "🔄 Loop #%llu", loop_count);
+			fprintf(stderr, "[SessionMain] 🔄 Loop #%llu: Starting iteration...\n", loop_count);
+			fflush(stderr);
 		}
 		
 		Zero(&t, sizeof(t));
@@ -485,14 +492,16 @@ void SessionMain(SESSION *s)
 			UINT i, max_num = MAX_SEND_SOCKET_QUEUE_NUM;
 			
 			if (loop_count <= 5 || loop_count % 100 == 0) {
-				LOG_INFO("SESSION", "🔄 Loop #%llu: GetNextPacket...", loop_count);
+				fprintf(stderr, "[SessionMain] 🔄 Loop #%llu: About to call pa->GetNextPacket()...\n", loop_count);
+				fflush(stderr);
 			}
 			
 			i = 0;
 			while (packet_size = pa->GetNextPacket(s, &packet))
 			{
 				if (loop_count <= 5 || i < 3) {
-					LOG_INFO("SESSION", "📦 Packet size=%u loop=%llu #%u", packet_size, loop_count, i);
+					fprintf(stderr, "[SessionMain] 📦 Got packet from adapter! size=%u (loop #%llu, packet #%u)\n", packet_size, loop_count, i);
+					fflush(stderr);
 				}
 				BLOCK *b;
 				if (packet_size == INFINITE)
@@ -718,9 +727,6 @@ void SessionMain(SESSION *s)
 		}
 
 		// Time-out decision
-		if (loop_count <= 5) {
-			LOG_INFO("SESSION", "🔍 Loop #%llu end: pa_fail=%d SessionTimeOuted=%d", loop_count, pa_fail, s->SessionTimeOuted);
-		}
 		if (pa_fail || s->SessionTimeOuted)
 		{
 			s->Halt = true;

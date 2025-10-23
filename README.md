@@ -250,7 +250,7 @@ pub fn main() !void {
 ### Current Sprint (October 2025)
 **Goal**: Port macOS packet adapter to pure Zig
 - [ ] Create `src/platform/macos.zig`
-- [ ] Integrate ZigTapTun for utun management
+- [ ] Integrate TapTun for utun management
 - [ ] Port DHCP packet handling
 - [ ] Achieve performance parity with C version
 
@@ -311,7 +311,7 @@ See [Porting Progress Tracker](docs/ZIG_PORTING_PROGRESS.md) for detailed task l
                │
 ┌──────────────▼──────────────────────┐
 │    Platform Adapters (Zig)          │
-│  Pure Zig TUN/TAP via ZigTapTun     │
+│  Pure Zig TUN/TAP via TapTun     │
 └─────────────────────────────────────┘
 ```
 
@@ -621,7 +621,7 @@ The SoftEther VPN components are licensed under Apache License 2.0 by the SoftEt
 ### Architecture
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - Cross-platform architecture
 - **[PROGRESS.md](PROGRESS.md)** - Implementation progress and roadmap
-- **[ZigTapTun/](ZigTapTun/)** - Layer 2/3 translation library
+- **[TapTun/](TapTun/)** - Layer 2/3 translation library
 
 ---
 

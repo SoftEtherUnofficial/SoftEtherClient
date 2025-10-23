@@ -605,12 +605,12 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                        (ctx->offered_gw >> 8) & 0xFF, ctx->offered_gw & 0xFF);
 #endif
                                 
-                                // ZIGSE-80: Configure VPN routing through ZigTapTun RouteManager
+                                // ZIGSE-80: Configure VPN routing through TapTun RouteManager
                                 // ctx->offered_gw is already in host byte order (10.21.0.1 = 0x0A150001)
                                 // Just pass it directly - Zig will extract bytes correctly
-                                printf("[●] DHCP: Configuring VPN routing through ZigTapTun...\n");
+                                printf("[●] DHCP: Configuring VPN routing through TapTun...\n");
                                 if (zig_adapter_configure_routing(ctx->zig_adapter, ctx->offered_gw, 0)) {
-                                    printf("[●] DHCP: ✅ VPN routing configured by ZigTapTun RouteManager\n");
+                                    printf("[●] DHCP: ✅ VPN routing configured by TapTun RouteManager\n");
                                 } else {
                                     printf("[●] DHCP: ⚠️  Failed to configure routing, routes may not be set\n");
                                 }

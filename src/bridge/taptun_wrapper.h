@@ -1,4 +1,4 @@
-// C header for ZigTapTun wrapper
+// C header for TapTun wrapper
 // Allows C code to use Zig L2↔L3 translation
 
 #ifndef TAPTUN_WRAPPER_H
