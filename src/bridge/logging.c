@@ -133,3 +133,114 @@ void log_message(LogLevel level, const char* tag, const char* fmt, ...) {
     fflush(stderr);
 #endif
 }
+
+// Platform-specific logging function implementations
+void log_error_impl(const char* tag, const char* fmt, ...) {
+#ifdef __APPLE__
+    static os_log_t log_handle = NULL;
+    if (log_handle == NULL) {
+        log_handle = os_log_create("com.worxvpn.ios", "SoftEther");
+    }
+    
+    char message[2048];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(message, sizeof(message), fmt, args);
+    va_end(args);
+    
+    os_log_error(log_handle, "[%{public}s] %{public}s", tag, message);
+#else
+    va_list args;
+    va_start(args, fmt);
+    log_message(LOG_LEVEL_ERROR, tag, fmt, args);
+    va_end(args);
+#endif
+}
+
+void log_warn_impl(const char* tag, const char* fmt, ...) {
+#ifdef __APPLE__
+    static os_log_t log_handle = NULL;
+    if (log_handle == NULL) {
+        log_handle = os_log_create("com.worxvpn.ios", "SoftEther");
+    }
+    
+    char message[2048];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(message, sizeof(message), fmt, args);
+    va_end(args);
+    
+    os_log(log_handle, "[%{public}s] %{public}s", tag, message);
+#else
+    va_list args;
+    va_start(args, fmt);
+    log_message(LOG_LEVEL_WARN, tag, fmt, args);
+    va_end(args);
+#endif
+}
+
+void log_info_impl(const char* tag, const char* fmt, ...) {
+#ifdef __APPLE__
+    static os_log_t log_handle = NULL;
+    if (log_handle == NULL) {
+        log_handle = os_log_create("com.worxvpn.ios", "SoftEther");
+    }
+    
+    char message[2048];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(message, sizeof(message), fmt, args);
+    va_end(args);
+    
+    os_log(log_handle, "[%{public}s] %{public}s", tag, message);
+#else
+    va_list args;
+    va_start(args, fmt);
+    log_message(LOG_LEVEL_INFO, tag, fmt, args);
+    va_end(args);
+#endif
+}
+
+void log_debug_impl(const char* tag, const char* fmt, ...) {
+#ifdef __APPLE__
+    static os_log_t log_handle = NULL;
+    if (log_handle == NULL) {
+        log_handle = os_log_create("com.worxvpn.ios", "SoftEther");
+    }
+    
+    char message[2048];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(message, sizeof(message), fmt, args);
+    va_end(args);
+    
+    os_log_debug(log_handle, "[%{public}s] %{public}s", tag, message);
+#else
+    va_list args;
+    va_start(args, fmt);
+    log_message(LOG_LEVEL_DEBUG, tag, fmt, args);
+    va_end(args);
+#endif
+}
+
+void log_trace_impl(const char* tag, const char* fmt, ...) {
+#ifdef __APPLE__
+    static os_log_t log_handle = NULL;
+    if (log_handle == NULL) {
+        log_handle = os_log_create("com.worxvpn.ios", "SoftEther");
+    }
+    
+    char message[2048];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(message, sizeof(message), fmt, args);
+    va_end(args);
+    
+    os_log_debug(log_handle, "[%{public}s] %{public}s", tag, message);
+#else
+    va_list args;
+    va_start(args, fmt);
+    log_message(LOG_LEVEL_TRACE, tag, fmt, args);
+    va_end(args);
+#endif
+}

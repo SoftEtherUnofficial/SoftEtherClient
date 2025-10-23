@@ -104,6 +104,11 @@
 
 #include "CedarPch.h"
 
+// Include logging AFTER SoftEther headers to avoid bool conflicts
+#ifdef __APPLE__
+#include "../logging.h"
+#endif
+
 // Main routine of the session
 void SessionMain(SESSION *s)
 {
@@ -130,9 +135,15 @@ void SessionMain(SESSION *s)
 	SOCK *nicinfo_sock = NULL;
 	bool is_server_session = false;
 	bool lock_receive_blocks_queue = false;
+	
+	fprintf(stderr, "[SessionMain] 🚀 SessionMain STARTED for session: %s\n", s ? s->Name : "(null)");
+	fflush(stderr);
+	
 	// Validate arguments
 	if (s == NULL)
 	{
+		fprintf(stderr, "[SessionMain] ❌ CRITICAL: Session pointer is NULL!\n");
+		fflush(stderr);
 		return;
 	}
 
@@ -167,9 +178,16 @@ void SessionMain(SESSION *s)
 #endif	// OS_WIN32
 
 	pa = s->PacketAdapter;
+	
+	fprintf(stderr, "[SessionMain] 📡 Calling pa->Init (adapter initialization)... pa=%p\n", pa);
+	fflush(stderr);
+	
 	if (pa->Init(s) == false)
 	{
 		// Initialization Failed
+		fprintf(stderr, "[SessionMain] ❌ pa->Init FAILED! Cleaning up...\n");
+		fflush(stderr);
+		
 		if (s->VLanDeviceErrorCount >= 2)
 		{
 			s->ForceStopFlag = true;
@@ -182,6 +200,9 @@ void SessionMain(SESSION *s)
 		goto CLEANUP;
 	}
 	pa_inited = true;
+	
+	fprintf(stderr, "[SessionMain] ✅ pa->Init SUCCESS! Adapter initialized and ready.\n");
+	fflush(stderr);
 
 	if (s->BridgeMode == false)
 	{
@@ -285,15 +306,19 @@ void SessionMain(SESSION *s)
 	now = Tick64();
 
 	static UINT64 loop_count = 0;
-	if (loop_count == 0) {
-		printf("[SessionMain] *** MAIN LOOP STARTING *** pa=%p, ServerMode=%d, ClientMode=%d\n", 
-		      pa, s->ServerMode, !s->ServerMode);
-		fflush(stdout);
-	}
+	
+	fprintf(stderr, "[SessionMain] 🔁 Entering main packet processing loop...\n");
+	fprintf(stderr, "[SessionMain]    pa=%p, ServerMode=%d, pa_inited=%d\n", pa, s->ServerMode, pa_inited);
+	fflush(stderr);
 
 	while (true)
 	{
 		loop_count++;
+		
+		if (loop_count <= 5 || loop_count % 100 == 0) {
+			fprintf(stderr, "[SessionMain] 🔄 Loop #%llu: Starting iteration...\n", loop_count);
+			fflush(stderr);
+		}
 		
 		Zero(&t, sizeof(t));
 
@@ -466,9 +491,18 @@ void SessionMain(SESSION *s)
 		{
 			UINT i, max_num = MAX_SEND_SOCKET_QUEUE_NUM;
 			
+			if (loop_count <= 5 || loop_count % 100 == 0) {
+				fprintf(stderr, "[SessionMain] 🔄 Loop #%llu: About to call pa->GetNextPacket()...\n", loop_count);
+				fflush(stderr);
+			}
+			
 			i = 0;
 			while (packet_size = pa->GetNextPacket(s, &packet))
 			{
+				if (loop_count <= 5 || i < 3) {
+					fprintf(stderr, "[SessionMain] 📦 Got packet from adapter! size=%u (loop #%llu, packet #%u)\n", packet_size, loop_count, i);
+					fflush(stderr);
+				}
 				BLOCK *b;
 				if (packet_size == INFINITE)
 				{
@@ -1466,44 +1500,40 @@ void ClientThread(THREAD *t, void *param)
 	CEDAR *cedar;
 	bool num_active_sessions_incremented = false;
 	
-	printf("[ClientThread] *** THREAD STARTED *** t=%p, param=%p\n", t, param);
-	fflush(stdout);
+	LOG_INFO("SESSION", "*** ClientThread STARTED *** t=%p, param=%p", t, param);
 	
 	// Validate arguments
 	if (t == NULL || param == NULL)
 	{
-		printf("[ClientThread] ERROR: NULL argument! t=%p param=%p\n", t, param);
-		fflush(stdout);
+		LOG_ERROR("SESSION", "ClientThread ERROR: NULL argument! t=%p param=%p", t, param);
 		return;
 	}
 
 	Debug("ClientThread 0x%x Started.\n", t);
 
 	s = (SESSION *)param;
-	printf("[ClientThread] t=%p, t->ref=%p\n", t, t->ref);
+	LOG_INFO("SESSION", "ClientThread: t=%p, t->ref=%p", t, t->ref);
 	if (t->ref) {
-		printf("[ClientThread] t->ref->c=%p\n", t->ref->c);
+		LOG_INFO("SESSION", "ClientThread: t->ref->c=%p", t->ref->c);
 	}
-	fflush(stdout);
-	printf("[ClientThread] About to AddRef(s->ref)...\n"); fflush(stdout);
+	LOG_INFO("SESSION", "ClientThread: About to AddRef(s->ref)...");
 	AddRef(s->ref);
-	printf("[ClientThread] Setting s->Thread...\n"); fflush(stdout);
+	LOG_INFO("SESSION", "ClientThread: Setting s->Thread...");
 	s->Thread = t;
-	printf("[ClientThread] About to AddRef(t->ref)...\n"); fflush(stdout);
+	LOG_INFO("SESSION", "ClientThread: About to AddRef(t->ref)...");
 	AddRef(t->ref);
 
-	printf("[ClientThread] Checking LinkModeClient...\n"); fflush(stdout);
+	LOG_INFO("SESSION", "ClientThread: Checking LinkModeClient...");
 	if (s->LinkModeClient == false)
 	{
-		printf("[ClientThread] Calling CiIncrementNumActiveSessions...\n"); fflush(stdout);
+		LOG_INFO("SESSION", "ClientThread: Calling CiIncrementNumActiveSessions...");
 		CiIncrementNumActiveSessions();
 		num_active_sessions_incremented = true;
 	}
 
-	printf("[ClientThread] About to call NoticeThreadInit...\n"); fflush(stdout);
+	LOG_INFO("SESSION", "ClientThread: About to call NoticeThreadInit...");
 	NoticeThreadInit(t);
-	printf("[ClientThread] *** NoticeThreadInit CALLED! Thread initialization complete ***\n");
-	fflush(stdout);
+	LOG_INFO("SESSION", "ClientThread: *** NoticeThreadInit CALLED! Thread initialization complete ***");
 
 	cedar = s->Cedar;
 
@@ -1995,15 +2025,24 @@ SESSION *NewClientSessionEx(CEDAR *cedar, CLIENT_OPTION *option, CLIENT_AUTH *au
 {
 	SESSION *s;
 	THREAD *t;
+	
+	LOG_INFO("SESSION", "🎬 NewClientSessionEx CALLED! cedar=%p option=%p auth=%p pa=%p account=%p", 
+	         cedar, option, auth, pa, account);
+	
 	// Validate arguments
 	if (cedar == NULL || option == NULL || auth == NULL || pa == NULL ||
 		(auth->AuthType == CLIENT_AUTHTYPE_SECURE && auth->SecureSignProc == NULL))
 	{
+		LOG_ERROR("SESSION", "❌ VALIDATION FAILED! Returning NULL");
 		return NULL;
 	}
 
+	LOG_INFO("SESSION", "✅ Arguments validated, creating SESSION object...");
+
 	// Initialize the SESSION object
 	s = ZeroMalloc(sizeof(SESSION));
+	
+	LOG_INFO("SESSION", "✅ SESSION allocated at %p, initializing fields...", s);
 
 	s->LoggingRecordCount = NewCounter();
 
@@ -2102,6 +2141,9 @@ SESSION *NewClientSessionEx(CEDAR *cedar, CLIENT_OPTION *option, CLIENT_AUTH *au
 		s->BridgeMode = true;
 	}
 
+	LOG_INFO("SESSION", "📋 Device mode checks complete. VirtualHost=%d LinkMode=%d SecureNAT=%d Bridge=%d",
+	         s->VirtualHost, s->LinkModeClient, s->SecureNATMode, s->BridgeMode);
+
 	if (s->VirtualHost)
 	{
 		VH *v = (VH *)s->PacketAdapter->Param;
@@ -2111,17 +2153,30 @@ SESSION *NewClientSessionEx(CEDAR *cedar, CLIENT_OPTION *option, CLIENT_AUTH *au
 		AddRef(s->ref);
 	}
 
+	LOG_INFO("SESSION", "📝 Setting account reference: account=%p", account);
+
 	s->Account = account;
 
 	if (s->ClientAuth->AuthType == CLIENT_AUTHTYPE_SECURE)
 	{
 		// Do not retry in the case of a smart card authentication
 		s->ClientOption->NumRetry = 0;
+		LOG_INFO("SESSION", "🔐 Smart card auth detected, NumRetry set to 0");
 	}
+
+	LOG_INFO("SESSION", "🧵 About to create ClientThread...");
 
 	// Create a client thread
 	t = NewThread(ClientThread, (void *)s);
+	
+	LOG_INFO("SESSION", "✅ NewThread returned: t=%p", t);
+	
+	LOG_INFO("SESSION", "⏳ Calling WaitThreadInit (waiting for thread to start)...");
+	
 	WaitThreadInit(t);
+	
+	LOG_INFO("SESSION", "✅ WaitThreadInit completed! Thread is running.");
+	
 	ReleaseThread(t);
 
 	return s;

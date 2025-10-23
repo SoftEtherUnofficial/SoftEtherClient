@@ -104,6 +104,11 @@
 
 #include "CedarPch.h"
 
+// Include logging AFTER SoftEther headers to avoid bool conflicts
+#ifdef __APPLE__
+#include "../logging.h"
+#endif
+
 static UCHAR ssl_packet_start[3] = {0x17, 0x03, 0x00};
 
 // MIME list from https://www.freeformatter.com/mime-types-list.html
@@ -5743,13 +5748,18 @@ bool ClientConnect(CONNECTION *c)
 	PrintStatus(sess, L"init");
 	PrintStatus(sess, _UU("STATUS_1"));
 
+	LOG_INFO("PROTOCOL", "⏳ ClientConnect: Starting connection to server...");
+
 REDIRECTED:
 
 	// [Connecting]
 	c->Status = CONNECTION_STATUS_CONNECTING;
 	c->Session->ClientStatus = CLIENT_STATUS_CONNECTING;
 
+	LOG_INFO("PROTOCOL", "📞 ClientConnect: Calling ClientConnectToServer...");
 	s = ClientConnectToServer(c);
+	LOG_INFO("PROTOCOL", "%s ClientConnect: ClientConnectToServer returned: %s", 
+	         s ? "✅" : "❌", s ? "SUCCESS" : "FAILED");
 	if (s == NULL)
 	{
 		PrintStatus(sess, L"free");
@@ -5999,6 +6009,8 @@ REDIRECTED:
 		BUF *b;
 
 		// Redirect mode
+		LOG_INFO("PROTOCOL", "🔀 Server redirect detected! Current: %s:%u", c->ServerName, c->ServerPort);
+		
 		PrintStatus(sess, _UU("STATUS_8"));
 
 		ip = PackGetIp32(p, "Ip");
@@ -6046,6 +6058,9 @@ REDIRECTED:
 
 		IPToStr32(c->ServerName, sizeof(c->ServerName), ip);
 		c->ServerPort = use_port;
+		
+		LOG_INFO("PROTOCOL", "🔀 Redirecting to: %s:%u (has ticket: %s)", 
+		         c->ServerName, c->ServerPort, PackGetDataSize(p, "Ticket") == SHA1_SIZE ? "YES" : "NO");
 
 		c->UseTicket = true;
 		Copy(c->Ticket, ticket, SHA1_SIZE);
@@ -6063,9 +6078,11 @@ REDIRECTED:
 		ReleaseSock(s);
 		s = NULL;
 
+		LOG_INFO("PROTOCOL", "🔀 Redirect: old connection closed, jumping to REDIRECTED label");
 		goto REDIRECTED;
 	}
 
+	LOG_INFO("PROTOCOL", "✅ No redirect - processing Welcome packet (normal flow)");
 	PrintStatus(sess, _UU("STATUS_7"));
 
 	// Parse the Welcome packet
@@ -6073,19 +6090,26 @@ REDIRECTED:
 		connection_name, sizeof(connection_name), &policy) == false)
 	{
 		// Parsing failure
+		LOG_ERROR("PROTOCOL", "❌ ParseWelcomeFromPack FAILED - protocol error");
 		c->Err = ERR_PROTOCOL_ERROR;
 		goto CLEANUP;
 	}
+
+	LOG_INFO("PROTOCOL", "✅ Welcome packet parsed: session='%s' connection='%s'", session_name, connection_name);
 
 	// Get the session key
 	if (GetSessionKeyFromPack(p, session_key, &session_key_32) == false)
 	{
 		// Acquisition failure
+		LOG_ERROR("PROTOCOL", "❌ GetSessionKeyFromPack FAILED");
 		Free(policy);
 		policy = NULL;
 		c->Err = ERR_PROTOCOL_ERROR;
 		goto CLEANUP;
 	}
+
+	LOG_INFO("PROTOCOL", "✅ Session key obtained (key32=%u)", session_key_32);
+	LOG_INFO("PROTOCOL", "🔄 Continuing Welcome packet processing (UDP accel, policy config, etc.)...");
 
 	Copy(c->Session->SessionKey, session_key, SHA1_SIZE);
 	c->Session->SessionKey32 = session_key_32;
@@ -6417,9 +6441,12 @@ REDIRECTED:
 	FreePack(p);
 	p = NULL;
 
-
+	LOG_INFO("PROTOCOL", "🎯 Setting ClientStatus to ESTABLISHED (3)...");
+	
 	// Connection establishment
 	c->Session->ClientStatus = CLIENT_STATUS_ESTABLISHED;
+	
+	LOG_INFO("PROTOCOL", "✅ ClientStatus set! Now ClientStatus=%u", c->Session->ClientStatus);
 
 	// Save the server certificate
 	if (c->ServerX == NULL)
@@ -6430,7 +6457,9 @@ REDIRECTED:
 	PrintStatus(sess, _UU("STATUS_9"));
 
 	// Shift the connection to the tunneling mode
+	LOG_INFO("PROTOCOL", "🚇 Calling StartTunnelingMode (this starts packet processing)...");
 	StartTunnelingMode(c);
+	LOG_INFO("PROTOCOL", "✅ StartTunnelingMode completed! Packet processing should be active now.");
 	s = NULL;
 
 	if (c->Session->HalfConnection)
@@ -6470,7 +6499,9 @@ REDIRECTED:
 	}
 
 	// Main routine of the session
+	LOG_INFO("PROTOCOL", "🔁 About to call SessionMain (main packet processing loop)...");
 	SessionMain(c->Session);
+	LOG_INFO("PROTOCOL", "🛑 SessionMain returned! Session ended.");
 
 	ok = true;
 
@@ -7782,8 +7813,12 @@ SOCK *ClientConnectToServer(CONNECTION *c)
 		return NULL;
 	}
 
+	LOG_INFO("PROTOCOL", "🔌 ClientConnectToServer: Creating TCP socket...");
+
 	// Get the socket by connecting
 	s = ClientConnectGetSocket(c, false, (c->DontUseTls1 ? false : true));
+	LOG_INFO("PROTOCOL", "%s ClientConnectToServer: Socket creation: %s", 
+	         s ? "✅" : "❌", s ? "SUCCESS" : "FAILED");
 	if (s == NULL)
 	{
 		// Connection failure
@@ -7803,10 +7838,13 @@ SOCK *ClientConnectToServer(CONNECTION *c)
 	// Time-out
 	SetTimeout(s, CONNECTING_TIMEOUT);
 
+	LOG_INFO("PROTOCOL", "🔐 ClientConnectToServer: Starting SSL/TLS handshake to %s...", c->ServerName);
+
 	// Start the SSL communication
 	if (StartSSLEx(s, x, k, (c->DontUseTls1 ? false : true), 0, c->ServerName) == false)
 	{
 		// SSL communication start failure
+		LOG_ERROR("PROTOCOL", "❌ ClientConnectToServer: SSL handshake FAILED (StartSSLEx returned false)");
 		Disconnect(s);
 		ReleaseSock(s);
 		c->FirstSock = NULL;
@@ -7814,15 +7852,20 @@ SOCK *ClientConnectToServer(CONNECTION *c)
 		return NULL;
 	}
 
+	LOG_INFO("PROTOCOL", "✅ ClientConnectToServer: SSL handshake completed, checking certificate...");
+
 	if (s->RemoteX == NULL)
 	{
 		// SSL communication start failure
+		LOG_ERROR("PROTOCOL", "❌ ClientConnectToServer: No remote certificate (RemoteX is NULL)");
 		Disconnect(s);
 		ReleaseSock(s);
 		c->FirstSock = NULL;
 		c->Err = ERR_SERVER_IS_NOT_VPN;
 		return NULL;
 	}
+
+	LOG_INFO("PROTOCOL", "✅ ClientConnectToServer: Server certificate received, connection established!");
 
 	return s;
 }

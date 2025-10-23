@@ -83,31 +83,18 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size);
 static void ZigAdapterFree(SESSION* s);
 
 // Create new Zig packet adapter
+#ifdef UNIX_IOS
+// --- USE REAL IOS ADAPTER ---
+// Forward declaration of the real iOS adapter
+extern PACKET_ADAPTER* NewIosPacketAdapter(void);
+
 PACKET_ADAPTER* NewZigPacketAdapter(void) {
-    printf("[NewZigPacketAdapter] Creating Zig packet adapter\n");
-    
-    // Allocate PACKET_ADAPTER structure
-    PACKET_ADAPTER* pa = ZeroMalloc(sizeof(PACKET_ADAPTER));
-    if (!pa) {
-        printf("[NewZigPacketAdapter] Failed to allocate PACKET_ADAPTER\n");
-        return NULL;
-    }
-    
-    // Set up callbacks
-    pa->Init = ZigAdapterInit;
-    pa->GetCancel = ZigAdapterGetCancel;
-    pa->GetNextPacket = ZigAdapterGetNextPacket;
-    pa->PutPacket = ZigAdapterPutPacket;
-    pa->Free = ZigAdapterFree;
-    
-    // CRITICAL: Use same ID as C adapter (PACKET_ADAPTER_ID_VLAN_WIN32 = 1)
-    // This prevents server from treating Zig adapter differently!
-    #define PACKET_ADAPTER_ID_VLAN_WIN32 1
-    pa->Id = PACKET_ADAPTER_ID_VLAN_WIN32;
-    
-    printf("[NewZigPacketAdapter] Created adapter with Id=%u (same as C adapter)\n", pa->Id);
-    return pa;
+    printf("[NewZigPacketAdapter] Creating REAL iOS Network Extension adapter\n");
+    return NewIosPacketAdapter();
 }
+#else
+// ...existing code...
+#endif
 
 // Initialize adapter
 static bool ZigAdapterInit(SESSION* s) {

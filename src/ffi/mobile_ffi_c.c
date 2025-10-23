@@ -325,13 +325,30 @@ int mobile_vpn_get_network_info(MobileVpnHandle handle, MobileNetworkInfo* info)
         return -1;
     }
     
-    // Copy DHCP info obtained during connection
+    // Fetch fresh DHCP info from the bridge
+    VpnBridgeDhcpInfo bridge_dhcp;
+    int result = vpn_bridge_get_dhcp_info(ctx->bridge_client, &bridge_dhcp);
+    
+    if (result != 0 || !bridge_dhcp.valid) {
+        printf("[mobile_vpn_get_network_info] Failed to get DHCP info from bridge (result=%d, valid=%d)\n", result, bridge_dhcp.valid);
+        memset(info, 0, sizeof(MobileNetworkInfo));
+        return -1;
+    }
+    
+    printf("[mobile_vpn_get_network_info] Got DHCP: IP=%u.%u.%u.%u Gateway=%u.%u.%u.%u Mask=%u.%u.%u.%u\n",
+           (bridge_dhcp.client_ip >> 24) & 0xFF, (bridge_dhcp.client_ip >> 16) & 0xFF,
+           (bridge_dhcp.client_ip >> 8) & 0xFF, bridge_dhcp.client_ip & 0xFF,
+           (bridge_dhcp.gateway >> 24) & 0xFF, (bridge_dhcp.gateway >> 16) & 0xFF,
+           (bridge_dhcp.gateway >> 8) & 0xFF, bridge_dhcp.gateway & 0xFF,
+           (bridge_dhcp.subnet_mask >> 24) & 0xFF, (bridge_dhcp.subnet_mask >> 16) & 0xFF,
+           (bridge_dhcp.subnet_mask >> 8) & 0xFF, bridge_dhcp.subnet_mask & 0xFF);
+    
     // Convert uint32_t network byte order to byte arrays
-    uint32_t client_ip = ctx->dhcp_info.client_ip;
-    uint32_t gateway = ctx->dhcp_info.gateway;
-    uint32_t netmask = ctx->dhcp_info.subnet_mask;
-    uint32_t dns1 = ctx->dhcp_info.dns_server1;
-    uint32_t dns2 = ctx->dhcp_info.dns_server2;
+    uint32_t client_ip = bridge_dhcp.client_ip;
+    uint32_t gateway = bridge_dhcp.gateway;
+    uint32_t netmask = bridge_dhcp.subnet_mask;
+    uint32_t dns1 = bridge_dhcp.dns_server1;
+    uint32_t dns2 = bridge_dhcp.dns_server2;
     
     // IP address (network byte order)
     info->ip_address[0] = (client_ip >> 24) & 0xFF;

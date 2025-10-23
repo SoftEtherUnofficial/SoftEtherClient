@@ -30,24 +30,19 @@ void set_log_level(LogLevel level);
 const char* get_log_level_name(LogLevel level);
 LogLevel parse_log_level(const char* str);
 
-// Internal logging function (use macros below instead)
-void log_message(LogLevel level, const char* tag, const char* fmt, ...);
+// Platform-specific logging functions (implemented in logging.c)
+void log_error_impl(const char* tag, const char* fmt, ...);
+void log_warn_impl(const char* tag, const char* fmt, ...);
+void log_info_impl(const char* tag, const char* fmt, ...);
+void log_debug_impl(const char* tag, const char* fmt, ...);
+void log_trace_impl(const char* tag, const char* fmt, ...);
 
-// Logging macros with automatic level check
-#define LOG_ERROR(tag, fmt, ...) \
-    do { if (g_log_level >= LOG_LEVEL_ERROR) log_message(LOG_LEVEL_ERROR, tag, fmt, ##__VA_ARGS__); } while(0)
-
-#define LOG_WARN(tag, fmt, ...) \
-    do { if (g_log_level >= LOG_LEVEL_WARN) log_message(LOG_LEVEL_WARN, tag, fmt, ##__VA_ARGS__); } while(0)
-
-#define LOG_INFO(tag, fmt, ...) \
-    do { if (g_log_level >= LOG_LEVEL_INFO) log_message(LOG_LEVEL_INFO, tag, fmt, ##__VA_ARGS__); } while(0)
-
-#define LOG_DEBUG(tag, fmt, ...) \
-    do { if (g_log_level >= LOG_LEVEL_DEBUG) log_message(LOG_LEVEL_DEBUG, tag, fmt, ##__VA_ARGS__); } while(0)
-
-#define LOG_TRACE(tag, fmt, ...) \
-    do { if (g_log_level >= LOG_LEVEL_TRACE) log_message(LOG_LEVEL_TRACE, tag, fmt, ##__VA_ARGS__); } while(0)
+// Logging macros that call platform-specific implementations
+#define LOG_ERROR(tag, fmt, ...) log_error_impl(tag, fmt, ##__VA_ARGS__)
+#define LOG_WARN(tag, fmt, ...) log_warn_impl(tag, fmt, ##__VA_ARGS__)
+#define LOG_INFO(tag, fmt, ...) log_info_impl(tag, fmt, ##__VA_ARGS__)
+#define LOG_DEBUG(tag, fmt, ...) log_debug_impl(tag, fmt, ##__VA_ARGS__)
+#define LOG_TRACE(tag, fmt, ...) log_trace_impl(tag, fmt, ##__VA_ARGS__)
 
 // Convenience macros for common tags
 #define LOG_TUN_ERROR(fmt, ...)   LOG_ERROR("TUN", fmt, ##__VA_ARGS__)
