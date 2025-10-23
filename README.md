@@ -71,7 +71,7 @@ git clone https://github.com/yourusername/SoftEtherZig.git
 cd SoftEtherZig
 
 # Build the client
-zig build -Doptimize=ReleaseFast
+zig build -Drelease=true
 
 # Generate password hash (recommended for security)
 ./zig-out/bin/vpnclient --gen-hash username password
@@ -122,7 +122,7 @@ sudo dnf install openssl-devel
 zig build
 
 # Optimized release build
-zig build -Doptimize=ReleaseFast
+zig build -Drelease=true
 
 # Install system-wide (optional)
 sudo cp zig-out/bin/vpnclient /usr/local/bin/
@@ -426,7 +426,7 @@ zig build -Dtarget=aarch64-linux-gnu
 zig build
 
 # Release build (optimized)
-zig build -Doptimize=ReleaseFast
+zig build -Drelease=true
 
 # Safe release build
 zig build -Doptimize=ReleaseSafe

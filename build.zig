@@ -431,7 +431,7 @@ pub fn build(b: *std.Build) void {
         \\
         \\Examples:
         \\  # Build optimized CLI
-        \\  zig build -Doptimize=ReleaseFast
+        \\  zig build -Drelease=true
         \\
         \\  # Build for iOS simulator
         \\  zig build -Dtarget=aarch64-ios-simulator -Dsystem-ssl=false

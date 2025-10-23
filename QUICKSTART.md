@@ -12,7 +12,7 @@ brew install zig openssl@3
 
 # Clone and build
 cd /path/to/SoftEtherVPN/zig
-zig build -Doptimize=ReleaseFast
+zig build -Drelease=true
 
 # Optional: Install system-wide
 sudo cp zig-out/bin/vpnclient /usr/local/bin/
@@ -66,7 +66,7 @@ sudo modprobe tun
 
 # Clone and build
 cd /path/to/SoftEtherVPN/zig
-zig build -Doptimize=ReleaseFast
+zig build -Drelease=true
 
 # Optional: Install system-wide
 sudo cp zig-out/bin/vpnclient /usr/local/bin/
@@ -125,7 +125,7 @@ sudo dnf install openssl-devel gcc make
 
 # Clone and build
 cd /path/to/SoftEtherVPN/zig
-zig build -Doptimize=ReleaseFast
+zig build -Drelease=true
 
 # Optional: Install system-wide
 sudo cp zig-out/bin/vpnclient /usr/local/bin/
@@ -168,7 +168,7 @@ Option B - Install TAP driver only:
 ```powershell
 # Open PowerShell or Command Prompt
 cd C:\path\to\SoftEtherVPN\zig
-zig build -Doptimize=ReleaseFast
+zig build -Drelease=true
 
 # Optional: Copy to system directory
 copy zig-out\bin\vpnclient.exe C:\Windows\System32\
@@ -218,39 +218,39 @@ Build for any platform from any platform using Zig's cross-compilation:
 
 ```bash
 # Build for Linux x64
-zig build -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseFast
+zig build -Dtarget=x86_64-linux-gnu -Drelease=true
 
 # Build for Linux ARM64 (Raspberry Pi, AWS Graviton)
-zig build -Dtarget=aarch64-linux-gnu -Doptimize=ReleaseFast
+zig build -Dtarget=aarch64-linux-gnu -Drelease=true
 
 # Build for Windows x64
-zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast
+zig build -Dtarget=x86_64-windows-gnu -Drelease=true
 ```
 
 ### From Linux
 
 ```bash
 # Build for macOS Intel
-zig build -Dtarget=x86_64-macos -Doptimize=ReleaseFast
+zig build -Dtarget=x86_64-macos -Drelease=true
 
 # Build for macOS Apple Silicon
-zig build -Dtarget=aarch64-macos -Doptimize=ReleaseFast
+zig build -Dtarget=aarch64-macos -Drelease=true
 
 # Build for Windows x64
-zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast
+zig build -Dtarget=x86_64-windows-gnu -Drelease=true
 ```
 
 ### From Windows
 
 ```powershell
 # Build for Linux x64
-zig build -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseFast
+zig build -Dtarget=x86_64-linux-gnu -Drelease=true
 
 # Build for macOS Intel
-zig build -Dtarget=x86_64-macos -Doptimize=ReleaseFast
+zig build -Dtarget=x86_64-macos -Drelease=true
 
 # Build for macOS ARM64
-zig build -Dtarget=aarch64-macos -Doptimize=ReleaseFast
+zig build -Dtarget=aarch64-macos -Drelease=true
 ```
 
 **Note**: Cross-compiled binaries must be tested on the target platform. Some platform-specific features may require native compilation.
@@ -411,6 +411,6 @@ Create a Windows Service wrapper (requires additional code) or use Task Schedule
 
 | Platform | Build | Run | Check |
 |----------|-------|-----|-------|
-| macOS | `zig build -Doptimize=ReleaseFast` | `sudo vpnclient -s SERVER -H HUB -u USER -P PASS` | `ifconfig \| grep utun` |
-| Linux | `zig build -Doptimize=ReleaseFast` | `sudo vpnclient -s SERVER -H HUB -u USER -P PASS` | `ip tuntap show` |
-| Windows | `zig build -Doptimize=ReleaseFast` | `vpnclient.exe -s SERVER -H HUB -u USER -P PASS` | `Get-NetAdapter` |
+| macOS | `zig build -Drelease=true` | `sudo vpnclient -s SERVER -H HUB -u USER -P PASS` | `ifconfig \| grep utun` |
+| Linux | `zig build -Drelease=true` | `sudo vpnclient -s SERVER -H HUB -u USER -P PASS` | `ip tuntap show` |
+| Windows | `zig build -Drelease=true` | `vpnclient.exe -s SERVER -H HUB -u USER -P PASS` | `Get-NetAdapter` |

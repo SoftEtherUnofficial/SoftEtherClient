@@ -332,7 +332,7 @@ zig build
 1. Build shared library:
    ```bash
    cd SoftEtherZig
-   zig build -Dtarget=aarch64-linux-android -Doptimize=ReleaseFast
+   zig build -Dtarget=aarch64-linux-android -Drelease=true
    ```
 
 2. Copy `libsoftether.so` to Android project

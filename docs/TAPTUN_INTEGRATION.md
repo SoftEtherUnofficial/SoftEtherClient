@@ -425,28 +425,28 @@ packet_adapter_module.addImport("taptun", taptun_module);
 **Desktop (macOS/Linux)**:
 ```bash
 zig build                           # Uses taptun automatically
-zig build -Doptimize=ReleaseFast   # Optimized build
+zig build -Drelease=true   # Optimized build
 ```
 
 **iOS**:
 ```bash
 # TapTun supports iOS cross-compilation
 cd deps/taptun
-zig build ios-device -Doptimize=ReleaseFast     # iPhone/iPad
-zig build ios-sim-arm -Doptimize=ReleaseFast    # Simulator (M1)
-zig build ios-sim-x86 -Doptimize=ReleaseFast    # Simulator (Intel)
-zig build ios-all -Doptimize=ReleaseFast        # All iOS targets
+zig build ios-device -Drelease=true     # iPhone/iPad
+zig build ios-sim-arm -Drelease=true    # Simulator (M1)
+zig build ios-sim-x86 -Drelease=true    # Simulator (Intel)
+zig build ios-all -Drelease=true        # All iOS targets
 ```
 
 **Android**:
 ```bash
 # TapTun supports Android cross-compilation (all ABIs)
 cd deps/taptun
-zig build android-arm64 -Doptimize=ReleaseFast   # ARM64 (arm64-v8a)
-zig build android-arm -Doptimize=ReleaseFast     # ARMv7 (armeabi-v7a)
-zig build android-x86_64 -Doptimize=ReleaseFast  # Intel 64-bit
-zig build android-x86 -Doptimize=ReleaseFast     # Intel 32-bit
-zig build android-all -Doptimize=ReleaseFast     # All Android ABIs
+zig build android-arm64 -Drelease=true   # ARM64 (arm64-v8a)
+zig build android-arm -Drelease=true     # ARMv7 (armeabi-v7a)
+zig build android-x86_64 -Drelease=true  # Intel 64-bit
+zig build android-x86 -Drelease=true     # Intel 32-bit
+zig build android-all -Drelease=true     # All Android ABIs
 ```
 
 ## Benefits of TapTun Integration
@@ -545,7 +545,7 @@ sudo ./zig-out/bin/vpnclient --config config.json
 ```bash
 # Build TapTun for iOS
 cd SoftEtherZig/deps/taptun
-zig build ios-device -Doptimize=ReleaseFast
+zig build ios-device -Drelease=true
 
 # Build iOS framework
 cd ../../WorxVPN-iOS
@@ -560,7 +560,7 @@ cd ../../WorxVPN-iOS
 ```bash
 # Build TapTun for Android
 cd SoftEtherZig/deps/taptun
-zig build android-all -Doptimize=ReleaseFast
+zig build android-all -Drelease=true
 
 # Copy to Android project
 # TODO: Create Android Studio project, build APK, test on device
