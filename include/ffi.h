@@ -241,6 +241,16 @@ const char* mobile_vpn_get_version(void);
  */
 const char* mobile_vpn_get_build_info(void);
 
+/**
+ * Generate SoftEther password hash (SHA-0 based)
+ * @param username Username
+ * @param password Plain password
+ * @param output Buffer to receive base64-encoded hash
+ * @param output_size Size of output buffer (minimum 32 bytes recommended)
+ * @return 0 on success, negative error code on failure
+ */
+int mobile_vpn_generate_password_hash(const char* username, const char* password, char* output, uint64_t output_size);
+
 #ifdef __cplusplus
 }
 #endif

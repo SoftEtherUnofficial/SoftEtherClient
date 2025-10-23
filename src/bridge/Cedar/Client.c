@@ -105,7 +105,7 @@
 // Client Manager
 
 #include "CedarPch.h"
-#include "zig_bridge.h"
+#include "../zig_bridge.h"
 
 static CLIENT *client = NULL;
 static LISTENER *cn_listener = NULL;

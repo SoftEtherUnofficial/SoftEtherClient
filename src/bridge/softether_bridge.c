@@ -129,7 +129,18 @@ static const char* get_error_message_internal(int error_code) {
         case VPN_BRIDGE_ERROR_NOT_CONNECTED:  return "Not connected";
         case VPN_BRIDGE_ERROR_ALREADY_INIT:   return "Already initialized";
         case VPN_BRIDGE_ERROR_NOT_INIT:       return "Not initialized";
-        default:                               return "Unknown error";
+        
+        // SoftEther error codes (from Cedar.h)
+        case 9:  return "Authentication failed - Invalid username or password";
+        case 22: return "Device driver error - TAP adapter issue";
+        case 23: return "Offline mode - Network unavailable";
+        case 24: return "Server certificate verification failed";
+        
+        default: 
+            if (error_code > 0 && error_code < 100) {
+                return "Connection error - Check server and credentials";
+            }
+            return "Unknown error";
     }
 }
 
@@ -617,11 +628,23 @@ int vpn_bridge_connect(VpnBridgeClient* client) {
     // Set username
     StrCpy(auth->Username, sizeof(auth->Username), client->username);
     
+    // Log credentials (ONLY username and lengths, NEVER log actual password)
+    LOG_INFO("VPN", "🔐 AUTH: user='%s' (len=%zu), pwd_len=%zu, is_hashed=%d",
+             client->username, strlen(client->username), 
+             strlen(client->password), client->password_is_hashed);
+    
+    // Log password hash preview for visual verification (first 12 chars only, safe for base64)
+    if (client->password_is_hashed && strlen(client->password) > 0) {
+        char preview[16] = {0};
+        strncpy(preview, client->password, 12);
+        LOG_INFO("VPN", "🔑 Password hash preview: %s... (total len=%zu)", preview, strlen(client->password));
+    }
+    
     // Handle password: hash it if plain, or decode base64 if pre-hashed
     if (client->password_is_hashed) {
         // Password is already hashed (base64-encoded SHA1)
         // Decode base64 to get the 20-byte SHA1 hash
-        LOG_DEBUG("VPN", "Using pre-hashed password (base64-encoded)");
+        LOG_INFO("VPN", "🔑 Using pre-hashed password (base64-encoded)");
         
         // Decode base64 into secure buffer
         char decoded[256];
@@ -629,12 +652,14 @@ int vpn_bridge_connect(VpnBridgeClient* client) {
         
         int decoded_len = B64_Decode(decoded, client->password, strlen(client->password));
         
+        LOG_INFO("VPN", "🔑 Decoded %d bytes from base64 (expected 20 for SHA-0)", decoded_len);
+        
         if (decoded_len == 20) {
             // Copy the 20-byte hash to HashedPassword
             memcpy(auth->HashedPassword, decoded, 20);
-            LOG_DEBUG("VPN", "Using pre-hashed password (20 bytes decoded)");
+            LOG_INFO("VPN", "✓ Using pre-hashed password (20 bytes decoded)");
         } else {
-            LOG_WARN("VPN", "Base64 password hash decoded to %d bytes (expected 20), rehashing", decoded_len);
+            LOG_INFO("VPN", "⚠️ Base64 password hash decoded to %d bytes (expected 20), rehashing", decoded_len);
             // Fall back to hashing the password string itself
             HashPassword(auth->HashedPassword, client->username, client->password);
         }
@@ -768,100 +793,24 @@ int vpn_bridge_connect(VpnBridgeClient* client) {
     client->softether_session = session;
     account->ClientSession = session;
     
-    LOG_INFO("VPN", "Establishing connection to %s:%d", client->hostname, client->port);
+    LOG_INFO("VPN", "Session created - connecting in background (async mode for mobile)");
+    LOG_INFO("VPN", "Initial session state: ClientStatus=%u Halt=%d Err=%u", 
+             session->ClientStatus, session->Halt, session->Err);
     
-    // Wait for connection to establish (up to 30 seconds)
-    UINT64 start_time = Tick64();
-    bool connected = false;
-    int check_count = 0;
+    // For mobile/iOS: Return immediately, connection continues in background
+    // Status will be reported via callbacks when session->ClientStatus changes
+    client->status = VPN_STATUS_CONNECTING;
+    client->last_error = VPN_BRIDGE_SUCCESS;
     
-    while ((Tick64() - start_time) < 30000) {  // 30 second timeout
-        UINT status;
-        
-        // Safely read status with lock
-        Lock(session->lock);
-        {
-            status = session->ClientStatus;
-        }
-        Unlock(session->lock);
-        
-        // Only log every 5 seconds at DEBUG level
-        if (g_log_level >= LOG_LEVEL_DEBUG && check_count % 50 == 0) {
-            LOG_DEBUG("VPN", "Connecting... status=%u, elapsed=%llums", 
-                      status, (Tick64() - start_time));
-        }
-        check_count++;
-        
-        if (status == CLIENT_STATUS_ESTABLISHED) {
-            connected = true;
-            break;
-        }
-        
-        bool should_halt = false;
-        Lock(session->lock);
-        {
-            should_halt = session->Halt;
-        }
-        Unlock(session->lock);
-        
-        if (should_halt || status == CLIENT_STATUS_IDLE) {
-            LOG_ERROR("VPN", "Connection failed: Halt=%d, Status=%u", should_halt, status);
-            break;
-        }
-        
-        SleepThread(100);  // Check every 100ms
-    }
+    // Reset reconnection state on successful session creation
+    vpn_bridge_reset_reconnect_state(client);
     
-    if (connected) {
-        LOG_INFO("VPN", "Connection established successfully");
-        LOG_DEBUG("VPN", "DHCP and network configuration will be handled by packet adapter");
-        
-        // NOTE: DHCP is handled by the packet adapter (packet_adapter_macos.c)
-        // It will automatically send DHCP DISCOVER and handle the response
-        // No need for IPC connection - that's only for local connections
-        
-        client->status = VPN_STATUS_CONNECTED;
-        client->last_error = VPN_BRIDGE_SUCCESS;
-        client->connect_time = Tick64();
-        
-        // Reset reconnection state on successful connection
-        vpn_bridge_reset_reconnect_state(client);
-        
-        return VPN_BRIDGE_SUCCESS;
-    } else {
-        LOG_ERROR("VPN", "Connection failed or timeout after 30 seconds");
-        
-        // Update reconnection state
-        client->consecutive_failures++;
-        client->last_disconnect_time = get_current_time_ms();
-        client->current_backoff_seconds = vpn_bridge_calculate_backoff(client);
-        client->next_reconnect_time = client->last_disconnect_time + (client->current_backoff_seconds * 1000);
-        
-        if (client->reconnect_enabled && !client->user_requested_disconnect) {
-            if (client->max_reconnect_attempts == 0 || 
-                client->reconnect_attempt < client->max_reconnect_attempts) {
-                LOG_WARN("VPN", "Will retry in %u seconds", client->current_backoff_seconds);
-            }
-        }
-        
-        // Cleanup failed connection
-        StopSession(session);
-        ReleaseSession(session);
-        client->softether_session = NULL;
-        account->ClientSession = NULL;
-        
-        FreePacketAdapter(pa);
-        client->packet_adapter = NULL;
-        
-        DeleteLock(account->lock);
-        Free(account);
-        client->softether_account = NULL;
-        
-        client->status = VPN_STATUS_ERROR;
-        client->last_error = VPN_BRIDGE_ERROR_CONNECT_FAILED;
-        return VPN_BRIDGE_ERROR_CONNECT_FAILED;
-    }
+    return VPN_BRIDGE_SUCCESS;
 }
+
+/* ============================================
+ * Disconnection
+ * ============================================ */
 
 int vpn_bridge_disconnect(VpnBridgeClient* client) {
     SESSION* session;
@@ -940,9 +889,50 @@ VpnBridgeStatus vpn_bridge_get_status(const VpnBridgeClient* client) {
         Lock(s->lock);
         bool halted = s->Halt;
         UINT session_status = s->ClientStatus;
+        UINT session_err = s->Err;
         Unlock(s->lock);
         
+        // Debug: Log ALL status checks for iOS troubleshooting (no filtering)
+        // Status values: 0=CONNECTING, 1=NEGOTIATION, 2=AUTH, 3=ESTABLISHED, 4=RETRY, 5=IDLE
+        LOG_INFO("VPN", "Status check: ClientStatus=%u Halt=%d Err=%u bridge_status=%u", 
+                 session_status, halted, session_err, mutable_client->status);
+        
+        // Check for FATAL errors
+        if (halted && session_err != 0) {
+            LOG_INFO("VPN", "❌ Session HALTED with error: Err=%u (9=AUTH_FAILED, 22=DEVICE_ERROR)", session_err);
+            mutable_client->status = VPN_STATUS_ERROR;
+            mutable_client->last_error = session_err;
+            return VPN_STATUS_ERROR;
+        }
+        
+        // CRITICAL: Check if we're in RETRY state with an error
+        // ClientStatus=4 (RETRY) means connection attempt failed and waiting to retry
+        // If Err != 0 in RETRY state, the error is real (e.g., auth failure)
+        if (session_status == CLIENT_STATUS_RETRY && session_err != 0) {
+            LOG_INFO("VPN", "❌ Connection in RETRY state with Err=%u - authentication failed", session_err);
+            mutable_client->status = VPN_STATUS_ERROR;
+            mutable_client->last_error = session_err;
+            return VPN_STATUS_ERROR;
+        }
+        
+        // CRITICAL: Check if we're in ESTABLISHED state but with a persistent error
+        // If Err != 0 while ESTABLISHED, authentication/connection has failed
+        // Desktop client would have Err=0 when successfully connected
+        if (session_status == CLIENT_STATUS_ESTABLISHED && session_err != 0) {
+            LOG_INFO("VPN", "❌ Connection ESTABLISHED but with error Err=%u - authentication failed", session_err);
+            mutable_client->status = VPN_STATUS_ERROR;
+            mutable_client->last_error = session_err;
+            return VPN_STATUS_ERROR;
+        }
+        
         if (session_status == CLIENT_STATUS_ESTABLISHED) {
+            // Update client status to CONNECTED if it's still CONNECTING
+            if (mutable_client->status == VPN_STATUS_CONNECTING) {
+                LOG_INFO("VPN", "✓ Session ESTABLISHED with Err=0 - connection successful!");
+                mutable_client->status = VPN_STATUS_CONNECTED;
+                mutable_client->connect_time = Tick64();
+                mutable_client->last_error = VPN_BRIDGE_SUCCESS;
+            }
             return VPN_STATUS_CONNECTED;
         } else if (session_status == CLIENT_STATUS_CONNECTING ||
                    session_status == CLIENT_STATUS_NEGOTIATION ||
@@ -1140,6 +1130,7 @@ int vpn_bridge_generate_password_hash(
     }
 
     strcpy(output, encoded);
+    output[encoded_len] = '\0';  // Explicit null terminator for safety
 
     return VPN_BRIDGE_SUCCESS;
 }
@@ -1388,4 +1379,90 @@ int vpn_bridge_set_use_zig_adapter(VpnBridgeClient* client, int use_zig_adapter)
     
     return VPN_BRIDGE_SUCCESS;
 }
+
+/* ============================================
+ * Packet I/O for Mobile Integration
+ * ============================================ */
+
+int vpn_bridge_read_packet(
+    VpnBridgeClient* client,
+    uint8_t* buffer,
+    uint32_t buffer_len,
+    uint32_t timeout_ms
+) {
+    if (!client || !buffer || buffer_len == 0) {
+        return -1;
+    }
+    
+    if (client->status != VPN_STATUS_CONNECTED || !client->softether_session) {
+        return -1;
+    }
+    
+    SESSION* session = client->softether_session;
+    if (!session || !session->PacketAdapter) {
+        return -1;
+    }
+    
+    // Use the packet adapter's GetNextPacket function
+    void* packet_data = NULL;
+    UINT packet_size = session->PacketAdapter->GetNextPacket(session, &packet_data);
+    
+    if (packet_size == 0 || !packet_data) {
+        // No packet available
+        return 0;
+    }
+    
+    if (packet_size > buffer_len) {
+        // Packet too large for buffer
+        LOG_ERROR("VPN", "Packet size %u exceeds buffer size %u", packet_size, buffer_len);
+        Free(packet_data);
+        return -1;
+    }
+    
+    // Copy packet data to output buffer
+    memcpy(buffer, packet_data, packet_size);
+    Free(packet_data);
+    
+    return (int)packet_size;
+}
+
+int vpn_bridge_write_packet(
+    VpnBridgeClient* client,
+    const uint8_t* data,
+    uint32_t data_len
+) {
+    if (!client || !data || data_len == 0) {
+        return -1;
+    }
+    
+    if (client->status != VPN_STATUS_CONNECTED || !client->softether_session) {
+        return -1;
+    }
+    
+    SESSION* session = client->softether_session;
+    if (!session || !session->PacketAdapter) {
+        return -1;
+    }
+    
+    // Allocate packet buffer
+    void* packet_data = Malloc(data_len);
+    if (!packet_data) {
+        LOG_ERROR("VPN", "Failed to allocate packet buffer");
+        return -1;
+    }
+    
+    // Copy data to packet buffer
+    memcpy(packet_data, data, data_len);
+    
+    // Use the packet adapter's PutPacket function
+    bool result = session->PacketAdapter->PutPacket(session, packet_data, data_len);
+    
+    if (!result) {
+        Free(packet_data);
+        return -1;
+    }
+    
+    return 0;
+}
+
 

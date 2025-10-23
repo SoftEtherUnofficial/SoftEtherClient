@@ -488,6 +488,42 @@ uint32_t vpn_bridge_calculate_backoff(const VpnBridgeClient* client);
  */
 int vpn_bridge_reset_reconnect_state(VpnBridgeClient* client);
 
+/* ============================================
+ * Packet I/O for Mobile NEPacketTunnelProvider
+ * ============================================ */
+
+/**
+ * Read a packet from the VPN session (for sending to TUN/PacketTunnel).
+ * This extracts packets from the session's receive queue.
+ * 
+ * @param client     VPN client handle
+ * @param buffer     Buffer to receive packet data
+ * @param buffer_len Size of buffer in bytes
+ * @param timeout_ms Timeout in milliseconds (0 = non-blocking)
+ * @return Number of bytes read, 0 if no packet available, -1 on error
+ */
+int vpn_bridge_read_packet(
+    VpnBridgeClient* client,
+    uint8_t* buffer,
+    uint32_t buffer_len,
+    uint32_t timeout_ms
+);
+
+/**
+ * Write a packet to the VPN session (from TUN/PacketTunnel).
+ * This injects packets into the session's send queue.
+ * 
+ * @param client   VPN client handle
+ * @param data     Packet data to send
+ * @param data_len Length of packet data in bytes
+ * @return 0 on success, -1 on error
+ */
+int vpn_bridge_write_packet(
+    VpnBridgeClient* client,
+    const uint8_t* data,
+    uint32_t data_len
+);
+
 #ifdef __cplusplus
 }
 #endif

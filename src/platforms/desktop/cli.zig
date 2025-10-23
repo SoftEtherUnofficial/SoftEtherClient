@@ -508,6 +508,7 @@ pub fn main() !void {
         defer _ = c.vpn_bridge_cleanup();
 
         var hash_buffer: [128]u8 = undefined;
+        @memset(&hash_buffer, 0); // Zero-initialize to avoid garbage
         const result = c.vpn_bridge_generate_password_hash(username.ptr, password.ptr, &hash_buffer, hash_buffer.len);
 
         if (result != c.VPN_BRIDGE_SUCCESS) {
@@ -515,11 +516,9 @@ pub fn main() !void {
             std.process.exit(1);
         }
 
+        // Print as C string (stops at null terminator)
         const hash_len = std.mem.indexOfScalar(u8, &hash_buffer, 0) orelse hash_buffer.len;
-        for (hash_buffer[0..hash_len]) |byte| {
-            std.debug.print("{c}", .{byte});
-        }
-        std.debug.print("\n", .{});
+        std.debug.print("{s}\n", .{hash_buffer[0..hash_len]});
         return;
     }
 

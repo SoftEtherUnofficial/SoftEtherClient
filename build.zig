@@ -383,40 +383,6 @@ pub fn build(b: *std.Build) void {
 
     const mobile_ffi_step = b.step("mobile-ffi", "Build mobile FFI library with full VPN client (iOS/Android)");
     mobile_ffi_step.dependOn(&b.addInstallArtifact(mobile_ffi_lib, .{}).step);
-    // ============================================
-    // 4. FFI LIBRARY (Cross-Platform - Legacy)
-    // ============================================
-    const ffi_lib = b.addLibrary(.{
-        .name = "softether_ffi",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/ffi/ffi.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    ffi_lib.root_module.addImport("taptun", taptun_module);
-    ffi_lib.linkLibC();
-    ffi_lib.addIncludePath(b.path("include"));
-    ffi_lib.addIncludePath(b.path("src"));
-
-    // Add iOS SDK configuration for FFI
-    if (is_ios) {
-        ffi_lib.addIncludePath(b.path("src/bridge/ios_include"));
-        ffi_lib.linkFramework("Foundation");
-        ffi_lib.linkFramework("Security");
-    }
-
-    // Link system OpenSSL
-    ffi_lib.linkSystemLibrary("ssl");
-    ffi_lib.linkSystemLibrary("crypto");
-
-    b.installArtifact(ffi_lib);
-
-    // Also install the header
-    b.installFile("include/ffi.h", "include/ffi.h");
-
-    const ffi_step = b.step("ffi", "Build FFI library (cross-platform)");
-    ffi_step.dependOn(&b.addInstallArtifact(ffi_lib, .{}).step);
 
     // ============================================
     // 4. TESTS

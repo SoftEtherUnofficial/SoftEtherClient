@@ -3,6 +3,10 @@
 #include "logging.h"
 #include <string.h>
 
+#ifdef __APPLE__
+#include <os/log.h>
+#endif
+
 // Global log level (default: INFO)
 LogLevel g_log_level = LOG_LEVEL_INFO;
 
@@ -83,10 +87,36 @@ static const char* get_level_symbol(LogLevel level) {
 void log_message(LogLevel level, const char* tag, const char* fmt, ...) {
     if (level > g_log_level) return;
     
-    // Format: [SYMBOL] TAG: message
-    // Example: [●] VPN: Connection established
-    // Example: [⚠] DHCP: Retry attempt 3
+#ifdef __APPLE__
+    // iOS: Use os_log for unified logging system (appears in Console.app)
+    static os_log_t log_handle = NULL;
+    if (log_handle == NULL) {
+        log_handle = os_log_create("com.worxvpn.ios", "SoftEther");
+    }
     
+    // Format message with tag
+    char message[2048];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(message, sizeof(message), fmt, args);
+    va_end(args);
+    
+    // Map our log levels to os_log types
+    os_log_type_t os_type;
+    switch (level) {
+        case LOG_LEVEL_ERROR: os_type = OS_LOG_TYPE_ERROR; break;
+        case LOG_LEVEL_WARN:  os_type = OS_LOG_TYPE_DEFAULT; break;
+        case LOG_LEVEL_INFO:  os_type = OS_LOG_TYPE_DEFAULT; break; // Use DEFAULT so it always appears
+        case LOG_LEVEL_DEBUG: os_type = OS_LOG_TYPE_DEFAULT; break; // Use DEFAULT so it always appears
+        case LOG_LEVEL_TRACE: os_type = OS_LOG_TYPE_DEBUG; break;
+        default: os_type = OS_LOG_TYPE_DEFAULT;
+    }
+    
+    // Log with tag prefix
+    os_log_with_type(log_handle, os_type, "[%{public}s] %{public}s", tag, message);
+    
+#else
+    // Unix/Linux: Use fprintf to stderr
     const char* color = get_level_color(level);
     const char* symbol = get_level_symbol(level);
     
@@ -101,4 +131,5 @@ void log_message(LogLevel level, const char* tag, const char* fmt, ...) {
     
     fprintf(stderr, "\n");
     fflush(stderr);
+#endif
 }
