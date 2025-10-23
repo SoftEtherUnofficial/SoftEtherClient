@@ -30,6 +30,9 @@ void set_log_level(LogLevel level);
 const char* get_log_level_name(LogLevel level);
 LogLevel parse_log_level(const char* str);
 
+// Generic log function (used by Zig code)
+void log_message(LogLevel level, const char* tag, const char* fmt, ...);
+
 // Platform-specific logging functions (implemented in logging.c)
 void log_error_impl(const char* tag, const char* fmt, ...);
 void log_warn_impl(const char* tag, const char* fmt, ...);

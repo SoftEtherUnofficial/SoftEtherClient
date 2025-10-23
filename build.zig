@@ -216,6 +216,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "softether", .module = lib_module },
+                .{ .name = "taptun", .module = taptun_module },
             },
         }),
     });
@@ -248,20 +249,6 @@ pub fn build(b: *std.Build) void {
         });
     }
 
-    // Add TapTun wrapper module
-    const taptun_wrapper_module = b.createModule(.{
-        .root_source_file = b.path("src/bridge/taptun_wrapper.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    taptun_wrapper_module.addImport("taptun", taptun_module);
-
-    const taptun_wrapper = b.addObject(.{
-        .name = "taptun_wrapper",
-        .root_module = taptun_wrapper_module,
-    });
-    cli.addObject(taptun_wrapper);
-
     // Add Zig packet adapter (Phase 1) - compiled as static object
     const packet_adapter_module = b.createModule(.{
         .root_source_file = b.path("src/packet/adapter.zig"),
@@ -278,6 +265,19 @@ pub fn build(b: *std.Build) void {
     });
     packet_adapter_obj.addIncludePath(b.path("src/bridge"));
     cli.addObject(packet_adapter_obj);
+
+    // Add TapTun compatibility layer (legacy API → TapTun C FFI)
+    const taptun_compat_module = b.createModule(.{
+        .root_source_file = b.path("src/bridge/taptun_compat.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    taptun_compat_module.addImport("taptun", taptun_module);
+    const taptun_compat_obj = b.addObject(.{
+        .name = "taptun_compat",
+        .root_module = taptun_compat_module,
+    });
+    cli.addObject(taptun_compat_obj);
 
     // Phase 2.1: Add DHCP parser module (30-40% faster parsing)
     const dhcp_module = b.createModule(.{
