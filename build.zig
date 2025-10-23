@@ -46,6 +46,14 @@ pub fn build(b: *std.Build) void {
     // Add base flags
     c_flags_list.appendSlice(b.allocator, base_c_flags) catch unreachable;
 
+    // iOS needs explicit sysroot for standard C headers
+    if (target_os == .ios) {
+        // Get SDK path at build time
+        const ios_sdk = "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk";
+        c_flags_list.append(b.allocator, "-isysroot") catch unreachable;
+        c_flags_list.append(b.allocator, ios_sdk) catch unreachable;
+    }
+
     // Add Zig adapter flag if enabled
     if (use_zig_adapter) {
         c_flags_list.append(b.allocator, "-DUSE_ZIG_ADAPTER=1") catch unreachable;
@@ -334,7 +342,49 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cli.step);
 
     // ============================================
-    // 3. FFI LIBRARY (Cross-Platform)
+    // 3. MOBILE FFI LIBRARY (iOS/Android with full VPN client)
+    // ============================================
+    // Create a static library for mobile platforms that includes full SoftEther client
+    const mobile_ffi_lib = b.addLibrary(.{
+        .name = "softether_ffi",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ffi/mobile_ffi.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    // Add C sources
+    mobile_ffi_lib.addCSourceFiles(.{
+        .files = c_sources,
+        .flags = c_flags,
+    });
+
+    // Add all include paths
+    mobile_ffi_lib.addIncludePath(b.path("SoftEtherVPN/src"));
+    mobile_ffi_lib.addIncludePath(b.path("SoftEtherVPN/src/Mayaqua"));
+    mobile_ffi_lib.addIncludePath(b.path("SoftEtherVPN/src/Cedar"));
+    mobile_ffi_lib.addIncludePath(b.path("include"));
+    mobile_ffi_lib.addIncludePath(b.path("src"));
+    mobile_ffi_lib.addIncludePath(b.path("src/bridge/include"));
+
+    if (is_ios) {
+        mobile_ffi_lib.addIncludePath(b.path("src/bridge/ios_include"));
+        // No iOS frameworks needed - SoftEther VPN client uses standard POSIX APIs
+    }
+
+    mobile_ffi_lib.root_module.addImport("taptun", taptun_module);
+    mobile_ffi_lib.linkLibC();
+    mobile_ffi_lib.linkSystemLibrary("ssl");
+    mobile_ffi_lib.linkSystemLibrary("crypto");
+
+    b.installArtifact(mobile_ffi_lib);
+    b.installFile("include/ffi.h", "include/ffi.h");
+
+    const mobile_ffi_step = b.step("mobile-ffi", "Build mobile FFI library with full VPN client (iOS/Android)");
+    mobile_ffi_step.dependOn(&b.addInstallArtifact(mobile_ffi_lib, .{}).step);
+    // ============================================
+    // 4. FFI LIBRARY (Cross-Platform - Legacy)
     // ============================================
     const ffi_lib = b.addLibrary(.{
         .name = "softether_ffi",

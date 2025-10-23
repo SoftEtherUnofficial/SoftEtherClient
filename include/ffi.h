@@ -166,6 +166,15 @@ int mobile_vpn_write_packet(MobileVpnHandle handle, const uint8_t* data, uint64_
  */
 int mobile_vpn_get_network_info(MobileVpnHandle handle, MobileNetworkInfo* out_info);
 
+/**
+ * Set network configuration (called by platform after DHCP)
+ * Platform layer (iOS/Android) handles DHCP and calls this to store the result
+ * @param handle VPN handle
+ * @param info Pointer to network info structure with DHCP results
+ * @return 0 on success, negative error code on failure
+ */
+int mobile_vpn_set_network_info(MobileVpnHandle handle, const MobileNetworkInfo* info);
+
 // ============================================================================
 // Callbacks
 // ============================================================================
