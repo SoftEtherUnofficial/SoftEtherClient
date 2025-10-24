@@ -60,6 +60,17 @@
       "enum": ["auto", "ipv4", "ipv6", "dual"],
       "default": "auto"
     },
+    "mac_address": {
+      "type": ["string", "null"],
+      "description": "Virtual MAC address for VPN adapter. Use 'random' to generate new MAC on each connection, or specify MAC like '00:AC:12:34:56:78'. If not set, a random MAC is generated once and cached.",
+      "pattern": "^(random|([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})$",
+      "examples": ["random", "00:AC:11:22:33:44", null]
+    },
+    "randomize_mac": {
+      "type": "boolean",
+      "description": "Generate new random MAC address on each connection (privacy feature, like modern smartphones). Overrides cached MAC address.",
+      "default": false
+    },
     "static_ipv4": {
       "type": ["string", "null"],
       "description": "Static IPv4 address",

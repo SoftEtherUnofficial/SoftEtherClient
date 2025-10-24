@@ -15,6 +15,9 @@
   
   "ip_version": "auto",
   
+  "mac_address": null,
+  "randomize_mac": false,
+  
   "static_ipv4": null,
   "static_ipv4_netmask": null,
   "static_ipv4_gateway": null,
@@ -38,6 +41,13 @@
     "ip_version can be: auto, ipv4, ipv6, dual",
     "max_connection: 0 = server policy, 1-32 = force specific count",
     "max_reconnect_attempts: 0 = infinite retries",
+    "",
+    "MAC Address Options:",
+    "  mac_address: null (default) = Generate random MAC once and cache it",
+    "  mac_address: 'random' = Generate new random MAC on every connection",
+    "  mac_address: '00:AC:11:22:33:44' = Use specific MAC address",
+    "  randomize_mac: true = Always generate new MAC (privacy mode, like smartphones)",
+    "",
     "All fields are optional - CLI args and env vars will be used as fallback"
   ]
 }

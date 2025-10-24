@@ -130,6 +130,7 @@ static bool ConfigureTUNInterface(const char *device, uint32_t ip, uint32_t mask
            device, ip_str, mask_str, gw_str);
     fflush(stdout);
     
+    // Step 1: Configure interface with ifconfig
     // macOS TUN ifconfig format: ifconfig DEVICE LOCAL_IP PEER_IP netmask NETMASK up
     snprintf(cmd, sizeof(cmd), "ifconfig %s %s %s netmask %s up", 
              device, ip_str, gw_str, mask_str);
@@ -142,6 +143,40 @@ static bool ConfigureTUNInterface(const char *device, uint32_t ip, uint32_t mask
     
     printf("[ZigBridge] ✅ Interface configured successfully!\n");
     fflush(stdout);
+    
+    // Step 2: Add route to VPN network
+    // Calculate network address: ip & mask
+    uint32_t network = ip & mask;
+    char net_str[32];
+    snprintf(net_str, sizeof(net_str), "%u.%u.%u.%u",
+             (network >> 24) & 0xFF, (network >> 16) & 0xFF, 
+             (network >> 8) & 0xFF, network & 0xFF);
+    
+    // Calculate CIDR prefix length from netmask
+    int prefix = 0;
+    uint32_t temp_mask = mask;
+    while (temp_mask) {
+        prefix += (temp_mask & 1);
+        temp_mask >>= 1;
+    }
+    
+    printf("[ZigBridge] 🛣️  Adding route: %s/%d via %s\n", net_str, prefix, gw_str);
+    fflush(stdout);
+    
+    // Add route: route add -net NETWORK/PREFIX GATEWAY
+    snprintf(cmd, sizeof(cmd), "route add -net %s/%d %s 2>/dev/null", 
+             net_str, prefix, gw_str);
+    
+    ret = system(cmd);
+    if (ret != 0) {
+        printf("[ZigBridge] ⚠️  Failed to add route (may already exist): exit code %d\n", ret);
+        fflush(stdout);
+        // Don't return false - route may already exist, interface is still configured
+    } else {
+        printf("[ZigBridge] ✅ Route added successfully!\n");
+        fflush(stdout);
+    }
+    
     return true;
 }
 
@@ -159,7 +194,69 @@ typedef struct ZIG_BRIDGE_SESSION {
     // Auto-configuration
     bool ip_configured;
     char device_name[32];
+    
+    // MAC address caching
+    uint8_t cached_mac[6];
+    bool mac_initialized;
 } ZIG_BRIDGE_SESSION;
+
+// Global MAC address cache (persistent across connections)
+static uint8_t g_cached_mac[6] = {0};
+static bool g_mac_cached = false;
+
+// Generate or retrieve MAC address based on config
+static void GetOrGenerateMAC(SESSION *s, uint8_t *mac_out)
+{
+    // Check config for mac_address setting
+    // TODO: Parse from config when config system is integrated
+    bool randomize_mac = false; // From config: "randomize_mac"
+    const char *mac_address = NULL; // From config: "mac_address"
+    
+    // Priority 1: If randomize_mac is true, always generate new random MAC
+    if (randomize_mac) {
+        mac_out[0] = 0x00;
+        mac_out[1] = 0xAC; // Locally administered
+        Rand(mac_out + 2, 4);
+        printf("[ZigBridge] 🎲 Randomized MAC: %02X:%02X:%02X:%02X:%02X:%02X (randomize_mac=true)\n",
+               mac_out[0], mac_out[1], mac_out[2], mac_out[3], mac_out[4], mac_out[5]);
+        return;
+    }
+    
+    // Priority 2: If mac_address is set in config, use it
+    if (mac_address != NULL && StrCmp(mac_address, "random") == 0) {
+        // "random" keyword - generate new random MAC
+        mac_out[0] = 0x00;
+        mac_out[1] = 0xAC;
+        Rand(mac_out + 2, 4);
+        printf("[ZigBridge] 🎲 Random MAC: %02X:%02X:%02X:%02X:%02X:%02X (mac_address=random)\n",
+               mac_out[0], mac_out[1], mac_out[2], mac_out[3], mac_out[4], mac_out[5]);
+        return;
+    } else if (mac_address != NULL) {
+        // Parse MAC address from config (format: "00:AC:11:22:33:44")
+        // TODO: Add MAC parsing when config system is ready
+        printf("[ZigBridge] ⚙️  Using configured MAC: %s\n", mac_address);
+    }
+    
+    // Priority 3: Use cached MAC address (default behavior)
+    if (g_mac_cached) {
+        Copy(mac_out, g_cached_mac, 6);
+        printf("[ZigBridge] 📌 Using cached MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
+               mac_out[0], mac_out[1], mac_out[2], mac_out[3], mac_out[4], mac_out[5]);
+        return;
+    }
+    
+    // Priority 4: Generate new random MAC and cache it
+    mac_out[0] = 0x00;
+    mac_out[1] = 0xAC; // Locally administered
+    Rand(mac_out + 2, 4);
+    
+    // Cache for future connections
+    Copy(g_cached_mac, mac_out, 6);
+    g_mac_cached = true;
+    
+    printf("[ZigBridge] ✨ Generated and cached new MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
+           mac_out[0], mac_out[1], mac_out[2], mac_out[3], mac_out[4], mac_out[5]);
+}
 
 // PA_INIT callback - Initialize the adapter
 // Signature: typedef bool (PA_INIT)(SESSION *s);
@@ -245,7 +342,12 @@ static bool ZigBridgeInit(SESSION *s)
     printf("[ZigBridge] Building DHCP DISCOVER packet...\n");
     uint8_t *dhcp_buffer = Malloc(1024);
     size_t dhcp_size = 0;
-    uint8_t client_mac[6] = {0x00, 0xAC, 0x00, 0x00, 0x00, 0x01}; // Match TapTun default MAC
+    
+    // Get or generate MAC address (cached across connections by default)
+    uint8_t client_mac[6];
+    GetOrGenerateMAC(s, client_mac);
+    fflush(stdout);
+    
     uint32_t xid = (uint32_t)Tick64(); // Transaction ID from current time
     
     if (zig_build_dhcp_discover(client_mac, xid, dhcp_buffer, 1024, &dhcp_size)) {

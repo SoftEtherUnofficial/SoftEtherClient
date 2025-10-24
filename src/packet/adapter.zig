@@ -488,9 +488,24 @@ export fn zig_adapter_read_sync(adapter: *ZigPacketAdapter, buffer: [*]u8, buffe
     // Too short (1ms) = OS can't respond in time, DHCP fails
     // Too long (>100ms) = high latency
     // 50ms is optimal for DHCP while maintaining responsiveness
-    const ready_count = std.posix.poll(&fds, 50) catch {
+    const ready_count = std.posix.poll(&fds, 50) catch |err| {
+        logError("poll() failed: {}", .{err});
         return -1;
     };
+
+    // DEBUG: Log poll results every 100 calls to see what's happening
+    const debug_counter = struct {
+        var count: usize = 0;
+    };
+    debug_counter.count += 1;
+    if (debug_counter.count % 100 == 0) {
+        logInfo("🔍 DEBUG poll(): ready_count={d}, revents=0x{x}, fd={d}, POLLIN=0x{x}", .{
+            ready_count,
+            fds[0].revents,
+            fd,
+            @as(u32, std.posix.POLL.IN),
+        });
+    }
 
     // If no data available, return immediately (this is normal - polled frequently)
     if (ready_count == 0 or (fds[0].revents & std.posix.POLL.IN) == 0) {
@@ -517,6 +532,18 @@ export fn zig_adapter_read_sync(adapter: *ZigPacketAdapter, buffer: [*]u8, buffe
 
     // Check IP version (first nibble of IP packet)
     const ip_version = (temp_buf[ip_packet_start] >> 4) & 0x0F;
+
+    // DEBUG: Log packet details
+    if (ip_version == 4 and ip_packet_len >= 20) {
+        const ip_protocol = temp_buf[ip_packet_start + 9];
+        const protocol_name = switch (ip_protocol) {
+            1 => "ICMP",
+            6 => "TCP",
+            17 => "UDP",
+            else => "other",
+        };
+        logInfo("📥 Read IPv4 packet: protocol={s} ({d}), len={d} bytes", .{ protocol_name, ip_protocol, ip_packet_len });
+    }
 
     // **BUILD ETHERNET FRAME**: SoftEther expects [Ethernet header][IP packet]
     // Ethernet header: [6 bytes dest MAC][6 bytes src MAC][2 bytes EtherType]
