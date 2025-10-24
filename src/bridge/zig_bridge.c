@@ -69,6 +69,12 @@ static bool ParseDHCPOffer(const unsigned char *pkt, size_t len, uint32_t *out_i
     // Extract Server IP (siaddr) as potential gateway - offset 20-23
     uint32_t siaddr = (dhcp[20] << 24) | (dhcp[21] << 16) | (dhcp[22] << 8) | dhcp[23];
     
+    // DEBUG: Print DHCP header fields
+    printf("[ZigBridge] 🔍 DHCP Header: yiaddr=%u.%u.%u.%u, siaddr=%u.%u.%u.%u\n",
+           dhcp[16], dhcp[17], dhcp[18], dhcp[19],
+           dhcp[20], dhcp[21], dhcp[22], dhcp[23]);
+    fflush(stdout);
+    
     // Parse DHCP options for subnet mask and router
     *out_mask = 0xFFFF0000; // Default /16
     *out_gateway = siaddr;
@@ -89,9 +95,15 @@ static bool ParseDHCPOffer(const unsigned char *pkt, size_t len, uint32_t *out_i
         if (opt_type == 1 && opt_size == 4) {
             // Subnet mask
             *out_mask = (opt[i] << 24) | (opt[i+1] << 16) | (opt[i+2] << 8) | opt[i+3];
+            printf("[ZigBridge] 🔍 DHCP Option 1 (Subnet Mask): %u.%u.%u.%u\n",
+                   opt[i], opt[i+1], opt[i+2], opt[i+3]);
+            fflush(stdout);
         } else if (opt_type == 3 && opt_size >= 4) {
             // Router (gateway)
             *out_gateway = (opt[i] << 24) | (opt[i+1] << 16) | (opt[i+2] << 8) | opt[i+3];
+            printf("[ZigBridge] 🔍 DHCP Option 3 (Router): %u.%u.%u.%u\n",
+                   opt[i], opt[i+1], opt[i+2], opt[i+3]);
+            fflush(stdout);
         }
         
         i += opt_size;
