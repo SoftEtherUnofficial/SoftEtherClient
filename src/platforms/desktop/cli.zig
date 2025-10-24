@@ -922,7 +922,29 @@ pub fn main() !void {
                     continue; // Will retry in next iteration
                 };
 
-                std.debug.print("[✓] Reconnection successful!\n", .{});
+                // CRITICAL FIX: Wait for connection to actually establish or fail
+                // connect() is async - it just creates the session and returns
+                // We need to wait a few seconds for the session to actually connect
+                std.debug.print("[●] Waiting for connection to establish...\n", .{});
+                var wait_count: u32 = 0;
+                while (wait_count < 30 and g_running.load(.acquire)) : (wait_count += 1) { // Wait up to 15 seconds (30 * 500ms)
+                    std.Thread.sleep(500 * std.time.ns_per_ms);
+
+                    const current_status = vpn_client.getStatus();
+                    if (current_status == .connected) {
+                        std.debug.print("[✓] Reconnection successful!\n", .{});
+                        break;
+                    } else if (current_status == .error_state) {
+                        std.debug.print("[!] Connection failed with error\n", .{});
+                        break;
+                    }
+                    // Still connecting, keep waiting
+                }
+
+                // If still not connected after 15 seconds, let the loop detect it
+                if (!vpn_client.isConnected()) {
+                    std.debug.print("[!] Connection timed out after 15 seconds\n", .{});
+                }
             }
         }
     }

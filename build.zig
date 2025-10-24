@@ -57,6 +57,7 @@ pub fn build(b: *std.Build) void {
     // Add Zig adapter flag if enabled
     if (use_zig_adapter) {
         c_flags_list.append(b.allocator, "-DUSE_ZIG_ADAPTER=1") catch unreachable;
+        c_flags_list.append(b.allocator, "-DBRIDGE_C=1") catch unreachable; // Enable zig_bridge.c
     }
 
     if (is_ios) {
@@ -144,7 +145,7 @@ pub fn build(b: *std.Build) void {
         "SoftEtherVPN/src/Cedar/SecureNAT.c",
         "SoftEtherVPN/src/Cedar/NullLan.c",
         "SoftEtherVPN/src/Cedar/Bridge.c",
-        "SoftEtherVPN/src/Cedar/BridgeUnix.c",
+        // BridgeUnix.c excluded when using Zig adapter (provides raw Eth functions we don't need)
         "SoftEtherVPN/src/Cedar/Nat.c",
         "SoftEtherVPN/src/Cedar/UdpAccel.c",
         "SoftEtherVPN/src/Cedar/Database.c",
@@ -169,13 +170,13 @@ pub fn build(b: *std.Build) void {
         "SoftEtherVPN/src/Cedar/WaterMark.c",
     };
 
-    // Build C sources list - conditionally include C packet adapter
+    // Build C sources list - conditionally include platform-specific files
     const c_sources = if (use_zig_adapter) blk: {
-        // Pure Zig adapter - exclude C packet adapter (2667 lines deleted!)
+        // Pure Zig adapter - exclude C packet adapter and BridgeUnix (Zig handles device I/O)
         break :blk &common_sources;
     } else blk: {
-        // Legacy C adapter - include it
-        break :blk &common_sources ++ &[_][]const u8{packet_adapter_file.?};
+        // Legacy C adapter - include packet adapter AND BridgeUnix for raw Ethernet
+        break :blk &common_sources ++ &[_][]const u8{ packet_adapter_file.?, "SoftEtherVPN/src/Cedar/BridgeUnix.c" };
     };
 
     // NativeStack.c uses system() which is unavailable on iOS

@@ -484,9 +484,11 @@ export fn zig_adapter_read_sync(adapter: *ZigPacketAdapter, buffer: [*]u8, buffe
         },
     };
 
-    // Poll with 1ms timeout - optimal balance for macOS TUN
-    // 0ms causes high latency, 1ms works well
-    const ready_count = std.posix.poll(&fds, 1) catch {
+    // Poll with 50ms timeout - gives OS time to process DHCP and generate responses
+    // Too short (1ms) = OS can't respond in time, DHCP fails
+    // Too long (>100ms) = high latency
+    // 50ms is optimal for DHCP while maintaining responsiveness
+    const ready_count = std.posix.poll(&fds, 50) catch {
         return -1;
     };
 
@@ -720,6 +722,13 @@ export fn zig_adapter_get_device_name(adapter: *ZigPacketAdapter, out_buffer: [*
     out_buffer[copy_len] = 0; // Null terminate
 
     return copy_len;
+}
+
+/// Get device name as C string pointer (simple wrapper)
+export fn zig_adapter_get_device_name_ptr(adapter: *ZigPacketAdapter) [*]const u8 {
+    const device_name = adapter.tun_adapter.getDeviceName();
+    // Note: device_name is null-terminated from TUN/TAP device
+    return device_name.ptr;
 }
 
 /// Get learned IP address from TapTun translator

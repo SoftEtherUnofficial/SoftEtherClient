@@ -11,24 +11,19 @@ const taptun_ffi = @import("taptun").c_ffi;
 
 const std = @import("std");
 
-// Note: These were never part of TapTun's official C FFI
-// They were custom additions in your wrapper
-// You need to either:
-// 1. Add them to TapTun's c_ffi.zig, OR
-// 2. Update C code to not use them
+// Note: These functions are iOS-specific and only used when NOT using Zig adapter
+// Desktop Zig adapter (zig_bridge.c) doesn't call these
+// They're only compiled for legacy C adapter support
+// softether_bridge.c checks use_zig_adapter at runtime and skips these calls
 
-// Placeholder exports so build doesn't fail
+// Stub implementations for linking (never actually called in Zig adapter mode)
 export fn taptun_get_learned_ip(handle: ?*anyopaque) callconv(.c) u32 {
     _ = handle;
-    return 0; // TODO: Implement or remove from C code
+    return 0;
 }
 
 export fn taptun_get_gateway_mac(handle: ?*anyopaque, out_mac: [*]u8) callconv(.c) bool {
     _ = handle;
     _ = out_mac;
-    return false; // TODO: Implement or remove from C code
-}
-
-export fn NewZigPacketAdapter() callconv(.c) ?*anyopaque {
-    return null; // TODO: Implement or remove from C code
+    return false;
 }
