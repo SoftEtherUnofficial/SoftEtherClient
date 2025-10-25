@@ -5,8 +5,13 @@
 // - Packet pooling (zero-copy where possible)
 // - Batch processing
 // Threading removed - C bridge uses sync functions directly
+//
+// Platform Support (compile-time):
+// - macOS/Linux: TUN device I/O (this file)
+// - iOS: PacketFlow queue bridge (ios_adapter.zig)
 
 const std = @import("std");
+const builtin = @import("builtin");
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 const Packet = @import("packet.zig").Packet;
 const PacketPool = @import("packet.zig").PacketPool;
@@ -14,25 +19,48 @@ const MAX_PACKET_SIZE = @import("packet.zig").MAX_PACKET_SIZE;
 const checksum = @import("checksum.zig");
 const taptun = @import("taptun");
 
-// C FFI for logging only
-const c = @cImport({
-    @cInclude("logging.h");
-});
+// iOS adapter module (compile-time conditional)
+// For iOS builds, this imports the iOS-specific adapter
+// For non-iOS builds, this is just an empty struct (optimized away at compile-time)
+const IosAdapterModule = if (builtin.os.tag == .ios) struct {
+    pub const IosAdapter = @import("ios_adapter").IosAdapter;
+} else struct {
+    pub const IosAdapter = struct {};
+};
+const is_ios = builtin.os.tag == .ios;
 
-// Logging wrapper functions (using C logging system)
+// C FFI for logging (macOS only - iOS uses std.log)
+const c = if (!is_ios) @cImport({
+    @cInclude("logging.h");
+}) else struct {}; // Empty struct for iOS
+
+// Logging wrapper functions
 fn logDebug(comptime fmt: []const u8, args: anytype) void {
+    if (is_ios) {
+        // iOS: Use std.log (output via NSLog/os_log in Swift)
+        std.log.debug(fmt, args);
+        return;
+    }
     var buf: [1024]u8 = undefined;
     const msg = std.fmt.bufPrintZ(&buf, fmt, args) catch return;
     c.log_message(c.LOG_LEVEL_DEBUG, "ADAPTER", "%s", msg.ptr);
 }
 
 fn logInfo(comptime fmt: []const u8, args: anytype) void {
+    if (is_ios) {
+        std.log.info(fmt, args);
+        return;
+    }
     var buf: [1024]u8 = undefined;
     const msg = std.fmt.bufPrintZ(&buf, fmt, args) catch return;
     c.log_message(c.LOG_LEVEL_INFO, "ADAPTER", "%s", msg.ptr);
 }
 
 fn logError(comptime fmt: []const u8, args: anytype) void {
+    if (is_ios) {
+        std.log.err(fmt, args);
+        return;
+    }
     var buf: [1024]u8 = undefined;
     const msg = std.fmt.bufPrintZ(&buf, fmt, args) catch return;
     c.log_message(c.LOG_LEVEL_ERROR, "ADAPTER", "%s", msg.ptr);
@@ -72,12 +100,19 @@ const PacketBuffer = struct {
 /// High-performance packet adapter for SoftEther VPN
 /// Uses TapTun for device I/O and L2↔L3 translation
 /// Adds performance layer: queues, pooling, adaptive scaling, metrics
+///
+/// Platform-specific behavior (compile-time):
+/// - macOS/Linux: TUN device + queues (this struct)
+/// - iOS: Wraps ios_adapter.IosAdapter (no TUN device)
 pub const ZigPacketAdapter = struct {
     allocator: std.mem.Allocator,
     config: Config,
 
-    // TapTun high-level adapter (handles device + translation)
-    tun_adapter: *taptun.TunAdapter,
+    // Platform-specific adapter
+    // macOS/Linux: TapTun high-level adapter (handles device + translation)
+    // iOS: IosAdapter (queue bridge only, no device)
+    tun_adapter: if (!is_ios) *taptun.TunAdapter else void,
+    ios_adapter: if (is_ios) *IosAdapterModule.IosAdapter else void,
 
     // SoftEther-specific performance layer
     // Lock-free queues (heap-allocated to avoid large stack/struct size)
@@ -157,13 +192,33 @@ pub const ZigPacketAdapter = struct {
         errdefer allocator.destroy(self);
         logDebug("Allocated adapter struct at {*}", .{self});
 
-        // Initialize packet pool
+        if (is_ios) {
+            // iOS mode: Create ios_adapter (no TUN device)
+            logInfo("iOS mode: Creating iOS adapter (no TUN device)", .{});
+            const ios_adp = try IosAdapterModule.IosAdapter.init(allocator);
+            errdefer ios_adp.deinit();
+
+            self.* = .{
+                .allocator = allocator,
+                .config = config,
+                .tun_adapter = {},
+                .ios_adapter = ios_adp,
+                .recv_queue = undefined, // iOS uses its own queues
+                .send_queue = undefined,
+                .packet_pool = undefined,
+                .active_buffers = undefined,
+                .stats = .{},
+            };
+
+            logInfo("iOS adapter initialized", .{});
+            return self;
+        }
+
+        // macOS/Linux mode: Create TUN device adapter (existing code)
         logDebug("Creating packet pool (size={d})", .{config.packet_pool_size});
         var packet_pool = try PacketPool.init(allocator, config.packet_pool_size, MAX_PACKET_SIZE);
         errdefer packet_pool.deinit();
         logDebug("Packet pool created", .{});
-
-        // Removed adaptive buffer manager initialization (never used to resize)
 
         // Allocate ring buffers with runtime sizes from config
         logDebug("Allocating recv_queue (size={d})", .{config.recv_queue_size});
@@ -202,6 +257,7 @@ pub const ZigPacketAdapter = struct {
             .allocator = allocator,
             .config = config,
             .tun_adapter = tun_adapter,
+            .ios_adapter = {},
             .recv_queue = recv_queue,
             .send_queue = send_queue,
             .packet_pool = packet_pool,
@@ -215,8 +271,14 @@ pub const ZigPacketAdapter = struct {
 
     /// Clean up resources
     pub fn deinit(self: *ZigPacketAdapter) void {
-        // Removed stop() call (no threads to stop)
+        if (is_ios) {
+            // iOS mode: Clean up ios_adapter
+            self.ios_adapter.deinit();
+            self.allocator.destroy(self);
+            return;
+        }
 
+        // macOS/Linux mode: Clean up TUN adapter (existing code)
         // Close TapTun adapter (handles device + translator cleanup)
         self.tun_adapter.close();
 
@@ -302,6 +364,8 @@ pub const ZigPacketAdapter = struct {
     /// Call this regularly (e.g., in read/write loops) to keep connection alive
     /// Sends GARP every 10 seconds to prevent ARP cache staleness
     pub fn maintainConnection(self: *ZigPacketAdapter) void {
+        if (is_ios) return; // iOS doesn't use GARP keepalive
+
         const now: i64 = @intCast(std.time.nanoTimestamp());
 
         // Check if it's time to send GARP
@@ -383,6 +447,7 @@ pub const ZigPacketAdapter = struct {
     /// Configure VPN routing (replaces C bridge route management)
     /// Call after DHCP assigns VPN gateway
     pub fn configureRouting(self: *ZigPacketAdapter, vpn_gateway: [4]u8, vpn_server: ?[4]u8) !void {
+        if (is_ios) return; // iOS routing configured by NEPacketTunnelProvider
         try self.tun_adapter.configureVpnRouting(vpn_gateway, vpn_server);
     }
 
@@ -440,6 +505,12 @@ export fn zig_adapter_create(c_config: *const CConfig) ?*ZigPacketAdapter {
         return null;
     };
     logInfo("Adapter created successfully at {*}", .{adapter});
+
+    // iOS: Set global adapter for FFI functions
+    if (is_ios) {
+        global_ios_adapter = adapter;
+    }
+
     return adapter;
 }
 
@@ -464,6 +535,13 @@ export fn zig_adapter_start(adapter: *ZigPacketAdapter) bool {
 /// **CRITICAL**: TUN devices return raw IP packets, but SoftEther expects Ethernet frames!
 /// We must ADD a 14-byte Ethernet header to each IP packet read from TUN.
 export fn zig_adapter_read_sync(adapter: *ZigPacketAdapter, buffer: [*]u8, buffer_len: usize) isize {
+    if (is_ios) {
+        // iOS implementation: dequeue from incoming queue (Swift → adapter → SoftEther)
+        // These are already Ethernet frames (IP packets translated via ios_adapter.injectPacket)
+        return 0; // iOS uses push model via putPacket, not pull via read
+    }
+
+    // macOS implementation: read from TUN device
     // Maintain connection with periodic GARP
     adapter.maintainConnection();
 
@@ -584,6 +662,13 @@ export fn zig_adapter_read_sync(adapter: *ZigPacketAdapter, buffer: [*]u8, buffe
 /// Returns number of packets written
 /// PERFORMANCE: Uses vectored I/O (writev) with dynamic batch sizing
 export fn zig_adapter_write_sync(adapter: *ZigPacketAdapter) isize {
+    if (is_ios) {
+        // iOS implementation: queue packets for retrieval via getOutgoingPacket
+        // For now, return 0 (iOS uses different flow)
+        return 0;
+    }
+
+    // macOS implementation: write to TUN device
     // Maintain connection with periodic GARP
     adapter.maintainConnection();
 
@@ -738,7 +823,12 @@ export fn zig_adapter_print_stats(adapter: *ZigPacketAdapter) void {
     stats.print();
 }
 
+// ============================================================================
+// macOS-ONLY FFI Exports (TUN device specific)
+// ============================================================================
+
 export fn zig_adapter_get_device_name(adapter: *ZigPacketAdapter, out_buffer: [*]u8, buffer_len: usize) usize {
+    if (is_ios) return 0; // iOS has no TUN device name
     if (buffer_len == 0) return 0;
 
     const device_name = adapter.tun_adapter.getDeviceName();
@@ -751,6 +841,7 @@ export fn zig_adapter_get_device_name(adapter: *ZigPacketAdapter, out_buffer: [*
 
 /// Get device name as C string pointer (simple wrapper)
 export fn zig_adapter_get_device_name_ptr(adapter: *ZigPacketAdapter) [*]const u8 {
+    if (is_ios) return "ios-no-device";
     const device_name = adapter.tun_adapter.getDeviceName();
     // Note: device_name is null-terminated from TUN/TAP device
     return device_name.ptr;
@@ -758,11 +849,13 @@ export fn zig_adapter_get_device_name_ptr(adapter: *ZigPacketAdapter) [*]const u
 
 /// Get learned IP address from TapTun translator
 export fn zig_adapter_get_learned_ip(adapter: *ZigPacketAdapter) u32 {
+    if (is_ios) return 0; // iOS gets IP via getDhcpInfo
     return adapter.tun_adapter.getLearnedIp() orelse 0;
 }
 
 /// Get gateway MAC address from TapTun translator
 export fn zig_adapter_get_gateway_mac(adapter: *ZigPacketAdapter, out_mac: [*]u8) bool {
+    if (is_ios) return false; // iOS doesn't expose gateway MAC
     if (adapter.tun_adapter.getGatewayMac()) |mac| {
         @memcpy(out_mac[0..6], &mac);
         return true;
@@ -773,11 +866,13 @@ export fn zig_adapter_get_gateway_mac(adapter: *ZigPacketAdapter, out_mac: [*]u8
 /// Set gateway IP in translator (MAC will be learned from ARP/packets)
 /// ip_network_order: Gateway IP in network byte order (big-endian)
 export fn zig_adapter_set_gateway(adapter: *ZigPacketAdapter, ip_network_order: u32) void {
+    if (is_ios) return; // iOS doesn't configure gateway via adapter
     adapter.tun_adapter.translator.setGateway(ip_network_order);
 }
 
 /// Set gateway MAC address (called from C when gateway MAC is learned via ARP)
 export fn zig_adapter_set_gateway_mac(adapter: *ZigPacketAdapter, mac: [*c]const u8) void {
+    if (is_ios) return; // iOS doesn't configure gateway via adapter
     var mac_array: [6]u8 = undefined;
     @memcpy(&mac_array, mac[0..6]);
     adapter.tun_adapter.translator.gateway_mac = mac_array;
@@ -796,6 +891,8 @@ export fn zig_adapter_configure_interface(
     peer_ip: u32,
     netmask: u32,
 ) bool {
+    if (is_ios) return false; // iOS interface configured by PacketTunnelProvider
+
     // Convert IPs to string (big-endian network byte order)
     var local_str: [16]u8 = undefined;
     var peer_str: [16]u8 = undefined;
@@ -954,3 +1051,83 @@ export fn zig_adapter_is_dhcp_enabled(adapter: *ZigPacketAdapter) bool {
     // Check if adapter has acquired an IP address via DHCP
     return zig_adapter_get_learned_ip(adapter) != 0;
 }
+
+// ============================================================================
+// iOS-SPECIFIC FFI EXPORTS (only compiled for iOS)
+// ============================================================================
+
+/// Inject packet from iOS NEPacketTunnelFlow (L3 IP packet → adapter queue)
+/// Returns 0 on success, -1 on error
+export fn ios_adapter_inject_packet(data: [*]const u8, length: u32) c_int {
+    if (!is_ios) return -1; // Not iOS build
+
+    // Get global adapter (TODO: pass adapter handle explicitly)
+    const adapter = global_ios_adapter orelse return -1;
+
+    const packet = data[0..length];
+    const success = adapter.ios_adapter.*.injectPacket(packet) catch return -1;
+
+    return if (success) 0 else -1;
+}
+
+/// Get outgoing packet for iOS NEPacketTunnelFlow (adapter queue → L3 IP packet)
+/// Returns packet length (>0), 0 if no packet, -1 on error
+export fn ios_adapter_get_outgoing_packet(buffer: [*]u8, buffer_size: u32) c_int {
+    if (!is_ios) return -1; // Not iOS build
+
+    const adapter = global_ios_adapter orelse return -1;
+
+    const buf = buffer[0..buffer_size];
+    const length = adapter.ios_adapter.*.getOutgoingPacket(buf) orelse return 0;
+
+    return @intCast(length);
+}
+
+/// Get DHCP configuration from iOS adapter
+/// Returns 0 on success with valid DHCP data, -1 if not available
+export fn ios_adapter_get_dhcp_info(
+    client_ip: *u32,
+    subnet_mask: *u32,
+    gateway: *u32,
+    dns_server1: *u32,
+    dns_server2: *u32,
+) c_int {
+    if (!is_ios) return -1; // Not iOS build
+
+    const adapter = global_ios_adapter orelse return -1;
+
+    const dhcp = adapter.ios_adapter.*.getDhcpInfo() orelse return -1;
+
+    client_ip.* = dhcp.client_ip;
+    subnet_mask.* = dhcp.subnet_mask;
+    gateway.* = dhcp.gateway;
+    dns_server1.* = dhcp.dns_server1;
+    dns_server2.* = dhcp.dns_server2;
+
+    return 0;
+}
+
+/// Get iOS adapter statistics
+export fn ios_adapter_get_stats(
+    rx_packets: *u64,
+    tx_packets: *u64,
+    rx_bytes: *u64,
+    tx_bytes: *u64,
+    drops_in: *u64,
+    drops_out: *u64,
+) void {
+    if (!is_ios) return;
+
+    const adapter = global_ios_adapter orelse return;
+    const stats = adapter.ios_adapter.*.getStats();
+
+    rx_packets.* = stats.packets_received;
+    tx_packets.* = stats.packets_sent;
+    rx_bytes.* = stats.bytes_received;
+    tx_bytes.* = stats.bytes_sent;
+    drops_in.* = stats.queue_drops_in;
+    drops_out.* = stats.queue_drops_out;
+}
+
+// Global adapter for iOS (set by zig_adapter_create on iOS)
+var global_ios_adapter: ?*ZigPacketAdapter = null;

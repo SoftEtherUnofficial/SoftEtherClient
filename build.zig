@@ -48,10 +48,21 @@ pub fn build(b: *std.Build) void {
 
     // iOS needs explicit sysroot for standard C headers
     if (target_os == .ios) {
-        // Get SDK path at build time
-        const ios_sdk = "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk";
+        // Detect simulator vs device (simulator has .abi == .simulator)
+        const ios_sdk = if (target.result.abi == .simulator)
+            "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
+        else
+            "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk";
+
+        // Add sysroot flag
         c_flags_list.append(b.allocator, "-isysroot") catch unreachable;
         c_flags_list.append(b.allocator, ios_sdk) catch unreachable;
+
+        // Explicitly add SDK include paths for standard headers
+        const sdk_include = b.allocator.alloc(u8, ios_sdk.len + "/usr/include".len) catch unreachable;
+        _ = std.fmt.bufPrint(sdk_include, "{s}/usr/include", .{ios_sdk}) catch unreachable;
+        c_flags_list.append(b.allocator, "-I") catch unreachable;
+        c_flags_list.append(b.allocator, sdk_include) catch unreachable;
     }
 
     // Add Zig adapter flag if enabled
@@ -356,11 +367,20 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    // Add C sources
+    // Add C sources (SoftEther core + mobile FFI wrapper)
     mobile_ffi_lib.addCSourceFiles(.{
         .files = c_sources,
         .flags = c_flags,
     });
+
+    // Add mobile_ffi_c.c for iOS (connection management)
+    // Packet I/O is now in adapter.zig (ios_adapter_* functions)
+    if (is_ios) {
+        mobile_ffi_lib.addCSourceFile(.{
+            .file = b.path("src/ffi/mobile_ffi_c.c"),
+            .flags = c_flags,
+        });
+    }
 
     // Add all include paths
     mobile_ffi_lib.addIncludePath(b.path("SoftEtherVPN/src"));
@@ -376,6 +396,36 @@ pub fn build(b: *std.Build) void {
     }
 
     mobile_ffi_lib.root_module.addImport("taptun", taptun_module);
+
+    // Add Zig packet adapter module for iOS (provides ios_adapter_* FFI exports)
+    if (is_ios) {
+        // Create ios_adapter module first
+        const ios_adapter_module = b.createModule(.{
+            .root_source_file = b.path("src/platforms/ios/ios_adapter.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        ios_adapter_module.addImport("taptun", taptun_module);
+
+        // Create main adapter module with ios_adapter import
+        const mobile_adapter_module = b.createModule(.{
+            .root_source_file = b.path("src/packet/adapter.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        mobile_adapter_module.addImport("taptun", taptun_module);
+        mobile_adapter_module.addImport("ios_adapter", ios_adapter_module);
+
+        const mobile_adapter_obj = b.addObject(.{
+            .name = "zig_ios_adapter",
+            .root_module = mobile_adapter_module,
+        });
+        mobile_adapter_obj.addIncludePath(b.path("src/bridge"));
+        mobile_ffi_lib.addObject(mobile_adapter_obj);
+
+        std.debug.print("iOS build: Added Zig iOS adapter module\n", .{});
+    }
+
     mobile_ffi_lib.linkLibC();
     mobile_ffi_lib.linkSystemLibrary("ssl");
     mobile_ffi_lib.linkSystemLibrary("crypto");

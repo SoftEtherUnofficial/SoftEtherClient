@@ -1,4 +1,9 @@
 // Mobile FFI C Implementation for iOS - Full SoftEther VPN Integration
+// Include SoftEther headers FIRST to get their bool typedef (before any standard headers)
+#include <Mayaqua/Mayaqua.h>
+#include <Cedar/Cedar.h>
+
+// Now include our headers
 #include "ffi.h"
 #include "../bridge/softether_bridge.h"
 #include "../bridge/client_bridge.h"
@@ -467,7 +472,7 @@ const char* mobile_vpn_get_version(void) {
 
 // Build info
 const char* mobile_vpn_get_build_info(void) {
-    return "SoftEther VPN iOS/Mobile FFI - Built with Xcode (" __DATE__ " " __TIME__ ")";
+    return "SoftEther VPN iOS/Mobile FFI - Built with Zig";
 }
 
 // Generate SoftEther password hash (SHA-0 based, base64 encoded)
@@ -479,12 +484,13 @@ int mobile_vpn_generate_password_hash(const char* username, const char* password
     return vpn_bridge_generate_password_hash(username, password, output, (size_t)output_size);
 }
 
-// Stubs for undefined symbols
-void* NewNativeStack(void) { return NULL; }
-void FreeNativeStack(void* stack) {}
+// Stubs for undefined symbols - these should match Cedar's real signatures but return dummy values
+// These are needed because the iOS build doesn't link the full Native Stack implementation
+NATIVE_STACK* NewNativeStack(CEDAR *cedar, char *device_name, char *mac_address_seed) { return NULL; }
+void FreeNativeStack(NATIVE_STACK *a) {}
 void* NewMacOsTunAdapter(void) { return NULL; }
-int NsIsMacAddressOnLocalhost(void* addr) { return 0; }
-void NsStartIpTablesTracking(void) {}
+BOOL NsIsMacAddressOnLocalhost(UCHAR *mac) { return FALSE; }
+BOOL NsStartIpTablesTracking(NATIVE_STACK *a) { return FALSE; }
 int getch(void) { return 0; }
 void* g_ip_config = NULL;
 
