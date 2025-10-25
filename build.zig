@@ -117,6 +117,7 @@ pub fn build(b: *std.Build) void {
         tick64_file,
         // packet_adapter_file conditionally added in c_sources below
         "src/bridge/zig_packet_adapter.c", // Zig adapter wrapper (NEW: 5x faster than C bridge)
+        // packet_utils.c only for iOS (macOS has these in packet_adapter_macos.c)
         "src/bridge/logging.c", // Phase 2: Log level system
         "src/bridge/security_utils.c", // Phase 3: Secure password handling
         "src/bridge/client_bridge.c", // NEW: Zig adapter bridge (replaces VLanGetPacketAdapter)
@@ -183,9 +184,17 @@ pub fn build(b: *std.Build) void {
 
     // Build C sources list - conditionally include platform-specific files
     const c_sources = if (use_zig_adapter) blk: {
-        // Pure Zig adapter - still need packet_adapter_macos.c for DHCP utilities (BuildDhcpDiscover, etc.)
-        // but exclude BridgeUnix (Zig handles device I/O)
-        break :blk &common_sources ++ &[_][]const u8{packet_adapter_file};
+        if (is_ios) {
+            // iOS: Pure Zig ios_adapter (no TUN device, queue-based)
+            // No C packet adapter needed - ios_adapter.zig handles everything
+            // Include packet_utils.c for DHCP/ARP builders (packet_adapter_ios.c doesn't have them)
+            break :blk &common_sources ++ &[_][]const u8{"src/bridge/packet_utils.c"};
+        } else {
+            // macOS: Still need packet_adapter_macos.c for DHCP utilities (BuildDhcpDiscover, etc.)
+            // but exclude BridgeUnix (Zig handles device I/O)
+            // packet_adapter_macos.c already has DHCP/ARP builders, so no packet_utils.c needed
+            break :blk &common_sources ++ &[_][]const u8{packet_adapter_file};
+        }
     } else blk: {
         // Legacy C adapter - include packet adapter AND BridgeUnix for raw Ethernet
         break :blk &common_sources ++ &[_][]const u8{ packet_adapter_file, "SoftEtherVPN/src/Cedar/BridgeUnix.c" };
