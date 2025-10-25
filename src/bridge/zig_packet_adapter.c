@@ -140,6 +140,10 @@ static bool ZigAdapterInit(SESSION* s) {
     memset(ctx->gateway_mac, 0, sizeof(ctx->gateway_mac));
     memset(ctx->arp_reply_to_mac, 0, sizeof(ctx->arp_reply_to_mac));
     
+    // Initialize timestamps for DHCP timing
+    ctx->connection_start_time = Tick64();
+    ctx->last_dhcp_send_time = 0;  // Will be set on first DISCOVER
+    
     // Initialize packet counters
     ctx->put_arp_count = 0;
     ctx->put_dhcp_count = 0;
@@ -303,10 +307,13 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
         LOG_ERROR("ZigAdapter", "[ZigAdapterGetNextPacket] ✅ All checks passed, proceeding...");
     }
     
-    // Initialize DHCP state machine once
+    // DHCP state machine: Send Gratuitous ARP first (IMMEDIATELY on iOS - no delay)
+    UINT64 now = Tick64();
+    
+    // Initialize DHCP state machine once BEFORE checking states
     if (!ctx->dhcp_initialized) {
         ctx->dhcp_initialized = true;
-        ctx->connection_start_time = Tick64();
+        ctx->connection_start_time = now;  // Use current time
         ctx->dhcp_xid = (UINT32)time(NULL); // Use timestamp as transaction ID
         
         // Generate MAC address matching iPhone/iOS app format
@@ -323,61 +330,28 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
                ctx->dhcp_xid, ctx->my_mac[0], ctx->my_mac[1], ctx->my_mac[2], ctx->my_mac[3], ctx->my_mac[4], ctx->my_mac[5]);
     }
     
-    // DHCP state machine: Send Gratuitous ARP first (IMMEDIATELY on iOS - no delay)
-    UINT64 now = Tick64();
     UINT64 time_since_start = now - ctx->connection_start_time;
     
-    // iOS: Send immediately to establish presence on network
-    // Other platforms: Wait 2 seconds for network stack to stabilize
-    #ifdef UNIX_IOS
-    if (get_count <= 5) {
-        LOG_ERROR("ZigAdapter", "⏱️ Timing check: dhcp_state=%d time_since_start=%llu", 
-                 ctx->dhcp_state, (unsigned long long)time_since_start);
-    }
+    // SKIP initial Gratuitous ARP with IP 0.0.0.0 - it's invalid!
+    // Instead, go straight to DHCP DISCOVER, then send GARP after getting IP
     if (ctx->dhcp_state == DHCP_STATE_INIT && time_since_start >= 0) {
-        if (get_count <= 5) {
-            LOG_ERROR("ZigAdapter", "✅ Entering ARP generation block");
-            LOG_ERROR("ZigAdapter", "📋 Parameters: mac=%02x:%02x:%02x:%02x:%02x:%02x ip=0x%08x buffer=%p buflen=%zu", 
-                     ctx->my_mac[0], ctx->my_mac[1], ctx->my_mac[2], 
-                     ctx->my_mac[3], ctx->my_mac[4], ctx->my_mac[5],
-                     0x00000000, (void*)g_packet_buffer, MAX_PACKET_SIZE);
-        }
-    #else
-    if (ctx->dhcp_state == DHCP_STATE_INIT && time_since_start >= 2000) {
-    #endif
-        size_t pkt_size = 0;
-        bool result = zig_build_gratuitous_arp(ctx->my_mac, 0x00000000, g_packet_buffer, MAX_PACKET_SIZE, &pkt_size);
-        if (get_count <= 5) {
-            LOG_ERROR("ZigAdapter", "📋 Zig function returned: result=%d pkt_size=%zu", result, pkt_size);
-        }
-        if (result) {
-            LOG_ERROR("ZigAdapter", "📡 Sending Gratuitous ARP (size=%zu)", pkt_size);
-            UCHAR* pkt_copy = Malloc(pkt_size);
-            memcpy(pkt_copy, g_packet_buffer, pkt_size);
-            *data = pkt_copy;
-            ctx->dhcp_state = DHCP_STATE_ARP_ANNOUNCE_SENT;
-            ctx->last_dhcp_send_time = now;
-            return pkt_size;
-        } else {
-            LOG_ERROR("ZigAdapter", "❌ zig_build_gratuitous_arp FAILED!");
-        }
+        // Skip INIT state immediately - proceed to DHCP DISCOVER
+        ctx->dhcp_state = DHCP_STATE_ARP_ANNOUNCE_SENT;  // Trick: reuse this state to trigger DISCOVER
+        LOG_ERROR("ZigAdapter", "⏩ Skipping invalid GARP with IP 0.0.0.0, going straight to DHCP DISCOVER");
     }
     
-    // DHCP state machine: Send DHCP DISCOVER (immediately after ARP on iOS, then retry every 3s)
+    // DHCP state machine: Send DHCP DISCOVER (immediately, then retry every 3s)
     if (ctx->dhcp_state == DHCP_STATE_ARP_ANNOUNCE_SENT || ctx->dhcp_state == DHCP_STATE_DISCOVER_SENT) {
         bool should_send = false;
         
         if (ctx->dhcp_state == DHCP_STATE_ARP_ANNOUNCE_SENT) {
-            // iOS: Send immediately after ARP (no delay)
-            // Other platforms: Wait 300ms for ARP to propagate
-            #ifdef UNIX_IOS
-            if ((now - ctx->last_dhcp_send_time) >= 0) {
-            #else
-            if ((now - ctx->last_dhcp_send_time) >= 300) {
-            #endif
+            // First DISCOVER: send immediately (last_dhcp_send_time == 0)
+            // Subsequent DISCOVERs: wait 300ms for ARP to propagate
+            if (ctx->last_dhcp_send_time == 0 || (now - ctx->last_dhcp_send_time) >= 300) {
                 should_send = true;
                 ctx->dhcp_state = DHCP_STATE_DISCOVER_SENT;
                 ctx->dhcp_retry_count = 0;
+                LOG_ERROR("ZigAdapter", "📤 Sending DHCP DISCOVER (first=%d)", ctx->last_dhcp_send_time == 0);
             }
         } else if (ctx->dhcp_state == DHCP_STATE_DISCOVER_SENT) {
             // Retry every 3 seconds, up to 5 attempts

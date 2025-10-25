@@ -1080,16 +1080,31 @@ int vpn_bridge_get_dhcp_info(const VpnBridgeClient* client, VpnBridgeDhcpInfo* d
                    client->static_ipv4_gateway[0] ? client->static_ipv4_gateway : "(auto)");
             
         } else {
-            // Fallback: Use same default as working desktop client
-            // Desktop uses 10.21.251.255/255.255.0.0 GW:10.21.0.1 and it works!
-            printf("[vpn_bridge_get_dhcp_info] ℹ️ No static IP config, using default VPN IP (like desktop)\n");
-            
-            // These are in NETWORK BYTE ORDER (big-endian)
-            dhcp_info->client_ip = 0x0A15FBFF;        // 10.21.251.255 (same as desktop)
-            dhcp_info->subnet_mask = 0xFFFF0000;      // 255.255.0.0 (CORRECT byte order!)
-            dhcp_info->gateway = 0x0A150001;          // 10.21.0.1
-            
-            printf("[vpn_bridge_get_dhcp_info] 📡 Default IP=10.21.251.255, Mask=255.255.0.0, GW=10.21.0.1\n");
+            // Check if using Zig adapter with DHCP-assigned IP
+            if (client->use_zig_adapter && s->PacketAdapter && s->PacketAdapter->Param) {
+                ZIG_ADAPTER_CONTEXT* ctx = (ZIG_ADAPTER_CONTEXT*)s->PacketAdapter->Param;
+                
+                // Check if DHCP has configured the interface (state >= DHCP_STATE_CONFIGURED)
+                if (ctx->dhcp_state >= 5 && ctx->our_ip != 0) {
+                    // Use DHCP-assigned values
+                    dhcp_info->client_ip = ctx->our_ip;
+                    dhcp_info->subnet_mask = ctx->offered_mask;
+                    dhcp_info->gateway = ctx->offered_gw;
+                    
+                    printf("[vpn_bridge_get_dhcp_info] ✅ Using DHCP-assigned IP from Zig adapter: IP=%u.%u.%u.%u Mask=%u.%u.%u.%u GW=%u.%u.%u.%u\n",
+                           (ctx->our_ip >> 24) & 0xFF, (ctx->our_ip >> 16) & 0xFF, (ctx->our_ip >> 8) & 0xFF, ctx->our_ip & 0xFF,
+                           (ctx->offered_mask >> 24) & 0xFF, (ctx->offered_mask >> 16) & 0xFF, (ctx->offered_mask >> 8) & 0xFF, ctx->offered_mask & 0xFF,
+                           (ctx->offered_gw >> 24) & 0xFF, (ctx->offered_gw >> 16) & 0xFF, (ctx->offered_gw >> 8) & 0xFF, ctx->offered_gw & 0xFF);
+                } else {
+                    // DHCP not ready yet - return error
+                    printf("[vpn_bridge_get_dhcp_info] ⚠️ DHCP not configured yet (state=%d, our_ip=0x%08X)\n", ctx->dhcp_state, ctx->our_ip);
+                    return VPN_BRIDGE_ERROR_NOT_CONNECTED;
+                }
+            } else {
+                // No DHCP info available
+                printf("[vpn_bridge_get_dhcp_info] ⚠️ DHCP not available (not using Zig adapter or no adapter context)\n");
+                return VPN_BRIDGE_ERROR_NOT_CONNECTED;
+            }
         }
         
         // DNS servers: use configured DNS or fallback to Google DNS
