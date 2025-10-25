@@ -861,6 +861,7 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
     
     // macOS/Linux: Send packet to Zig adapter (TUN device)
     // iOS: Packets are handled by mobile FFI (mobile_vpn_read_packet)
+#ifndef UNIX_IOS
     if (ctx->zig_adapter) {
         // Send packet to Zig adapter (queues in send_queue)
         bool result = zig_adapter_put_packet(ctx->zig_adapter, (const uint8_t*)data, (uint64_t)size);
@@ -871,10 +872,13 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
         
         return result;
     } else {
-        // iOS: Packets are queued internally and read by mobile_vpn_read_packet
-        // For now, just return true (mobile FFI handles actual delivery)
-        return true;
+        return false;  // Should never happen on macOS/Linux
     }
+#else
+    // iOS: Packets are handled by mobile FFI (mobile_vpn_read_packet)
+    // Don't call zig_adapter functions - there is no zig_adapter on iOS!
+    return true;
+#endif
 }
 
 // Free adapter

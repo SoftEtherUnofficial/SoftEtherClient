@@ -25,7 +25,11 @@
 #include "logging.h"
 
 // Platform-specific packet adapter
-#if defined(UNIX_MACOS)
+#if defined(UNIX_IOS)
+    // iOS uses specialized packet adapter with NEPacketTunnelProvider integration
+    #include "packet_adapter_ios.h"
+    #define NEW_PACKET_ADAPTER() NewIosPacketAdapter()
+#elif defined(UNIX_MACOS)
     #include "packet_adapter_macos.h"
     #include "zig_packet_adapter.h"
     
@@ -692,8 +696,8 @@ int vpn_bridge_connect(VpnBridgeClient* client) {
     
     client->softether_account = account;
     
-    // Set global IP configuration for packet adapter (only for C adapter)
-    #if (defined(UNIX_MACOS) || defined(UNIX_LINUX)) && !USE_ZIG_ADAPTER
+    // Set global IP configuration for packet adapter (only for C adapter on macOS/Linux, not iOS)
+    #if ((defined(UNIX_MACOS) && !defined(UNIX_IOS)) || defined(UNIX_LINUX)) && !USE_ZIG_ADAPTER
         extern IP_CONFIG g_ip_config;
         g_ip_config.ip_version = client->ip_version;
         g_ip_config.use_static_ipv4 = client->use_static_ipv4;
@@ -715,8 +719,19 @@ int vpn_bridge_connect(VpnBridgeClient* client) {
     // Create packet adapter
     PACKET_ADAPTER* pa = NULL;
     
-    // Create packet adapter based on runtime configuration
+    // Create packet adapter based on platform and runtime configuration
     LOG_DEBUG("VPN", "Creating packet adapter (use_zig_adapter=%d)", client->use_zig_adapter);
+    
+#if defined(UNIX_IOS)
+    // iOS always uses specialized iOS packet adapter
+    pa = NewIosPacketAdapter();
+    if (pa) {
+        LOG_INFO("VPN", "Using iOS packet adapter (NEPacketTunnelProvider integration)");
+    } else {
+        LOG_ERROR("VPN", "Failed to create iOS packet adapter");
+    }
+#else
+    // Other platforms: respect use_zig_adapter config
     if (client->use_zig_adapter) {
         pa = NewZigPacketAdapter();
         if (pa) {
@@ -732,10 +747,11 @@ int vpn_bridge_connect(VpnBridgeClient* client) {
             pa = NewZigPacketAdapter();
         #else
             // Legacy C adapter (packet_adapter_macos.c)
-            pa = NewMacOsTunAdapter();
-            LOG_INFO("VPN", "Using C packet adapter (default)");
+            pa = NEW_PACKET_ADAPTER();
+            LOG_INFO("VPN", "Using platform-specific packet adapter");
         #endif
     }
+#endif
     
     if (!pa) {
         LOG_ERROR("VPN", "Failed to create packet adapter");
@@ -1080,7 +1096,32 @@ int vpn_bridge_get_dhcp_info(const VpnBridgeClient* client, VpnBridgeDhcpInfo* d
                    client->static_ipv4_gateway[0] ? client->static_ipv4_gateway : "(auto)");
             
         } else {
-            // Check if using Zig adapter with DHCP-assigned IP
+#ifdef UNIX_IOS
+            // iOS: Check iOS adapter for DHCP configuration
+            extern int ios_adapter_get_dhcp_info(uint32_t*, uint32_t*, uint32_t*, uint32_t*, uint32_t*);
+            
+            int result = ios_adapter_get_dhcp_info(
+                &dhcp_info->client_ip,
+                &dhcp_info->subnet_mask,
+                &dhcp_info->gateway,
+                &dhcp_info->dns_server1,
+                &dhcp_info->dns_server2
+            );
+            
+            if (result == 0) {
+                printf("[vpn_bridge_get_dhcp_info] ✅ Using DHCP from iOS adapter: IP=%u.%u.%u.%u Mask=%u.%u.%u.%u GW=%u.%u.%u.%u\n",
+                       (dhcp_info->client_ip >> 24) & 0xFF, (dhcp_info->client_ip >> 16) & 0xFF, 
+                       (dhcp_info->client_ip >> 8) & 0xFF, dhcp_info->client_ip & 0xFF,
+                       (dhcp_info->subnet_mask >> 24) & 0xFF, (dhcp_info->subnet_mask >> 16) & 0xFF, 
+                       (dhcp_info->subnet_mask >> 8) & 0xFF, dhcp_info->subnet_mask & 0xFF,
+                       (dhcp_info->gateway >> 24) & 0xFF, (dhcp_info->gateway >> 16) & 0xFF, 
+                       (dhcp_info->gateway >> 8) & 0xFF, dhcp_info->gateway & 0xFF);
+            } else {
+                printf("[vpn_bridge_get_dhcp_info] ⚠️ iOS DHCP not configured yet\n");
+                return VPN_BRIDGE_ERROR_NOT_CONNECTED;
+            }
+#else
+            // Check if using Zig adapter with DHCP-assigned IP (not available on iOS)
             if (client->use_zig_adapter && s->PacketAdapter && s->PacketAdapter->Param) {
                 ZIG_ADAPTER_CONTEXT* ctx = (ZIG_ADAPTER_CONTEXT*)s->PacketAdapter->Param;
                 
@@ -1100,11 +1141,13 @@ int vpn_bridge_get_dhcp_info(const VpnBridgeClient* client, VpnBridgeDhcpInfo* d
                     printf("[vpn_bridge_get_dhcp_info] ⚠️ DHCP not configured yet (state=%d, our_ip=0x%08X)\n", ctx->dhcp_state, ctx->our_ip);
                     return VPN_BRIDGE_ERROR_NOT_CONNECTED;
                 }
-            } else {
+            } else
+            {
                 // No DHCP info available
                 printf("[vpn_bridge_get_dhcp_info] ⚠️ DHCP not available (not using Zig adapter or no adapter context)\n");
                 return VPN_BRIDGE_ERROR_NOT_CONNECTED;
             }
+#endif
         }
         
         // DNS servers: use configured DNS or fallback to Google DNS
@@ -1213,7 +1256,7 @@ int vpn_bridge_get_device_name(
     }
 
     // Get device name based on adapter type (runtime selection)
-    #if defined(UNIX_MACOS)
+    #if defined(UNIX_MACOS) && !defined(UNIX_IOS)
         if (client->use_zig_adapter) {
             // Zig adapter - get name from adapter
             ZIG_ADAPTER_CONTEXT* ctx = (ZIG_ADAPTER_CONTEXT*)client->softether_session->PacketAdapter->Param;
@@ -1237,7 +1280,7 @@ int vpn_bridge_get_device_name(
             }
         }
     #else
-        // Other platforms - return generic name
+        // Other platforms (iOS, Linux, Windows) - return generic name
         strncpy(output, "tun0", output_size - 1);
         output[output_size - 1] = '\0';
     #endif

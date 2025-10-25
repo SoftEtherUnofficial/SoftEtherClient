@@ -639,7 +639,7 @@ int ios_adapter_get_dhcp_info(uint32_t* client_ip, uint32_t* subnet_mask,
 /**
  * Initialize iOS adapter
  * NOTE: Actual initialization now happens in NewIosPacketAdapter()
- * This callback is kept for SoftEther compatibility but does nothing
+ * This callback stores the session reference and sends DHCP DISCOVER
  */
 static bool IosAdapterInit(SESSION* s) {
     if (!s) {
@@ -658,6 +658,10 @@ static bool IosAdapterInit(SESSION* s) {
     ctx->session = s;
     
     LOG_INFO("IOS_ADAPTER", "IosAdapterInit: Session attached (adapter already initialized)");
+    
+    // Send DHCP DISCOVER to request IP configuration from VPN server
+    LOG_INFO("IOS_ADAPTER", "IosAdapterInit: Sending DHCP DISCOVER to initiate IP configuration...");
+    send_dhcp_discover(ctx);
     
     return true;
 }
@@ -681,6 +685,8 @@ static CANCEL* IosAdapterGetCancel(SESSION *s) {
  * - >0: Packet size (success, *data points to packet buffer)
  * - 0: No packet available (normal, not an error - will be called again)
  * - UINT_MAX: Fatal error (causes pa_fail=1 and session termination)
+ * 
+ * PRIORITY: Check outgoing queue FIRST (for DHCP DISCOVER), then incoming queue (from iOS)
  */
 static UINT IosAdapterGetNextPacket(SESSION *s, void **data) {
     PACKET_ADAPTER *pa = s->PacketAdapter;
@@ -694,9 +700,34 @@ static UINT IosAdapterGetNextPacket(SESSION *s, void **data) {
     // Allocate buffer for dequeue
     uint8_t buffer[IOS_MAX_PACKET_SIZE];
     
+    // ===================================================================
+    // PRIORITY 1: Check outgoing queue FIRST (for DHCP DISCOVER packets)
+    // ===================================================================
+    int length = packet_queue_dequeue(ctx->outgoing_queue, buffer, IOS_MAX_PACKET_SIZE, 0);  // No wait
+    
+    if (length > 0) {
+        // Got a packet from outgoing queue (DHCP DISCOVER)
+        static uint64_t outgoing_count = 0;
+        outgoing_count++;
+        LOG_INFO("IOS_ADAPTER", "GetNextPacket: 📤 OUTGOING #%llu (DHCP): %d bytes (L2 Ethernet)", outgoing_count, length);
+        
+        // Allocate and copy (SessionMain expects Malloc'd data)
+        void* packet = Malloc(length);
+        if (!packet) {
+            LOG_ERROR("IOS_ADAPTER", "GetNextPacket: MALLOC FAILED for %d bytes", length);
+            return INFINITE;
+        }
+        memcpy(packet, buffer, length);
+        *data = packet;
+        return length;
+    }
+    
+    // ===================================================================
+    // PRIORITY 2: Check incoming queue (packets from iOS device)
+    // ===================================================================
     // Try to dequeue packet (with SHORT timeout to avoid blocking SessionMain loop)
     // Using 10ms timeout - SessionMain expects frequent polling
-    int length = packet_queue_dequeue(ctx->incoming_queue, buffer, IOS_MAX_PACKET_SIZE, 10);
+    length = packet_queue_dequeue(ctx->incoming_queue, buffer, IOS_MAX_PACKET_SIZE, 10);
     
     if (length < 0) {
         // Actual error from dequeue function
@@ -863,7 +894,7 @@ static bool IosAdapterPutPacket(SESSION *s, void *data, UINT size) {
     LOG_INFO("IOS_ADAPTER", "PutPacket: 🔄 Translated L2→L3: %u bytes Ethernet → %d bytes IP (total: %llu)", 
              size, ip_len, ctx->l2_to_l3_translated);
     
-    // Check if this is a DHCP ACK packet - extract IP and configure TapTun
+    // Check if this is a DHCP packet - DON'T enqueue, handle via state machine
     if (ip_len >= 20) {
         const uint8_t* ip_hdr = ip_packet_buf;
         uint8_t protocol = ip_hdr[9];
@@ -871,39 +902,45 @@ static bool IosAdapterPutPacket(SESSION *s, void *data, UINT size) {
         // UDP (DHCP)
         if (protocol == 17 && ip_len >= 28) {
             const uint8_t* udp_hdr = ip_hdr + 20;
+            uint16_t src_port = (udp_hdr[0] << 8) | udp_hdr[1];
             uint16_t dst_port = (udp_hdr[2] << 8) | udp_hdr[3];
             
-            // DHCP client port (68)
-            if (dst_port == 68 && ip_len >= 236) {
-                // Parse DHCP message
-                const uint8_t* dhcp = udp_hdr + 8;
-                uint32_t your_ip = (dhcp[16] << 24) | (dhcp[17] << 16) | (dhcp[18] << 8) | dhcp[19];
+            // DHCP server→client (67→68)
+            if (src_port == 67 && dst_port == 68 && ip_len >= 236) {
+                // Reconstruct full Ethernet frame for parse_dhcp_packet
+                uint8_t full_packet[IOS_MAX_PACKET_SIZE];
+                memcpy(full_packet, data, size);  // Copy original Ethernet packet
                 
-                // Check if this is a DHCP ACK (message type in options)
-                bool is_dhcp_ack = false;
-                const uint8_t* options = dhcp + 236;
-                int remaining = ip_len - 256;
+                // Parse DHCP packet to extract full configuration
+                pthread_mutex_lock(&ctx->dhcp_mutex);
+                bool parsed = parse_dhcp_packet(full_packet, size, &ctx->dhcp_state);
+                pthread_mutex_unlock(&ctx->dhcp_mutex);
                 
-                for (int i = 0; i < remaining && i < 200; ) {
-                    uint8_t opt_type = options[i];
-                    if (opt_type == 255) break; // End
-                    if (opt_type == 0) { i++; continue; } // Pad
+                if (parsed && ctx->dhcp_state.valid) {
+                    uint32_t your_ip = ctx->dhcp_state.client_ip;
                     
-                    uint8_t opt_len = options[i + 1];
-                    if (opt_type == 53 && opt_len == 1 && options[i + 2] == 5) {
-                        is_dhcp_ack = true;
-                        break;
-                    }
-                    i += 2 + opt_len;
-                }
-                
-                if (is_dhcp_ack && your_ip != 0) {
                     // Configure TapTun with our IP address
                     taptun_translator_set_our_ip(ctx->translator, your_ip);
-                    LOG_INFO("IOS_ADAPTER", "PutPacket: 🎯 DHCP ACK received, configured TapTun with IP %u.%u.%u.%u",
+                    
+                    LOG_INFO("IOS_ADAPTER", "PutPacket: ✅ DHCP configuration obtained:");
+                    LOG_INFO("IOS_ADAPTER", "  IP: %u.%u.%u.%u",
                              (your_ip >> 24) & 0xFF, (your_ip >> 16) & 0xFF, 
                              (your_ip >> 8) & 0xFF, your_ip & 0xFF);
+                    LOG_INFO("IOS_ADAPTER", "  Mask: %u.%u.%u.%u",
+                             (ctx->dhcp_state.subnet_mask >> 24) & 0xFF, 
+                             (ctx->dhcp_state.subnet_mask >> 16) & 0xFF,
+                             (ctx->dhcp_state.subnet_mask >> 8) & 0xFF, 
+                             ctx->dhcp_state.subnet_mask & 0xFF);
+                    LOG_INFO("IOS_ADAPTER", "  Gateway: %u.%u.%u.%u",
+                             (ctx->dhcp_state.gateway >> 24) & 0xFF, 
+                             (ctx->dhcp_state.gateway >> 16) & 0xFF,
+                             (ctx->dhcp_state.gateway >> 8) & 0xFF, 
+                             ctx->dhcp_state.gateway & 0xFF);
                 }
+                
+                // ✅ CRITICAL: Do NOT enqueue DHCP packets - they're handled by state machine in GetNextPacket
+                LOG_INFO("IOS_ADAPTER", "PutPacket: 🔄 DHCP packet handled by state machine, not enqueued");
+                return true;  // Success, but don't enqueue
             }
         }
     }

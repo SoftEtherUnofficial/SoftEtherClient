@@ -14,7 +14,7 @@ typedef void (*IOSWritePacketsCallback)(void *flow, const void **packets,
 typedef void (*IOSReadPacketsCallback)(void *flow, void *context);
 
 // Create iOS packet adapter
-PACKET_ADAPTER* NewIOSPacketAdapter(SESSION *s);
+PACKET_ADAPTER* NewIosPacketAdapter(void);
 
 // Get adapter context for iOS callbacks
 void* IOSTunGetContext(PACKET_ADAPTER *pa);
