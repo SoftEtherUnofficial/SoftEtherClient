@@ -868,10 +868,17 @@ pub fn main() !void {
     } else {
         // Main loop with reconnection support
         while (g_running.load(.acquire)) {
-            if (vpn_client.isConnected()) {
-                // Connected - normal monitoring
+            const current_status = vpn_client.getStatus();
+
+            // CRITICAL FIX: Don't trigger reconnection if still connecting or already connected
+            if (current_status == .connected or current_status == .connecting) {
+                // Connected or connecting - normal monitoring
                 std.Thread.sleep(500 * std.time.ns_per_ms); // Check every 500ms
-            } else {
+                continue;
+            }
+
+            // Only reconnect if truly disconnected (not connecting)
+            if (current_status == .disconnected or current_status == .error_state) {
                 // Disconnected - check if we should reconnect
                 const reconnect_info = vpn_client.getReconnectInfo() catch {
                     std.debug.print("[!] Failed to get reconnection info\n", .{});
@@ -930,11 +937,11 @@ pub fn main() !void {
                 while (wait_count < 30 and g_running.load(.acquire)) : (wait_count += 1) { // Wait up to 15 seconds (30 * 500ms)
                     std.Thread.sleep(500 * std.time.ns_per_ms);
 
-                    const current_status = vpn_client.getStatus();
-                    if (current_status == .connected) {
+                    const check_status = vpn_client.getStatus();
+                    if (check_status == .connected) {
                         std.debug.print("[✓] Reconnection successful!\n", .{});
                         break;
-                    } else if (current_status == .error_state) {
+                    } else if (check_status == .error_state) {
                         std.debug.print("[!] Connection failed with error\n", .{});
                         break;
                     }
@@ -945,6 +952,9 @@ pub fn main() !void {
                 if (!vpn_client.isConnected()) {
                     std.debug.print("[!] Connection timed out after 15 seconds\n", .{});
                 }
+            } else {
+                // Unknown state - wait and check again
+                std.Thread.sleep(500 * std.time.ns_per_ms);
             }
         }
     }

@@ -83,18 +83,31 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size);
 static void ZigAdapterFree(SESSION* s);
 
 // Create new Zig packet adapter
-#ifdef UNIX_IOS
-// --- USE REAL IOS ADAPTER ---
-// Forward declaration of the real iOS adapter
-extern PACKET_ADAPTER* NewIosPacketAdapter(void);
-
 PACKET_ADAPTER* NewZigPacketAdapter(void) {
-    printf("[NewZigPacketAdapter] Creating REAL iOS Network Extension adapter\n");
-    return NewIosPacketAdapter();
+    printf("[NewZigPacketAdapter] Creating Zig packet adapter\n");
+    
+    // Allocate PACKET_ADAPTER structure
+    PACKET_ADAPTER* pa = ZeroMalloc(sizeof(PACKET_ADAPTER));
+    if (!pa) {
+        printf("[NewZigPacketAdapter] Failed to allocate PACKET_ADAPTER\n");
+        return NULL;
+    }
+    
+    // Set up callbacks
+    pa->Init = ZigAdapterInit;
+    pa->GetCancel = ZigAdapterGetCancel;
+    pa->GetNextPacket = ZigAdapterGetNextPacket;
+    pa->PutPacket = ZigAdapterPutPacket;
+    pa->Free = ZigAdapterFree;
+    
+    // CRITICAL: Use same ID as C adapter (PACKET_ADAPTER_ID_VLAN_WIN32 = 1)
+    // This prevents server from treating Zig adapter differently!
+    #define PACKET_ADAPTER_ID_VLAN_WIN32 1
+    pa->Id = PACKET_ADAPTER_ID_VLAN_WIN32;
+    
+    printf("[NewZigPacketAdapter] Created adapter with Id=%u (same as C adapter)\n", pa->Id);
+    return pa;
 }
-#else
-// ...existing code...
-#endif
 
 // Initialize adapter
 static bool ZigAdapterInit(SESSION* s) {
@@ -319,19 +332,58 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
         }
         
         if (should_send) {
-            // Build DHCP DISCOVER using Pure Zig implementation
-            size_t dhcp_size = 0;
-            if (zig_build_dhcp_discover(ctx->my_mac, ctx->dhcp_xid, g_packet_buffer, MAX_PACKET_SIZE, &dhcp_size)) {
-                printf("[ZigAdapterGetNextPacket] 📡 Sending DHCP DISCOVER #%u (xid=0x%08x, size=%zu) [PURE ZIG]\n",
-                       ctx->dhcp_retry_count + 1, ctx->dhcp_xid, dhcp_size);
-                // Must use Malloc - SoftEther will call Free() on this pointer
-                UCHAR* pkt_copy = Malloc(dhcp_size);
-                memcpy(pkt_copy, g_packet_buffer, dhcp_size);
+            // Build with BOTH C and Zig, compare them
+            UINT c_size = 0;
+            UCHAR* c_pkt = BuildDhcpDiscover(ctx->my_mac, ctx->dhcp_xid, &c_size);
+            
+            size_t zig_size = 0;
+            bool zig_ok = zig_build_dhcp_discover(ctx->my_mac, ctx->dhcp_xid, g_packet_buffer, MAX_PACKET_SIZE, &zig_size);
+            
+            // if (c_pkt && zig_ok) {
+            //     printf("\n=== PACKET COMPARISON ===\n");
+            //     printf("C size: %u, Zig size: %zu\n", c_size, zig_size);
+                
+            //     // Dump IP header (bytes 14-33)
+            //     printf("C   IP header: ");
+            //     for (int i = 14; i < 34; i++) printf("%02x ", c_pkt[i]);
+            //     printf("\nZig IP header: ");
+            //     for (int i = 14; i < 34; i++) printf("%02x ", g_packet_buffer[i]);
+            //     printf("\n");
+                
+            //     // Extract checksums
+            //     USHORT c_csum = (c_pkt[24] << 8) | c_pkt[25];
+            //     USHORT zig_csum = (g_packet_buffer[24] << 8) | g_packet_buffer[25];
+            //     printf("C checksum: 0x%04x, Zig checksum: 0x%04x\n", c_csum, zig_csum);
+                
+            //     if (c_size != zig_size) {
+            //         printf("❌ SIZE MISMATCH!\n");
+            //     } else {
+            //         printf("✅ Sizes match\n");
+            //         // Compare byte by byte
+            //         bool identical = true;
+            //         for (UINT i = 0; i < c_size; i++) {
+            //             if (c_pkt[i] != g_packet_buffer[i]) {
+            //                 printf("❌ Byte %u differs: C=0x%02x, Zig=0x%02x\n", i, c_pkt[i], g_packet_buffer[i]);
+            //                 identical = false;
+            //                 if (i > 10) break; // Limit output
+            //             }
+            //         }
+            //         if (identical) {
+            //             printf("✅ Packets are IDENTICAL!\n");
+            //         }
+            //     }
+            //     printf("=========================\n\n");
+            // }
+            
+            // Use C builder for now
+            if (c_pkt && c_size > 0) {
+                printf("[ZigAdapterGetNextPacket] 📡 Sending DHCP DISCOVER #%u (xid=0x%08x, size=%u) [C BUILDER]\n",
+                       ctx->dhcp_retry_count + 1, ctx->dhcp_xid, c_size);
+                UCHAR* pkt_copy = Malloc(c_size);
+                memcpy(pkt_copy, c_pkt, c_size);
                 *data = pkt_copy;
                 ctx->last_dhcp_send_time = now;
-                return dhcp_size;
-            } else {
-                printf("[ZigAdapterGetNextPacket] ❌ Failed to build DHCP DISCOVER\n");
+                return c_size;
             }
         }
     }
@@ -605,12 +657,12 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                        (ctx->offered_gw >> 8) & 0xFF, ctx->offered_gw & 0xFF);
 #endif
                                 
-                                // ZIGSE-80: Configure VPN routing through TapTun RouteManager
+                                // ZIGSE-80: Configure VPN routing through ZigTapTun RouteManager
                                 // ctx->offered_gw is already in host byte order (10.21.0.1 = 0x0A150001)
                                 // Just pass it directly - Zig will extract bytes correctly
-                                printf("[●] DHCP: Configuring VPN routing through TapTun...\n");
+                                printf("[●] DHCP: Configuring VPN routing through ZigTapTun...\n");
                                 if (zig_adapter_configure_routing(ctx->zig_adapter, ctx->offered_gw, 0)) {
-                                    printf("[●] DHCP: ✅ VPN routing configured by TapTun RouteManager\n");
+                                    printf("[●] DHCP: ✅ VPN routing configured by ZigTapTun RouteManager\n");
                                 } else {
                                     printf("[●] DHCP: ⚠️  Failed to configure routing, routes may not be set\n");
                                 }

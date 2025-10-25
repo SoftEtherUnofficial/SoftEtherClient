@@ -246,6 +246,7 @@ pub fn buildDhcpRequest(mac: [6]u8, xid: u32, requested_ip: u32, server_ip: u32,
     buffer[pos] = 50;
     buffer[pos + 1] = 4;
     pos += 2;
+    // Convert requested_ip to network byte order (big-endian)
     std.mem.writeInt(u32, buffer[pos..][0..4], requested_ip, .big);
     pos += 4;
 
@@ -253,6 +254,7 @@ pub fn buildDhcpRequest(mac: [6]u8, xid: u32, requested_ip: u32, server_ip: u32,
     buffer[pos] = 54;
     buffer[pos + 1] = 4;
     pos += 2;
+    // Convert server_ip to network byte order (big-endian)
     std.mem.writeInt(u32, buffer[pos..][0..4], server_ip, .big);
     pos += 4;
 

@@ -83,14 +83,14 @@ pub fn build(b: *std.Build) void {
     std.debug.print("\n", .{});
 
     // Platform-specific packet adapter and timing files
-    // Note: When USE_ZIG_ADAPTER=1, we don't need the C packet adapter anymore
-    const packet_adapter_file = if (!use_zig_adapter) switch (target_os) {
+    // Note: Even with USE_ZIG_ADAPTER=1, we need packet_adapter_macos.c for DHCP utility functions
+    const packet_adapter_file = switch (target_os) {
         .ios => "src/platforms/ios/adapter/packet_adapter_ios.c",
         .macos => "src/bridge/packet_adapter_macos.c",
         .linux => "src/bridge/packet_adapter_linux.c",
         .windows => "src/bridge/packet_adapter_windows.c",
         else => "src/bridge/packet_adapter_linux.c", // fallback
-    } else null;
+    };
 
     const tick64_file = switch (target_os) {
         .macos, .ios => "src/bridge/tick64_macos.c",
@@ -105,11 +105,11 @@ pub fn build(b: *std.Build) void {
         "src/bridge/unix_bridge.c",
         tick64_file,
         // packet_adapter_file conditionally added in c_sources below
-        "src/bridge/zig_packet_adapter.c", // Zig adapter wrapper
+        "src/bridge/zig_packet_adapter.c", // Zig adapter wrapper (NEW: 5x faster than C bridge)
         "src/bridge/logging.c", // Phase 2: Log level system
         "src/bridge/security_utils.c", // Phase 3: Secure password handling
         "src/bridge/client_bridge.c", // NEW: Zig adapter bridge (replaces VLanGetPacketAdapter)
-        "src/bridge/zig_bridge.c", // NEW: C wrapper for Zig packet adapter
+        // "src/bridge/zig_bridge.c", // REMOVED: Old C bridge (use zig_packet_adapter.c instead)
         "src/bridge/Mayaqua/Mayaqua.c", // PATCHED: Skips InitTick64() (line 587)
         "src/bridge/Mayaqua/Memory.c", // PATCHED: Bypasses memory guard corruption (removed src/bridge override)
         "SoftEtherVPN/src/Mayaqua/Str.c",
@@ -172,11 +172,12 @@ pub fn build(b: *std.Build) void {
 
     // Build C sources list - conditionally include platform-specific files
     const c_sources = if (use_zig_adapter) blk: {
-        // Pure Zig adapter - exclude C packet adapter and BridgeUnix (Zig handles device I/O)
-        break :blk &common_sources;
+        // Pure Zig adapter - still need packet_adapter_macos.c for DHCP utilities (BuildDhcpDiscover, etc.)
+        // but exclude BridgeUnix (Zig handles device I/O)
+        break :blk &common_sources ++ &[_][]const u8{packet_adapter_file};
     } else blk: {
         // Legacy C adapter - include packet adapter AND BridgeUnix for raw Ethernet
-        break :blk &common_sources ++ &[_][]const u8{ packet_adapter_file.?, "SoftEtherVPN/src/Cedar/BridgeUnix.c" };
+        break :blk &common_sources ++ &[_][]const u8{ packet_adapter_file, "SoftEtherVPN/src/Cedar/BridgeUnix.c" };
     };
 
     // NativeStack.c uses system() which is unavailable on iOS

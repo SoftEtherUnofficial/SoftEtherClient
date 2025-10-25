@@ -484,11 +484,9 @@ export fn zig_adapter_read_sync(adapter: *ZigPacketAdapter, buffer: [*]u8, buffe
         },
     };
 
-    // Poll with 50ms timeout - gives OS time to process DHCP and generate responses
-    // Too short (1ms) = OS can't respond in time, DHCP fails
-    // Too long (>100ms) = high latency
-    // 50ms is optimal for DHCP while maintaining responsiveness
-    const ready_count = std.posix.poll(&fds, 50) catch |err| {
+    // Poll with 1ms timeout - optimal balance for macOS TUN
+    // Fast enough for low latency, slow enough to avoid busy-waiting
+    const ready_count = std.posix.poll(&fds, 1) catch |err| {
         logError("poll() failed: {}", .{err});
         return -1;
     };
