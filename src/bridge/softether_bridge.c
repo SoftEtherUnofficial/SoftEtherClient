@@ -1442,12 +1442,20 @@ int vpn_bridge_read_packet(
     
     SESSION* session = client->softether_session;
     if (!session || !session->PacketAdapter) {
+        LOG_ERROR("VPN", "❌ read_packet: session=%p PacketAdapter=%p", session, session ? session->PacketAdapter : NULL);
         return -1;
     }
+    
+    static uint64_t read_call_count = 0;
+    read_call_count++;
     
     // Use the packet adapter's GetNextPacket function
     void* packet_data = NULL;
     UINT packet_size = session->PacketAdapter->GetNextPacket(session, &packet_data);
+    
+    if (read_call_count <= 10) {
+        LOG_INFO("VPN", "📡 read_packet #%llu: GetNextPacket returned size=%u data=%p", read_call_count, packet_size, packet_data);
+    }
     
     if (packet_size == 0 || !packet_data) {
         // No packet available

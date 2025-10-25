@@ -170,6 +170,8 @@ static bool ZigAdapterInit(SESSION* s) {
     printf("[ZigAdapterInit] Creating Zig adapter with config: recv_q=%llu, send_q=%llu, pool=%llu, batch=%llu\n",
            config.recv_queue_size, config.send_queue_size, config.packet_pool_size, config.batch_size);
     
+#ifndef UNIX_IOS
+    // macOS/Linux: Create Zig adapter and open TUN device
     // Create Zig adapter
     ctx->zig_adapter = zig_adapter_create(&config);
     if (!ctx->zig_adapter) {
@@ -191,11 +193,21 @@ static bool ZigAdapterInit(SESSION* s) {
     }
     
     printf("[ZigAdapterInit] TUN device opened successfully\n");
+#else
+    // iOS: NEPacketTunnelProvider manages utun - don't create adapter
+    // Packets flow through mobile FFI (mobile_vpn_read/write_packet)
+    ctx->zig_adapter = NULL;
+    printf("[ZigAdapterInit] iOS mode - skipping TUN device (using mobile FFI)\n");
+#endif
     
     // **CRITICAL FIX**: Do NOT start async threads!
     // We read synchronously from TUN in GetNextPacket() like C adapter.
     // This ensures proper packet ordering and session integration.
     printf("[ZigAdapterInit] Using synchronous TUN reads (no async threads)\n");
+    
+#ifndef UNIX_IOS
+    // macOS/Linux: Configure the TUN interface
+    // iOS: NEPacketTunnelProvider handles all network configuration
     
     // Configure interface: Just bring it UP without an IP - let the L2/L3 translator
     // handle DHCP packets and the adapter will learn the IP automatically
@@ -207,11 +219,9 @@ static bool ZigAdapterInit(SESSION* s) {
     if (dev_name_len > 0 && dev_name_len < sizeof(dev_name_buf)) {
         dev_name_buf[dev_name_len] = '\0';  // Null terminate
         
-#ifndef UNIX_IOS
         // Strategy: DON'T configure IP initially - DHCP will handle it
         // For utun interfaces, setting IP requires destination address (point-to-point)
         // Just bring interface UP without IP configuration
-        // NOTE: On iOS, NEPacketTunnelProvider handles all network configuration
         char cmd[512];
         
         // Bring interface UP without IP - DHCP will configure it properly later
@@ -238,10 +248,8 @@ static bool ZigAdapterInit(SESSION* s) {
             LOG_DEBUG("ZigAdapter", "[●] ADAPTER: Adding VPN server bypass route: %s\n", cmd);
             system(cmd);
         }
-#else
-        LOG_DEBUG("ZigAdapter", "[●] ADAPTER: iOS mode - network configuration handled by NEPacketTunnelProvider\n");
-#endif
     }
+#endif
     
     // Store context in session
     s->PacketAdapter->Param = ctx;
@@ -263,15 +271,36 @@ static CANCEL* ZigAdapterGetCancel(SESSION* s) {
 // Get next packet (single packet mode - for compatibility)
 static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
     static uint64_t get_count = 0;
+    get_count++;
     
-    if (!s || !s->PacketAdapter || !s->PacketAdapter->Param) {
+    if (get_count <= 5) {
+        LOG_ERROR("ZigAdapter", "[ZigAdapterGetNextPacket] 🔵 Called #%llu", get_count);
+    }
+    
+    if (!s) {
+        LOG_ERROR("ZigAdapter", "[ZigAdapterGetNextPacket] ❌ s is NULL!");
+        return 0;
+    }
+    
+    if (!s->PacketAdapter) {
+        LOG_ERROR("ZigAdapter", "[ZigAdapterGetNextPacket] ❌ PacketAdapter is NULL!");
+        return 0;
+    }
+    
+    if (!s->PacketAdapter->Param) {
+        LOG_ERROR("ZigAdapter", "[ZigAdapterGetNextPacket] ❌ Param is NULL!");
         return 0;
     }
     
     ZIG_ADAPTER_CONTEXT* ctx = (ZIG_ADAPTER_CONTEXT*)s->PacketAdapter->Param;
     
     if (ctx->halt) {
+        LOG_ERROR("ZigAdapter", "[ZigAdapterGetNextPacket] ⏸️  Halted");
         return 0;
+    }
+    
+    if (get_count <= 5) {
+        LOG_ERROR("ZigAdapter", "[ZigAdapterGetNextPacket] ✅ All checks passed, proceeding...");
     }
     
     // Initialize DHCP state machine once
@@ -290,34 +319,54 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
             ctx->my_mac[i] = (UCHAR)(rand() % 256);
         }
         
-        printf("[ZigAdapterGetNextPacket] 🔄 DHCP initialized: xid=0x%08x, MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
+        LOG_ERROR("ZigAdapter", "[ZigAdapterGetNextPacket] 🔄 DHCP initialized: xid=0x%08x, MAC=%02x:%02x:%02x:%02x:%02x:%02x",
                ctx->dhcp_xid, ctx->my_mac[0], ctx->my_mac[1], ctx->my_mac[2], ctx->my_mac[3], ctx->my_mac[4], ctx->my_mac[5]);
     }
     
-    // DHCP state machine: Send Gratuitous ARP first (after 2s delay)
+    // DHCP state machine: Send Gratuitous ARP first (IMMEDIATELY on iOS - no delay)
     UINT64 now = Tick64();
     UINT64 time_since_start = now - ctx->connection_start_time;
     
+    // iOS: Send immediately to establish presence on network
+    // Other platforms: Wait 2 seconds for network stack to stabilize
+    #ifdef UNIX_IOS
+    if (get_count <= 5) {
+        LOG_ERROR("ZigAdapter", "⏱️ Timing check: dhcp_state=%d time_since_start=%llu", 
+                 ctx->dhcp_state, (unsigned long long)time_since_start);
+    }
+    if (ctx->dhcp_state == DHCP_STATE_INIT && time_since_start >= 0) {
+        if (get_count <= 5) {
+            LOG_ERROR("ZigAdapter", "✅ Entering ARP generation block");
+        }
+    #else
     if (ctx->dhcp_state == DHCP_STATE_INIT && time_since_start >= 2000) {
+    #endif
         size_t pkt_size = 0;
         if (zig_build_gratuitous_arp(ctx->my_mac, 0x00000000, g_packet_buffer, MAX_PACKET_SIZE, &pkt_size)) {
-            printf("[ZigAdapterGetNextPacket] 📡 Sending Gratuitous ARP (size=%zu)\n", pkt_size);
+            LOG_ERROR("ZigAdapter", "📡 Sending Gratuitous ARP (size=%zu)", pkt_size);
             UCHAR* pkt_copy = Malloc(pkt_size);
             memcpy(pkt_copy, g_packet_buffer, pkt_size);
             *data = pkt_copy;
             ctx->dhcp_state = DHCP_STATE_ARP_ANNOUNCE_SENT;
             ctx->last_dhcp_send_time = now;
             return pkt_size;
+        } else {
+            LOG_ERROR("ZigAdapter", "❌ zig_build_gratuitous_arp FAILED!");
         }
     }
     
-    // DHCP state machine: Send DHCP DISCOVER (300ms after ARP, then retry every 3s)
+    // DHCP state machine: Send DHCP DISCOVER (immediately after ARP on iOS, then retry every 3s)
     if (ctx->dhcp_state == DHCP_STATE_ARP_ANNOUNCE_SENT || ctx->dhcp_state == DHCP_STATE_DISCOVER_SENT) {
         bool should_send = false;
         
         if (ctx->dhcp_state == DHCP_STATE_ARP_ANNOUNCE_SENT) {
-            // First send after 300ms delay
+            // iOS: Send immediately after ARP (no delay)
+            // Other platforms: Wait 300ms for ARP to propagate
+            #ifdef UNIX_IOS
+            if ((now - ctx->last_dhcp_send_time) >= 0) {
+            #else
             if ((now - ctx->last_dhcp_send_time) >= 300) {
+            #endif
                 should_send = true;
                 ctx->dhcp_state = DHCP_STATE_DISCOVER_SENT;
                 ctx->dhcp_retry_count = 0;
@@ -327,7 +376,7 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
             if (ctx->dhcp_retry_count < 5 && (now - ctx->last_dhcp_send_time) >= 3000) {
                 should_send = true;
                 ctx->dhcp_retry_count++;
-                printf("[ZigAdapterGetNextPacket] 🔄 DHCP DISCOVER retry #%u\n", ctx->dhcp_retry_count);
+                LOG_ERROR("ZigAdapter", "🔄 DHCP DISCOVER retry #%u", ctx->dhcp_retry_count);
             }
         }
         
@@ -377,7 +426,7 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
             
             // Use C builder for now
             if (c_pkt && c_size > 0) {
-                printf("[ZigAdapterGetNextPacket] 📡 Sending DHCP DISCOVER #%u (xid=0x%08x, size=%u) [C BUILDER]\n",
+                LOG_ERROR("ZigAdapter", "📡 Sending DHCP DISCOVER #%u (xid=0x%08x, size=%u)",
                        ctx->dhcp_retry_count + 1, ctx->dhcp_xid, c_size);
                 UCHAR* pkt_copy = Malloc(c_size);
                 memcpy(pkt_copy, c_pkt, c_size);
@@ -494,11 +543,21 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
     // Read directly from TUN device when session polls - no async threads!
     // This ensures packets flow through SoftEther's session management properly.
     
-    uint8_t temp_buf[2048];
-    ssize_t bytes_read = zig_adapter_read_sync(ctx->zig_adapter, temp_buf, sizeof(temp_buf));
+    // iOS: Skip TUN reading entirely - packets come via mobile_vpn_write_packet instead
+    // On iOS, we ONLY generate DHCP/ARP packets above, never read from TUN
     
-    if (bytes_read <= 0) {
-        // No packet available (this is normal - polled frequently)
+    uint8_t temp_buf[2048];
+    ssize_t bytes_read = -1;
+    
+    if (ctx->zig_adapter) {
+        bytes_read = zig_adapter_read_sync(ctx->zig_adapter, temp_buf, sizeof(temp_buf));
+        
+        if (bytes_read <= 0) {
+            // No packet available from TUN (this is normal - polled frequently)
+            return 0;
+        }
+    } else {
+        // iOS path: no TUN device, return 0 (DHCP/ARP already handled above)
         return 0;
     }
     
@@ -722,7 +781,10 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                         printf("[ZigAdapterPutPacket]    This enables bidirectional traffic routing!\n");
                         
                         // **CRITICAL**: Pass gateway MAC to Zig adapter for Ethernet header construction
-                        zig_adapter_set_gateway_mac(ctx->zig_adapter, ctx->gateway_mac);
+                        // iOS: Skip this step (no zig_adapter)
+                        if (ctx->zig_adapter) {
+                            zig_adapter_set_gateway_mac(ctx->zig_adapter, ctx->gateway_mac);
+                        }
                     }
                 }
             }
@@ -815,14 +877,22 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                ctx->put_arp_count, ctx->put_dhcp_count, ctx->put_icmp_count, ctx->put_tcp_count, ctx->put_udp_count, ctx->put_other_count);
     }
     
-    // Send packet to Zig adapter (queues in send_queue)
-    bool result = zig_adapter_put_packet(ctx->zig_adapter, (const uint8_t*)data, (uint64_t)size);
-    
-    // **CRITICAL**: Synchronously write queued packets to TUN device!
-    // Without this, packets accumulate in send_queue and never reach TUN
-    zig_adapter_write_sync(ctx->zig_adapter);
-    
-    return result;
+    // macOS/Linux: Send packet to Zig adapter (TUN device)
+    // iOS: Packets are handled by mobile FFI (mobile_vpn_read_packet)
+    if (ctx->zig_adapter) {
+        // Send packet to Zig adapter (queues in send_queue)
+        bool result = zig_adapter_put_packet(ctx->zig_adapter, (const uint8_t*)data, (uint64_t)size);
+        
+        // **CRITICAL**: Synchronously write queued packets to TUN device!
+        // Without this, packets accumulate in send_queue and never reach TUN
+        zig_adapter_write_sync(ctx->zig_adapter);
+        
+        return result;
+    } else {
+        // iOS: Packets are queued internally and read by mobile_vpn_read_packet
+        // For now, just return true (mobile FFI handles actual delivery)
+        return true;
+    }
 }
 
 // Free adapter
@@ -844,20 +914,26 @@ static void ZigAdapterFree(SESSION* s) {
     
     ctx->halt = true;
     
-    // Print final stats
-    printf("[ZigAdapterFree] Final statistics:\n");
-    zig_adapter_print_stats(ctx->zig_adapter);
-    
-    // Stop adapter
-    printf("[ZigAdapterFree] Stopping adapter...\n");
-    zig_adapter_stop(ctx->zig_adapter);
-    
-    // Destroy Zig adapter (this closes the TUN interface)
-    // ZIGSE-80: TunAdapter.close() now calls RouteManager.deinit() automatically,
-    // which restores routes BEFORE closing the device. No manual restoration needed.
-    printf("[ZigAdapterFree] Destroying adapter (TunAdapter will auto-restore routes)...\n");
-    zig_adapter_destroy(ctx->zig_adapter);
-    ctx->zig_adapter = NULL;
+    // macOS/Linux: Clean up Zig adapter and TUN device
+    // iOS: zig_adapter is NULL (mobile FFI mode)
+    if (ctx->zig_adapter) {
+        // Print final stats
+        printf("[ZigAdapterFree] Final statistics:\n");
+        zig_adapter_print_stats(ctx->zig_adapter);
+        
+        // Stop adapter
+        printf("[ZigAdapterFree] Stopping adapter...\n");
+        zig_adapter_stop(ctx->zig_adapter);
+        
+        // Destroy Zig adapter (this closes the TUN interface)
+        // ZIGSE-80: TunAdapter.close() now calls RouteManager.deinit() automatically,
+        // which restores routes BEFORE closing the device. No manual restoration needed.
+        printf("[ZigAdapterFree] Destroying adapter (TunAdapter will auto-restore routes)...\n");
+        zig_adapter_destroy(ctx->zig_adapter);
+        ctx->zig_adapter = NULL;
+    } else {
+        printf("[ZigAdapterFree] iOS mode - no TUN adapter to clean up\n");
+    }
     
     // NOTE: Don't release cancel here - SoftEther manages it via s->Cancel2
     // ReleaseCancel would cause a double-free since SoftEther calls ReleaseCancel(s->Cancel2)
