@@ -337,12 +337,20 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
     if (ctx->dhcp_state == DHCP_STATE_INIT && time_since_start >= 0) {
         if (get_count <= 5) {
             LOG_ERROR("ZigAdapter", "✅ Entering ARP generation block");
+            LOG_ERROR("ZigAdapter", "📋 Parameters: mac=%02x:%02x:%02x:%02x:%02x:%02x ip=0x%08x buffer=%p buflen=%zu", 
+                     ctx->my_mac[0], ctx->my_mac[1], ctx->my_mac[2], 
+                     ctx->my_mac[3], ctx->my_mac[4], ctx->my_mac[5],
+                     0x00000000, (void*)g_packet_buffer, MAX_PACKET_SIZE);
         }
     #else
     if (ctx->dhcp_state == DHCP_STATE_INIT && time_since_start >= 2000) {
     #endif
         size_t pkt_size = 0;
-        if (zig_build_gratuitous_arp(ctx->my_mac, 0x00000000, g_packet_buffer, MAX_PACKET_SIZE, &pkt_size)) {
+        bool result = zig_build_gratuitous_arp(ctx->my_mac, 0x00000000, g_packet_buffer, MAX_PACKET_SIZE, &pkt_size);
+        if (get_count <= 5) {
+            LOG_ERROR("ZigAdapter", "📋 Zig function returned: result=%d pkt_size=%zu", result, pkt_size);
+        }
+        if (result) {
             LOG_ERROR("ZigAdapter", "📡 Sending Gratuitous ARP (size=%zu)", pkt_size);
             UCHAR* pkt_copy = Malloc(pkt_size);
             memcpy(pkt_copy, g_packet_buffer, pkt_size);

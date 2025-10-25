@@ -445,7 +445,10 @@ fn calculateIpChecksum(header: []const u8) u16 {
 
 // C FFI exports
 export fn zig_build_dhcp_discover(mac_ptr: [*]const u8, xid: u32, buffer: [*]u8, buffer_len: usize, out_size: *usize) bool {
-    const mac: [6]u8 = mac_ptr[0..6].*;
+    var mac: [6]u8 = undefined;
+    for (0..6) |i| {
+        mac[i] = mac_ptr[i];
+    }
     const buf = buffer[0..buffer_len];
     const size = buildDhcpDiscover(mac, xid, buf) catch return false;
     out_size.* = size;
@@ -453,7 +456,10 @@ export fn zig_build_dhcp_discover(mac_ptr: [*]const u8, xid: u32, buffer: [*]u8,
 }
 
 export fn zig_build_dhcp_request(mac_ptr: [*]const u8, xid: u32, requested_ip: u32, server_ip: u32, buffer: [*]u8, buffer_len: usize, out_size: *usize) bool {
-    const mac: [6]u8 = mac_ptr[0..6].*;
+    var mac: [6]u8 = undefined;
+    for (0..6) |i| {
+        mac[i] = mac_ptr[i];
+    }
     const buf = buffer[0..buffer_len];
     const size = buildDhcpRequest(mac, xid, requested_ip, server_ip, buf) catch return false;
     out_size.* = size;
@@ -461,7 +467,12 @@ export fn zig_build_dhcp_request(mac_ptr: [*]const u8, xid: u32, requested_ip: u
 }
 
 export fn zig_build_gratuitous_arp(mac_ptr: [*]const u8, ip: u32, buffer: [*]u8, buffer_len: usize, out_size: *usize) bool {
-    const mac: [6]u8 = mac_ptr[0..6].*;
+    // Safety: Copy MAC address byte-by-byte to avoid alignment issues
+    var mac: [6]u8 = undefined;
+    for (0..6) |i| {
+        mac[i] = mac_ptr[i];
+    }
+
     const buf = buffer[0..buffer_len];
     const size = buildGratuitousArp(mac, ip, buf) catch return false;
     out_size.* = size;
@@ -469,7 +480,10 @@ export fn zig_build_gratuitous_arp(mac_ptr: [*]const u8, ip: u32, buffer: [*]u8,
 }
 
 export fn zig_build_arp_request(mac_ptr: [*]const u8, src_ip: u32, target_ip: u32, buffer: [*]u8, buffer_len: usize, out_size: *usize) bool {
-    const mac: [6]u8 = mac_ptr[0..6].*;
+    var mac: [6]u8 = undefined;
+    for (0..6) |i| {
+        mac[i] = mac_ptr[i];
+    }
     const buf = buffer[0..buffer_len];
     const size = buildArpRequest(mac, src_ip, target_ip, buf) catch return false;
     out_size.* = size;
@@ -477,8 +491,12 @@ export fn zig_build_arp_request(mac_ptr: [*]const u8, src_ip: u32, target_ip: u3
 }
 
 export fn zig_build_arp_reply(mac_ptr: [*]const u8, src_ip: u32, target_mac_ptr: [*]const u8, target_ip: u32, buffer: [*]u8, buffer_len: usize, out_size: *usize) bool {
-    const mac: [6]u8 = mac_ptr[0..6].*;
-    const target_mac: [6]u8 = target_mac_ptr[0..6].*;
+    var mac: [6]u8 = undefined;
+    var target_mac: [6]u8 = undefined;
+    for (0..6) |i| {
+        mac[i] = mac_ptr[i];
+        target_mac[i] = target_mac_ptr[i];
+    }
     const buf = buffer[0..buffer_len];
     const size = buildArpReply(mac, src_ip, target_mac, target_ip, buf) catch return false;
     out_size.* = size;
