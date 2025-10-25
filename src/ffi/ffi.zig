@@ -389,21 +389,31 @@ export fn mobile_vpn_read_packet(handle: ?*MobileVpnContext, buffer: [*]u8, buff
         return -2; // Not connected
     }
 
-    // Mobile platforms handle packet I/O themselves via TUN device
-    // This function is reserved for future full VPN client integration
-    _ = buffer;
-    _ = buffer_len;
-    _ = timeout_ms;
-    return 0; // No packets (not implemented)
+    const core = ctx.vpn_core orelse return -3; // No VPN core
+    const core_handle = core.handle orelse return -4; // No C handle
+
+    // Read packet from SoftEther client (packets coming FROM server TO client)
+    const result = c.vpn_bridge_read_packet(
+        core_handle,
+        buffer,
+        @intCast(buffer_len),
+        timeout_ms,
+    );
+
+    if (result > 0) {
+        // Update stats
+        ctx.stats.bytes_received += @intCast(result);
+        ctx.stats.packets_received += 1;
+    }
+
+    return @intCast(result);
 }
 
 /// Write packet to VPN (from TUN device)
 /// Returns 0 on success, negative on error
 ///
-/// Note: For mobile platforms, packet I/O is handled by:
-/// - iOS: NEPacketTunnelProvider writes to TUN, reads from server
-/// - Android: VpnService writes to TUN, reads from server
-/// This function is for future full VPN client integration
+/// This writes packets FROM the mobile device TO the VPN server
+/// Mobile app should call this when it reads packets from its TUN device
 export fn mobile_vpn_write_packet(handle: ?*MobileVpnContext, data: [*]const u8, data_len: u64) c_int {
     const ctx = handle orelse return -1;
 
@@ -411,14 +421,23 @@ export fn mobile_vpn_write_packet(handle: ?*MobileVpnContext, data: [*]const u8,
         return -2; // Not connected
     }
 
-    // Update stats for tracking
-    ctx.stats.bytes_sent += data_len;
-    ctx.stats.packets_sent += 1;
+    const core = ctx.vpn_core orelse return -3; // No VPN core
+    const core_handle = core.handle orelse return -4; // No C handle
 
-    // Mobile platforms handle packet I/O themselves via TUN device
-    // This function is reserved for future full VPN client integration
-    _ = data;
-    return 0; // Success (accepted but not implemented)
+    // Write packet to SoftEther client (packets going FROM client TO server)
+    const result = c.vpn_bridge_write_packet(
+        core_handle,
+        data,
+        @intCast(data_len),
+    );
+
+    if (result == 0) {
+        // Update stats
+        ctx.stats.bytes_sent += data_len;
+        ctx.stats.packets_sent += 1;
+    }
+
+    return result;
 }
 
 /// Set network configuration (called by platform after DHCP)
