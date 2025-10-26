@@ -293,7 +293,8 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
     static uint64_t get_count = 0;
     get_count++;
     
-    if (get_count <= 5) {
+    // Always log first 10 calls to diagnose DHCP flow
+    if (get_count <= 10) {
         LOG_ERROR("ZigAdapter", "[ZigAdapterGetNextPacket] 🔵 Called #%llu", get_count);
     }
     
@@ -319,8 +320,8 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
         return 0;
     }
     
-    if (get_count <= 5) {
-        LOG_ERROR("ZigAdapter", "[ZigAdapterGetNextPacket] ✅ All checks passed, proceeding...");
+    if (get_count <= 10) {
+        LOG_ERROR("ZigAdapter", "[ZigAdapterGetNextPacket] ✅ All checks passed, dhcp_state=%d", ctx->dhcp_state);
     }
     
     // DHCP state machine: Send Gratuitous ARP first (IMMEDIATELY on iOS - no delay)
@@ -386,6 +387,45 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
             size_t zig_size = 0;
             bool zig_ok = zig_build_dhcp_discover(ctx->my_mac, ctx->dhcp_xid, g_packet_buffer, MAX_PACKET_SIZE, &zig_size);
             
+            // ALWAYS log packet details for first 2 DISCOVERs to diagnose iOS issue
+            if (c_pkt && zig_ok && ctx->dhcp_retry_count <= 1) {
+                LOG_ERROR("ZigAdapter", "=== DHCP DISCOVER PACKET DUMP #%u ===", ctx->dhcp_retry_count);
+                LOG_ERROR("ZigAdapter", "MAC: %02x:%02x:%02x:%02x:%02x:%02x XID: 0x%08x",
+                         ctx->my_mac[0], ctx->my_mac[1], ctx->my_mac[2],
+                         ctx->my_mac[3], ctx->my_mac[4], ctx->my_mac[5],
+                         ctx->dhcp_xid);
+                LOG_ERROR("ZigAdapter", "C size: %u, Zig size: %zu", c_size, zig_size);
+                
+                // Dump Ethernet header (0-13)
+                LOG_ERROR("ZigAdapter", "Eth Dst: %02x:%02x:%02x:%02x:%02x:%02x",
+                         c_pkt[0], c_pkt[1], c_pkt[2], c_pkt[3], c_pkt[4], c_pkt[5]);
+                LOG_ERROR("ZigAdapter", "Eth Src: %02x:%02x:%02x:%02x:%02x:%02x Type: 0x%02x%02x",
+                         c_pkt[6], c_pkt[7], c_pkt[8], c_pkt[9], c_pkt[10], c_pkt[11],
+                         c_pkt[12], c_pkt[13]);
+                
+                // Dump IP header (14-33)
+                LOG_ERROR("ZigAdapter", "IP Ver/IHL: 0x%02x TOS: 0x%02x Len: %u",
+                         c_pkt[14], c_pkt[15], (c_pkt[16] << 8) | c_pkt[17]);
+                LOG_ERROR("ZigAdapter", "IP Src: %u.%u.%u.%u Dst: %u.%u.%u.%u",
+                         c_pkt[26], c_pkt[27], c_pkt[28], c_pkt[29],
+                         c_pkt[30], c_pkt[31], c_pkt[32], c_pkt[33]);
+                
+                // Dump UDP header (34-41)
+                LOG_ERROR("ZigAdapter", "UDP SrcPort: %u DstPort: %u Len: %u",
+                         (c_pkt[34] << 8) | c_pkt[35],
+                         (c_pkt[36] << 8) | c_pkt[37],
+                         (c_pkt[38] << 8) | c_pkt[39]);
+                
+                // Dump DHCP header start (42-57)
+                LOG_ERROR("ZigAdapter", "DHCP Op: %u HType: %u HLen: %u Hops: %u",
+                         c_pkt[42], c_pkt[43], c_pkt[44], c_pkt[45]);
+                LOG_ERROR("ZigAdapter", "DHCP XID: 0x%02x%02x%02x%02x",
+                         c_pkt[46], c_pkt[47], c_pkt[48], c_pkt[49]);
+                LOG_ERROR("ZigAdapter", "DHCP CHAddr: %02x:%02x:%02x:%02x:%02x:%02x",
+                         c_pkt[70], c_pkt[71], c_pkt[72], c_pkt[73], c_pkt[74], c_pkt[75]);
+                LOG_ERROR("ZigAdapter", "========================================");
+            }
+            
             // if (c_pkt && zig_ok) {
             //     printf("\n=== PACKET COMPARISON ===\n");
             //     printf("C size: %u, Zig size: %zu\n", c_size, zig_size);
@@ -437,8 +477,12 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
     
     // DHCP state machine: Send DHCP REQUEST (after receiving OFFER)
     if (ctx->dhcp_state == DHCP_STATE_OFFER_RECEIVED) {
+        LOG_ERROR("ZigAdapter", "🎯 DHCP_STATE_OFFER_RECEIVED detected! Building DHCP REQUEST...");
         size_t dhcp_size = 0;
         if (zig_build_dhcp_request(ctx->my_mac, ctx->dhcp_xid, ctx->offered_ip, ctx->dhcp_server_ip, g_packet_buffer, MAX_PACKET_SIZE, &dhcp_size)) {
+            LOG_ERROR("ZigAdapter", "📡 Sending DHCP REQUEST for IP %u.%u.%u.%u (size=%zu)",
+                   (ctx->offered_ip >> 24) & 0xFF, (ctx->offered_ip >> 16) & 0xFF,
+                   (ctx->offered_ip >> 8) & 0xFF, ctx->offered_ip & 0xFF, dhcp_size);
             printf("[ZigAdapterGetNextPacket] 📡 Sending DHCP REQUEST for IP %u.%u.%u.%u (size=%zu)\n",
                    (ctx->offered_ip >> 24) & 0xFF, (ctx->offered_ip >> 16) & 0xFF,
                    (ctx->offered_ip >> 8) & 0xFF, ctx->offered_ip & 0xFF, dhcp_size);
@@ -449,6 +493,8 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
             ctx->dhcp_state = DHCP_STATE_REQUEST_SENT;
             ctx->last_dhcp_send_time = now;
             return dhcp_size;
+        } else {
+            LOG_ERROR("ZigAdapter", "❌ zig_build_dhcp_request FAILED!");
         }
     }
     

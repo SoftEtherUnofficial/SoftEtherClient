@@ -148,12 +148,16 @@ void log_error_impl(const char* tag, const char* fmt, ...) {
     vsnprintf(message, sizeof(message), fmt, args);
     va_end(args);
     
-    os_log_error(log_handle, "[%{public}s] %{public}s", tag, message);
+    // Use OS_LOG_TYPE_ERROR to ensure it always appears in Console
+    os_log_with_type(log_handle, OS_LOG_TYPE_ERROR, "[%{public}s] %{public}s", tag, message);
 #else
+    fprintf(stderr, "%s[ERROR] %s:%s ", COLOR_RED, tag, COLOR_RESET);
     va_list args;
     va_start(args, fmt);
-    log_message(LOG_LEVEL_ERROR, tag, fmt, args);
+    vfprintf(stderr, fmt, args);
     va_end(args);
+    fprintf(stderr, "\n");
+    fflush(stderr);
 #endif
 }
 
@@ -170,12 +174,16 @@ void log_warn_impl(const char* tag, const char* fmt, ...) {
     vsnprintf(message, sizeof(message), fmt, args);
     va_end(args);
     
-    os_log(log_handle, "[%{public}s] %{public}s", tag, message);
+    // Use OS_LOG_TYPE_DEFAULT to ensure it appears in Console
+    os_log_with_type(log_handle, OS_LOG_TYPE_DEFAULT, "[%{public}s] %{public}s", tag, message);
 #else
+    fprintf(stderr, "%s[WARN] %s:%s ", COLOR_YELLOW, tag, COLOR_RESET);
     va_list args;
     va_start(args, fmt);
-    log_message(LOG_LEVEL_WARN, tag, fmt, args);
+    vfprintf(stderr, fmt, args);
     va_end(args);
+    fprintf(stderr, "\n");
+    fflush(stderr);
 #endif
 }
 
@@ -192,12 +200,16 @@ void log_info_impl(const char* tag, const char* fmt, ...) {
     vsnprintf(message, sizeof(message), fmt, args);
     va_end(args);
     
-    os_log(log_handle, "[%{public}s] %{public}s", tag, message);
+    // Use OS_LOG_TYPE_DEFAULT to ensure it appears in Console (not just DEBUG builds)
+    os_log_with_type(log_handle, OS_LOG_TYPE_DEFAULT, "[%{public}s] %{public}s", tag, message);
 #else
+    fprintf(stderr, "%s[INFO] %s:%s ", COLOR_GREEN, tag, COLOR_RESET);
     va_list args;
     va_start(args, fmt);
-    log_message(LOG_LEVEL_INFO, tag, fmt, args);
+    vfprintf(stderr, fmt, args);
     va_end(args);
+    fprintf(stderr, "\n");
+    fflush(stderr);
 #endif
 }
 
@@ -214,12 +226,16 @@ void log_debug_impl(const char* tag, const char* fmt, ...) {
     vsnprintf(message, sizeof(message), fmt, args);
     va_end(args);
     
-    os_log_debug(log_handle, "[%{public}s] %{public}s", tag, message);
+    // Use OS_LOG_TYPE_DEFAULT instead of DEBUG so it appears without enabling debug logs
+    os_log_with_type(log_handle, OS_LOG_TYPE_DEFAULT, "[%{public}s] %{public}s", tag, message);
 #else
+    fprintf(stderr, "%s[DEBUG] %s:%s ", COLOR_CYAN, tag, COLOR_RESET);
     va_list args;
     va_start(args, fmt);
-    log_message(LOG_LEVEL_DEBUG, tag, fmt, args);
+    vfprintf(stderr, fmt, args);
     va_end(args);
+    fprintf(stderr, "\n");
+    fflush(stderr);
 #endif
 }
 
@@ -236,11 +252,15 @@ void log_trace_impl(const char* tag, const char* fmt, ...) {
     vsnprintf(message, sizeof(message), fmt, args);
     va_end(args);
     
-    os_log_debug(log_handle, "[%{public}s] %{public}s", tag, message);
+    // Use OS_LOG_TYPE_DEBUG for trace logs (lowest priority)
+    os_log_with_type(log_handle, OS_LOG_TYPE_DEBUG, "[%{public}s] %{public}s", tag, message);
 #else
+    fprintf(stderr, "%s[TRACE] %s:%s ", COLOR_GRAY, tag, COLOR_RESET);
     va_list args;
     va_start(args, fmt);
-    log_message(LOG_LEVEL_TRACE, tag, fmt, args);
+    vfprintf(stderr, fmt, args);
     va_end(args);
+    fprintf(stderr, "\n");
+    fflush(stderr);
 #endif
 }
