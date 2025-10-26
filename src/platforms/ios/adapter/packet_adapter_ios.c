@@ -194,6 +194,10 @@ typedef struct {
     bool valid;               // True if DHCP info has been received
     uint32_t xid;             // DHCP transaction ID
     uint8_t client_mac[6];    // Client MAC address
+    bool offer_received;      // True if we received DHCP OFFER (need to send REQUEST)
+    bool request_sent;        // True if we sent DHCP REQUEST (waiting for ACK)
+    uint64_t last_discover_time;  // Tick64() when last DISCOVER was sent
+    uint64_t last_request_time;   // Tick64() when last REQUEST was sent
 } DHCPState;
 
 typedef struct {
@@ -357,7 +361,14 @@ static bool parse_dhcp_packet(const uint8_t* data, uint32_t length, DHCPState* d
         dhcp->dns_server1 = dns1 ? dns1 : 0x08080808;  // Default 8.8.8.8
         dhcp->dns_server2 = dns2 ? dns2 : 0x08080404;  // Default 8.8.4.4
         dhcp->dhcp_server = server_ip;
-        dhcp->valid = true;
+        
+        if (msg_type == DHCP_OFFER) {
+            dhcp->offer_received = true;
+            dhcp->request_sent = false;
+            dhcp->valid = false;  // Not valid until we get ACK
+        } else if (msg_type == DHCP_ACK) {
+            dhcp->valid = true;  // ACK confirms configuration
+        }
         
         LOG_INFO("IOS_ADAPTER", "📡 DHCP %s received: IP=%u.%u.%u.%u, GW=%u.%u.%u.%u, Mask=%u.%u.%u.%u",
                msg_type == DHCP_OFFER ? "OFFER" : "ACK",
@@ -499,6 +510,10 @@ static void send_dhcp_discover(IOS_ADAPTER_CONTEXT* ctx) {
                xid,
                client_mac[0], client_mac[1], client_mac[2],
                client_mac[3], client_mac[4], client_mac[5]);
+        LOG_INFO("IOS_ADAPTER", "  [SIZE] Total=%u, Eth=14, IP=20, UDP=8, DHCP=%u",
+                 packet_length, packet_length - 14 - 20 - 8);
+        LOG_INFO("IOS_ADAPTER", "  [DHCP] op=%u, htype=%u, xid=0x%08X, flags=0x%04X",
+                 packet[14+20+8], packet[14+20+8+1], xid, 0x8000);
     } else {
         LOG_ERROR("IOS_ADAPTER", "Failed to enqueue DHCP DISCOVER packet");
     }
@@ -661,6 +676,7 @@ static bool IosAdapterInit(SESSION* s) {
     
     // Send DHCP DISCOVER to request IP configuration from VPN server
     LOG_INFO("IOS_ADAPTER", "IosAdapterInit: Sending DHCP DISCOVER to initiate IP configuration...");
+    ctx->dhcp_state.last_discover_time = Tick64();  // Initialize retry timer
     send_dhcp_discover(ctx);
     
     return true;
@@ -701,17 +717,97 @@ static UINT IosAdapterGetNextPacket(SESSION *s, void **data) {
     uint8_t buffer[IOS_MAX_PACKET_SIZE];
     
     // ===================================================================
+    // DHCP STATE MACHINE: Generate DHCP REQUEST when OFFER received
+    // ===================================================================
+    if (ctx->dhcp_state.offer_received && !ctx->dhcp_state.request_sent) {
+        LOG_INFO("IOS_ADAPTER", "GetNextPacket: 📡 DHCP OFFER received, generating DHCP REQUEST");
+        
+        UINT request_size = 0;
+        UCHAR *request_packet = BuildDhcpRequest(
+            ctx->dhcp_state.client_mac,
+            ctx->dhcp_state.xid,
+            ctx->dhcp_state.client_ip,
+            ctx->dhcp_state.dhcp_server,
+            &request_size
+        );
+        
+        if (request_packet && request_size > 0) {
+            LOG_INFO("IOS_ADAPTER", "GetNextPacket: ✅ DHCP REQUEST generated: %u bytes, IP=%u.%u.%u.%u, Server=%u.%u.%u.%u",
+                     request_size,
+                     ctx->dhcp_state.client_ip & 0xFF, (ctx->dhcp_state.client_ip >> 8) & 0xFF,
+                     (ctx->dhcp_state.client_ip >> 16) & 0xFF, (ctx->dhcp_state.client_ip >> 24) & 0xFF,
+                     ctx->dhcp_state.dhcp_server & 0xFF, (ctx->dhcp_state.dhcp_server >> 8) & 0xFF,
+                     (ctx->dhcp_state.dhcp_server >> 16) & 0xFF, (ctx->dhcp_state.dhcp_server >> 24) & 0xFF);
+            
+            ctx->dhcp_state.request_sent = true;
+            ctx->dhcp_state.last_request_time = Tick64();  // Track retry time
+            *data = request_packet;
+            return request_size;
+        } else {
+            LOG_ERROR("IOS_ADAPTER", "GetNextPacket: ❌ Failed to generate DHCP REQUEST");
+        }
+    }
+    
+    // ===================================================================
+    // DHCP RETRY MECHANISM: Resend DISCOVER/REQUEST if no response
+    // ===================================================================
+    UINT64 now = Tick64();
+    UINT64 elapsed = now - ctx->dhcp_state.last_discover_time;
+    
+    // Log retry check every 10 iterations to avoid log spam
+    static uint64_t retry_check_count = 0;
+    retry_check_count++;
+    if (retry_check_count % 10 == 0) {
+        LOG_INFO("IOS_ADAPTER", "GetNextPacket: 🔍 Retry check #%llu: offer_received=%d valid=%d elapsed=%llums", 
+                 retry_check_count, ctx->dhcp_state.offer_received, ctx->dhcp_state.valid, elapsed);
+    }
+    
+    // Retry DISCOVER if no OFFER received after 3 seconds
+    if (!ctx->dhcp_state.offer_received && !ctx->dhcp_state.valid) {
+        if (elapsed >= 3000) {
+            LOG_INFO("IOS_ADAPTER", "GetNextPacket: ⏱️ DHCP DISCOVER timeout (elapsed=%llums) - retrying...", elapsed);
+            ctx->dhcp_state.last_discover_time = now;
+            send_dhcp_discover(ctx);
+            SleepThread(10);  // Avoid tight loop
+            return 0;  // Return 0 to indicate no packet this iteration
+        }
+    }
+    // Retry REQUEST if no ACK received after 3 seconds
+    else if (ctx->dhcp_state.offer_received && ctx->dhcp_state.request_sent && !ctx->dhcp_state.valid) {
+        UINT64 request_elapsed = now - ctx->dhcp_state.last_request_time;
+        if (request_elapsed >= 3000) {
+            LOG_INFO("IOS_ADAPTER", "GetNextPacket: ⏱️ DHCP REQUEST timeout (elapsed=%llums) - retrying...", request_elapsed);
+            ctx->dhcp_state.last_request_time = now;
+            ctx->dhcp_state.request_sent = false;  // Reset to trigger resend
+            return 0;  // Return 0 to indicate no packet this iteration
+        }
+    }
+    
+    // ===================================================================
     // PRIORITY 1: Check outgoing queue FIRST (for DHCP DISCOVER packets)
     // ===================================================================
     int length = packet_queue_dequeue(ctx->outgoing_queue, buffer, IOS_MAX_PACKET_SIZE, 0);  // No wait
     
     if (length > 0) {
-        // Got a packet from outgoing queue (DHCP DISCOVER)
+        // Got a packet from outgoing queue (locally-generated DHCP or server packets)
+        // SessionMain expects L2 Ethernet frames - send as-is!
         static uint64_t outgoing_count = 0;
         outgoing_count++;
-        LOG_INFO("IOS_ADAPTER", "GetNextPacket: 📤 OUTGOING #%llu (DHCP): %d bytes (L2 Ethernet)", outgoing_count, length);
         
-        // Allocate and copy (SessionMain expects Malloc'd data)
+        // CRITICAL FIX: SessionMain expects L2 Ethernet frames, NOT L3 IP!
+        // CRITICAL FIX: SessionMain expects L2 Ethernet frames, NOT L3 IP!
+        // SessionMain checks buf[0] & 0x01 (Ethernet dest MAC multicast bit)
+        // and requires packet_size >= 14 (Ethernet header size)
+        // 
+        // We should NOT translate locally-generated DHCP packets to L3 IP.
+        // Send them as L2 Ethernet frames directly to SessionMain, which will
+        // forward them over the VPN tunnel to the server AS ETHERNET FRAMES.
+        //
+        // The server's DHCP service requires full Ethernet frames with MAC addresses!
+        
+        LOG_INFO("IOS_ADAPTER", "GetNextPacket: � OUTGOING #%llu: %d bytes (L2 Ethernet to VPN server)", outgoing_count, length);
+        
+        // Allocate and copy Ethernet frame as-is (SessionMain expects Malloc'd data)
         void* packet = Malloc(length);
         if (!packet) {
             LOG_ERROR("IOS_ADAPTER", "GetNextPacket: MALLOC FAILED for %d bytes", length);
@@ -835,6 +931,17 @@ static bool IosAdapterPutPacket(SESSION *s, void *data, UINT size) {
     put_count++;
     LOG_INFO("IOS_ADAPTER", "PutPacket: 📩 PACKET #%llu FROM SERVER: %u bytes (L2 Ethernet)", put_count, size);
     
+    // Hex dump first 64 bytes for debugging
+    const uint8_t* pkt = (const uint8_t*)data;
+    if (size >= 64) {
+        LOG_INFO("IOS_ADAPTER", "  [HEX] %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+                 pkt[0], pkt[1], pkt[2], pkt[3], pkt[4], pkt[5], pkt[6], pkt[7],
+                 pkt[8], pkt[9], pkt[10], pkt[11], pkt[12], pkt[13], pkt[14], pkt[15]);
+        LOG_INFO("IOS_ADAPTER", "  [HEX] %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+                 pkt[16], pkt[17], pkt[18], pkt[19], pkt[20], pkt[21], pkt[22], pkt[23],
+                 pkt[24], pkt[25], pkt[26], pkt[27], pkt[28], pkt[29], pkt[30], pkt[31]);
+    }
+    
     // === TapTun L2→L3 Translation ===
     // Convert Ethernet frame to IP packet before queuing
     // iOS NEPacketTunnelProvider expects pure IP packets (L3), not Ethernet (L2)
@@ -897,45 +1004,96 @@ static bool IosAdapterPutPacket(SESSION *s, void *data, UINT size) {
     // Check if this is a DHCP packet - DON'T enqueue, handle via state machine
     if (ip_len >= 20) {
         const uint8_t* ip_hdr = ip_packet_buf;
+        
+        // Get IP header length (IHL field is in lower 4 bits of first byte, in 4-byte units)
+        uint8_t ip_hdr_len = (ip_hdr[0] & 0x0F) * 4;
+        if (ip_hdr_len < 20 || ip_hdr_len > 60) {
+            LOG_ERROR("IOS_ADAPTER", "PutPacket: Invalid IP header length: %u bytes", ip_hdr_len);
+            ip_hdr_len = 20; // Fallback to minimum
+        }
+        
         uint8_t protocol = ip_hdr[9];
         
+        // Log protocol for debugging
+        if (ip_len >= 28) {
+            LOG_INFO("IOS_ADAPTER", "PutPacket: 📊 IP protocol=%u (17=UDP), ip_hdr_len=%u, ip_len=%d",
+                     protocol, ip_hdr_len, ip_len);
+        }
+        
+        // CRITICAL DEBUG: Check UDP condition components
+        int min_udp_len = ip_hdr_len + 8;
+        bool is_udp = (protocol == 17);
+        bool len_ok = (ip_len >= min_udp_len);
+        LOG_INFO("IOS_ADAPTER", "PutPacket: 🔍 UDP check: protocol=%u, is_udp=%d, ip_len=%d, min_udp_len=%d, len_ok=%d",
+                 protocol, is_udp, ip_len, min_udp_len, len_ok);
+        
         // UDP (DHCP)
-        if (protocol == 17 && ip_len >= 28) {
-            const uint8_t* udp_hdr = ip_hdr + 20;
+        if (protocol == 17 && ip_len >= (ip_hdr_len + 8)) {
+            const uint8_t* udp_hdr = ip_hdr + ip_hdr_len;  // Use actual IP header length!
             uint16_t src_port = (udp_hdr[0] << 8) | udp_hdr[1];
             uint16_t dst_port = (udp_hdr[2] << 8) | udp_hdr[3];
+            uint16_t udp_len = (udp_hdr[4] << 8) | udp_hdr[5];
+            
+            // ALWAYS log UDP ports to diagnose DHCP detection
+            LOG_INFO("IOS_ADAPTER", "PutPacket: 🔍 UDP packet: %u→%u, udp_len=%u, ip_len=%d", 
+                     src_port, dst_port, udp_len, ip_len);
             
             // DHCP server→client (67→68)
-            if (src_port == 67 && dst_port == 68 && ip_len >= 236) {
-                // Reconstruct full Ethernet frame for parse_dhcp_packet
-                uint8_t full_packet[IOS_MAX_PACKET_SIZE];
-                memcpy(full_packet, data, size);  // Copy original Ethernet packet
+            // UDP length includes 8-byte header, so payload = udp_len - 8
+            // DHCP minimum is 236 bytes payload (but many servers send less with minimal options)
+            // Accept any DHCP packet (port check is sufficient)
+            uint16_t udp_payload_len = (udp_len > 8) ? (udp_len - 8) : 0;
+            
+            if (src_port == 67 && dst_port == 68) {
+                LOG_INFO("IOS_ADAPTER", "PutPacket: 📩 DHCP packet detected (UDP %u→%u, udp_len=%u, payload=%u bytes)", 
+                         src_port, dst_port, udp_len, udp_payload_len);
                 
-                // Parse DHCP packet to extract full configuration
+                // CRITICAL: Use original L2 Ethernet packet for DHCP parsing
+                // parse_dhcp_packet expects full Ethernet frame (not just IP)
+                
+                // Parse DHCP packet to extract configuration and update state
                 pthread_mutex_lock(&ctx->dhcp_mutex);
-                bool parsed = parse_dhcp_packet(full_packet, size, &ctx->dhcp_state);
+                bool parsed = parse_dhcp_packet(data, size, &ctx->dhcp_state);  // Use original Ethernet frame
                 pthread_mutex_unlock(&ctx->dhcp_mutex);
                 
-                if (parsed && ctx->dhcp_state.valid) {
+                if (parsed) {
                     uint32_t your_ip = ctx->dhcp_state.client_ip;
                     
-                    // Configure TapTun with our IP address
-                    taptun_translator_set_our_ip(ctx->translator, your_ip);
-                    
-                    LOG_INFO("IOS_ADAPTER", "PutPacket: ✅ DHCP configuration obtained:");
-                    LOG_INFO("IOS_ADAPTER", "  IP: %u.%u.%u.%u",
-                             (your_ip >> 24) & 0xFF, (your_ip >> 16) & 0xFF, 
+                    LOG_INFO("IOS_ADAPTER", "PutPacket: ✅ DHCP parsed: offer_received=%d request_sent=%d valid=%d",
+                             ctx->dhcp_state.offer_received, ctx->dhcp_state.request_sent, ctx->dhcp_state.valid);
+                    LOG_INFO("IOS_ADAPTER", "  Client IP: %u.%u.%u.%u",
+                             (your_ip >> 24) & 0xFF, (your_ip >> 16) & 0xFF,
                              (your_ip >> 8) & 0xFF, your_ip & 0xFF);
-                    LOG_INFO("IOS_ADAPTER", "  Mask: %u.%u.%u.%u",
-                             (ctx->dhcp_state.subnet_mask >> 24) & 0xFF, 
-                             (ctx->dhcp_state.subnet_mask >> 16) & 0xFF,
-                             (ctx->dhcp_state.subnet_mask >> 8) & 0xFF, 
-                             ctx->dhcp_state.subnet_mask & 0xFF);
-                    LOG_INFO("IOS_ADAPTER", "  Gateway: %u.%u.%u.%u",
-                             (ctx->dhcp_state.gateway >> 24) & 0xFF, 
-                             (ctx->dhcp_state.gateway >> 16) & 0xFF,
-                             (ctx->dhcp_state.gateway >> 8) & 0xFF, 
-                             ctx->dhcp_state.gateway & 0xFF);
+                    
+                    if (ctx->dhcp_state.valid) {
+                        // DHCP ACK received - configure TapTun with our IP address
+                        taptun_translator_set_our_ip(ctx->translator, your_ip);
+                        
+                        LOG_INFO("IOS_ADAPTER", "PutPacket: ✅ DHCP ACK - configuration obtained:");
+                        LOG_INFO("IOS_ADAPTER", "  IP: %u.%u.%u.%u",
+                                 (your_ip >> 24) & 0xFF, (your_ip >> 16) & 0xFF, 
+                                 (your_ip >> 8) & 0xFF, your_ip & 0xFF);
+                        LOG_INFO("IOS_ADAPTER", "  Mask: %u.%u.%u.%u",
+                                 (ctx->dhcp_state.subnet_mask >> 24) & 0xFF, 
+                                 (ctx->dhcp_state.subnet_mask >> 16) & 0xFF,
+                                 (ctx->dhcp_state.subnet_mask >> 8) & 0xFF, 
+                                 ctx->dhcp_state.subnet_mask & 0xFF);
+                        LOG_INFO("IOS_ADAPTER", "  Gateway: %u.%u.%u.%u",
+                                 (ctx->dhcp_state.gateway >> 24) & 0xFF, 
+                                 (ctx->dhcp_state.gateway >> 16) & 0xFF,
+                                 (ctx->dhcp_state.gateway >> 8) & 0xFF, 
+                                 ctx->dhcp_state.gateway & 0xFF);
+                    }
+                } else {
+                    LOG_ERROR("IOS_ADAPTER", "PutPacket: ❌ Failed to parse DHCP packet (size=%u, udp_payload=%u)",
+                             size, udp_payload_len);
+                    // Log first 64 bytes of packet for debugging
+                    const uint8_t* pkt_bytes = (const uint8_t*)data;
+                    if (size >= 64) {
+                        LOG_ERROR("IOS_ADAPTER", "Packet header: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x...",
+                                 pkt_bytes[0], pkt_bytes[1], pkt_bytes[2], pkt_bytes[3], pkt_bytes[4], pkt_bytes[5], pkt_bytes[6], pkt_bytes[7],
+                                 pkt_bytes[8], pkt_bytes[9], pkt_bytes[10], pkt_bytes[11], pkt_bytes[12], pkt_bytes[13], pkt_bytes[14], pkt_bytes[15]);
+                    }
                 }
                 
                 // ✅ CRITICAL: Do NOT enqueue DHCP packets - they're handled by state machine in GetNextPacket

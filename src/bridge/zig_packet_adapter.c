@@ -197,11 +197,26 @@ static bool ZigAdapterInit(SESSION* s) {
     }
     
     printf("[ZigAdapterInit] TUN device opened successfully\n");
+    ctx->taptun_translator = NULL;  // Not used on desktop
 #else
-    // iOS: NEPacketTunnelProvider manages utun - don't create adapter
-    // Packets flow through mobile FFI (mobile_vpn_read/write_packet)
-    ctx->zig_adapter = NULL;
-    printf("[ZigAdapterInit] iOS mode - skipping TUN device (using mobile FFI)\n");
+    // iOS: Use TapTun translator for DHCP/ARP logic WITHOUT TUN device
+    // NEPacketTunnelProvider manages utun, packets flow through mobile FFI
+    // But we still need translator for:
+    // - L2↔L3 conversion (Ethernet ↔ IP)
+    // - DHCP packet detection and parsing
+    // - ARP handling and MAC learning
+    
+    // Initialize TapTun translator with our MAC address
+    ctx->taptun_translator = taptun_translator_create(ctx->my_mac);
+    if (!ctx->taptun_translator) {
+        printf("[ZigAdapterInit] ❌ Failed to create TapTun translator for iOS\n");
+        ReleaseCancel(ctx->cancel);
+        Free(ctx);
+        return false;
+    }
+    
+    ctx->zig_adapter = NULL;  // No TUN device on iOS
+    printf("[ZigAdapterInit] ✅ iOS mode - using TapTun translator (Zig-powered DHCP + ARP)\n");
 #endif
     
     // **CRITICAL FIX**: Do NOT start async threads!
@@ -901,7 +916,6 @@ static void ZigAdapterFree(SESSION* s) {
     ctx->halt = true;
     
     // macOS/Linux: Clean up Zig adapter and TUN device
-    // iOS: zig_adapter is NULL (mobile FFI mode)
     if (ctx->zig_adapter) {
         // Print final stats
         printf("[ZigAdapterFree] Final statistics:\n");
@@ -917,9 +931,17 @@ static void ZigAdapterFree(SESSION* s) {
         printf("[ZigAdapterFree] Destroying adapter (TunAdapter will auto-restore routes)...\n");
         zig_adapter_destroy(ctx->zig_adapter);
         ctx->zig_adapter = NULL;
-    } else {
-        printf("[ZigAdapterFree] iOS mode - no TUN adapter to clean up\n");
     }
+    
+#ifdef UNIX_IOS
+    // iOS: Clean up TapTun translator
+    if (ctx->taptun_translator) {
+        printf("[ZigAdapterFree] Destroying TapTun translator...\n");
+        taptun_translator_destroy(ctx->taptun_translator);
+        ctx->taptun_translator = NULL;
+        printf("[ZigAdapterFree] ✅ TapTun translator destroyed\n");
+    }
+#endif
     
     // NOTE: Don't release cancel here - SoftEther manages it via s->Cancel2
     // ReleaseCancel would cause a double-free since SoftEther calls ReleaseCancel(s->Cancel2)

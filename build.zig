@@ -382,8 +382,9 @@ pub fn build(b: *std.Build) void {
         .flags = c_flags,
     });
 
-    // Add mobile_ffi_c.c for iOS (connection management)
-    // Packet I/O is now in adapter.zig (ios_adapter_* functions)
+    // Add mobile_ffi_c.c for iOS
+    // Contains mobile_vpn_* functions (always needed)
+    // Zig adapter stubs are conditionally compiled based on USE_ZIG_ADAPTER
     if (is_ios) {
         mobile_ffi_lib.addCSourceFile(.{
             .file = b.path("src/ffi/mobile_ffi_c.c"),
@@ -405,6 +406,49 @@ pub fn build(b: *std.Build) void {
     }
 
     mobile_ffi_lib.root_module.addImport("taptun", taptun_module);
+
+    // Add Zig packet adapter module and TapTun for iOS
+    if (is_ios or use_zig_adapter) {
+        // Add TapTun C FFI exports (provides taptun_translator_* functions)
+        const taptun_ffi_obj = b.addObject(.{
+            .name = "taptun_compat",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("TapTun/src/c_ffi.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        taptun_ffi_obj.root_module.addImport("taptun", taptun_module);
+        mobile_ffi_lib.addObject(taptun_ffi_obj);
+
+        // Add DHCP parser module (provides zig_dhcp_parse function)
+        const dhcp_module_mobile = b.createModule(.{
+            .root_source_file = b.path("src/packet/dhcp.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+
+        const dhcp_obj_mobile = b.addObject(.{
+            .name = "zig_dhcp_mobile",
+            .root_module = dhcp_module_mobile,
+        });
+        mobile_ffi_lib.addObject(dhcp_obj_mobile);
+
+        // Add protocol builders (provides zig_build_dhcp_*, zig_build_arp_* functions)
+        const protocol_module_mobile = b.createModule(.{
+            .root_source_file = b.path("src/packet/protocol.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+
+        const protocol_obj_mobile = b.addObject(.{
+            .name = "zig_protocol_mobile",
+            .root_module = protocol_module_mobile,
+        });
+        mobile_ffi_lib.addObject(protocol_obj_mobile);
+
+        std.debug.print("Added TapTun C FFI exports, DHCP parser, and protocol builders\n", .{});
+    }
 
     // Add Zig packet adapter module for iOS (provides ios_adapter_* FFI exports)
     if (is_ios) {

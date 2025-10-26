@@ -494,7 +494,9 @@ BOOL NsStartIpTablesTracking(NATIVE_STACK *a) { return FALSE; }
 int getch(void) { return 0; }
 void* g_ip_config = NULL;
 
-// Zig adapter stubs
+#ifndef USE_ZIG_ADAPTER
+// Zig adapter stubs (only used when NOT using real Zig adapter)
+// When USE_ZIG_ADAPTER=1, these are provided by zig_ios_adapter.o
 void* zig_adapter_create(void) { return NULL; }
 void zig_adapter_destroy(void* adapter) {}
 int zig_adapter_open(void* adapter, const char* name) { return -1; }
@@ -513,3 +515,4 @@ void* zig_build_arp_request(void* src_mac, void* src_ip, void* target_ip, int* l
 void* zig_build_arp_reply(void* src_mac, void* src_ip, void* dst_mac, void* dst_ip, int* len) { *len = 0; return NULL; }
 void* zig_build_gratuitous_arp(void* mac, void* ip, int* len) { *len = 0; return NULL; }
 int zig_dhcp_parse(const void* data, int len, void* result) { return -1; }
+#endif // !USE_ZIG_ADAPTER

@@ -25,26 +25,23 @@
 #include "logging.h"
 
 // Platform-specific packet adapter
-#if defined(UNIX_IOS)
-    // iOS uses specialized packet adapter with NEPacketTunnelProvider integration
+// Zig adapter is preferred for iOS and macOS (better performance)
+#ifndef USE_ZIG_ADAPTER
+#define USE_ZIG_ADAPTER 1  // Default: use Zig adapter (set to 0 for legacy C adapter)
+#endif
+
+#if USE_ZIG_ADAPTER && (defined(UNIX_IOS) || defined(UNIX_MACOS))
+    // Use Zig packet adapter (iOS and macOS)
+    #include "zig_packet_adapter.h"
+    #define NEW_PACKET_ADAPTER() NewZigPacketAdapter()
+#elif defined(UNIX_IOS)
+    // Legacy iOS C adapter (deprecated - use Zig adapter instead)
     #include "packet_adapter_ios.h"
     #define NEW_PACKET_ADAPTER() NewIosPacketAdapter()
 #elif defined(UNIX_MACOS)
+    // Legacy macOS C adapter
     #include "packet_adapter_macos.h"
-    #include "zig_packet_adapter.h"
-    
-    // Toggle between C and Zig adapter (set to 1 to use Zig adapter)
-    #ifndef USE_ZIG_ADAPTER
-    #define USE_ZIG_ADAPTER 0  // Default: use C adapter (change to 1 for Zig)
-    #endif
-    
-    #if USE_ZIG_ADAPTER
-        #define NEW_PACKET_ADAPTER() NewZigPacketAdapter()
-        // Building with Zig packet adapter
-    #else
-        #define NEW_PACKET_ADAPTER() NewMacOsTunAdapter()
-        // Building with C packet adapter
-    #endif
+    #define NEW_PACKET_ADAPTER() NewMacOsTunAdapter()
 #elif defined(UNIX_LINUX)
     #include "packet_adapter_linux.h"
     #define NEW_PACKET_ADAPTER() NewLinuxTunAdapter()
@@ -719,42 +716,37 @@ int vpn_bridge_connect(VpnBridgeClient* client) {
     // Create packet adapter
     PACKET_ADAPTER* pa = NULL;
     
-    // Create packet adapter based on platform and runtime configuration
+    // Create packet adapter based on platform and compile-time configuration
     LOG_DEBUG("VPN", "Creating packet adapter (use_zig_adapter=%d)", client->use_zig_adapter);
     
-#if defined(UNIX_IOS)
-    // iOS always uses specialized iOS packet adapter
-    pa = NewIosPacketAdapter();
-    if (pa) {
-        LOG_INFO("VPN", "Using iOS packet adapter (NEPacketTunnelProvider integration)");
-    } else {
-        LOG_ERROR("VPN", "Failed to create iOS packet adapter");
-    }
-#else
-    // Other platforms: respect use_zig_adapter config
-    if (client->use_zig_adapter) {
+    #if USE_ZIG_ADAPTER && (defined(UNIX_IOS) || defined(UNIX_MACOS))
+        // iOS/macOS: Use Zig adapter (universal DHCP support)
         pa = NewZigPacketAdapter();
         if (pa) {
-            LOG_INFO("VPN", "Using Zig packet adapter (pure Zig implementation)");
+            LOG_INFO("VPN", "✅ Using Zig packet adapter (optimized for iOS/macOS)");
         } else {
-            LOG_ERROR("VPN", "Failed to create Zig adapter");
-            // No fallback to C adapter when USE_ZIG_ADAPTER=1 (C adapter not compiled)
+            LOG_ERROR("VPN", "❌ Failed to create Zig packet adapter");
         }
-    } else {
-        #if USE_ZIG_ADAPTER
-            // When compiled with USE_ZIG_ADAPTER, always use Zig adapter
-            LOG_INFO("VPN", "Forcing Zig adapter (compiled with USE_ZIG_ADAPTER=1)");
-            pa = NewZigPacketAdapter();
-        #else
-            // Legacy C adapter (packet_adapter_macos.c)
-            pa = NEW_PACKET_ADAPTER();
-            LOG_INFO("VPN", "Using platform-specific packet adapter");
-        #endif
-    }
-#endif
+    #elif defined(UNIX_IOS)
+        // Legacy iOS: Use specialized iOS packet adapter (NEPacketTunnelProvider integration)
+        pa = NewIosPacketAdapter();
+        if (pa) {
+            LOG_INFO("VPN", "✅ Using iOS packet adapter (optimized for NEPacketTunnelProvider)");
+        } else {
+            LOG_ERROR("VPN", "❌ Failed to create iOS packet adapter");
+        }
+    #else
+        // Other platforms: Use Zig adapter
+        pa = NewZigPacketAdapter();
+        if (pa) {
+            LOG_INFO("VPN", "✅ Using Zig packet adapter (with TUN device management)");
+        } else {
+            LOG_ERROR("VPN", "❌ Failed to create Zig packet adapter");
+        }
+    #endif
     
     if (!pa) {
-        LOG_ERROR("VPN", "Failed to create packet adapter");
+        LOG_ERROR("VPN", "❌ Failed to create packet adapter");
         
         // Update reconnection state
         client->consecutive_failures++;
@@ -1097,7 +1089,7 @@ int vpn_bridge_get_dhcp_info(const VpnBridgeClient* client, VpnBridgeDhcpInfo* d
             
         } else {
 #ifdef UNIX_IOS
-            // iOS: Check iOS adapter for DHCP configuration
+            // iOS: Get DHCP info from iOS adapter
             extern int ios_adapter_get_dhcp_info(uint32_t*, uint32_t*, uint32_t*, uint32_t*, uint32_t*);
             
             int result = ios_adapter_get_dhcp_info(
@@ -1121,8 +1113,8 @@ int vpn_bridge_get_dhcp_info(const VpnBridgeClient* client, VpnBridgeDhcpInfo* d
                 return VPN_BRIDGE_ERROR_NOT_CONNECTED;
             }
 #else
-            // Check if using Zig adapter with DHCP-assigned IP (not available on iOS)
-            if (client->use_zig_adapter && s->PacketAdapter && s->PacketAdapter->Param) {
+            // Check if using Zig adapter with DHCP-assigned IP
+            if (s->PacketAdapter && s->PacketAdapter->Param) {
                 ZIG_ADAPTER_CONTEXT* ctx = (ZIG_ADAPTER_CONTEXT*)s->PacketAdapter->Param;
                 
                 // Check if DHCP has configured the interface (state >= DHCP_STATE_CONFIGURED)
@@ -1141,10 +1133,9 @@ int vpn_bridge_get_dhcp_info(const VpnBridgeClient* client, VpnBridgeDhcpInfo* d
                     printf("[vpn_bridge_get_dhcp_info] ⚠️ DHCP not configured yet (state=%d, our_ip=0x%08X)\n", ctx->dhcp_state, ctx->our_ip);
                     return VPN_BRIDGE_ERROR_NOT_CONNECTED;
                 }
-            } else
-            {
+            } else {
                 // No DHCP info available
-                printf("[vpn_bridge_get_dhcp_info] ⚠️ DHCP not available (not using Zig adapter or no adapter context)\n");
+                printf("[vpn_bridge_get_dhcp_info] ⚠️ DHCP not available (no adapter context)\n");
                 return VPN_BRIDGE_ERROR_NOT_CONNECTED;
             }
 #endif
@@ -1255,29 +1246,27 @@ int vpn_bridge_get_device_name(
         return VPN_BRIDGE_SUCCESS;
     }
 
-    // Get device name based on adapter type (runtime selection)
-    #if defined(UNIX_MACOS) && !defined(UNIX_IOS)
-        if (client->use_zig_adapter) {
-            // Zig adapter - get name from adapter
-            ZIG_ADAPTER_CONTEXT* ctx = (ZIG_ADAPTER_CONTEXT*)client->softether_session->PacketAdapter->Param;
-            if (ctx && ctx->zig_adapter) {
-                const size_t len = zig_adapter_get_device_name(ctx->zig_adapter, (uint8_t*)output, output_size);
-                if (len > 0) {
-                    return VPN_BRIDGE_SUCCESS;
-                }
+    // Get device name based on adapter type
+    #if USE_ZIG_ADAPTER && (defined(UNIX_MACOS) || defined(UNIX_IOS))
+        // Zig adapter - get name from adapter
+        ZIG_ADAPTER_CONTEXT* ctx = (ZIG_ADAPTER_CONTEXT*)client->softether_session->PacketAdapter->Param;
+        if (ctx && ctx->zig_adapter) {
+            const size_t len = zig_adapter_get_device_name(ctx->zig_adapter, (uint8_t*)output, output_size);
+            if (len > 0) {
+                return VPN_BRIDGE_SUCCESS;
             }
-            strncpy(output, "utun?", output_size - 1);
+        }
+        strncpy(output, "utun?", output_size - 1);
+        output[output_size - 1] = '\0';
+    #elif defined(UNIX_MACOS) && !defined(UNIX_IOS)
+        // Legacy C adapter - get from context
+        MACOS_TUN_CONTEXT* ctx = (MACOS_TUN_CONTEXT*)client->softether_session->PacketAdapter->Param;
+        if (ctx && ctx->device_name[0] != '\0') {
+            strncpy(output, ctx->device_name, output_size - 1);
             output[output_size - 1] = '\0';
         } else {
-            // C adapter - get from context
-            MACOS_TUN_CONTEXT* ctx = (MACOS_TUN_CONTEXT*)client->softether_session->PacketAdapter->Param;
-            if (ctx && ctx->device_name[0] != '\0') {
-                strncpy(output, ctx->device_name, output_size - 1);
-                output[output_size - 1] = '\0';
-            } else {
-                strncpy(output, "utun?", output_size - 1);
-                output[output_size - 1] = '\0';
-            }
+            strncpy(output, "utun?", output_size - 1);
+            output[output_size - 1] = '\0';
         }
     #else
         // Other platforms (iOS, Linux, Windows) - return generic name
@@ -1302,13 +1291,11 @@ int vpn_bridge_get_learned_ip(
         return VPN_BRIDGE_SUCCESS;
     }
 
-    // Skip for Zig adapter (runtime check) - Zig adapter manages TUN internally
-    if (client->use_zig_adapter) {
+    // Skip for Zig adapter - Zig adapter manages TUN internally
+    #if USE_ZIG_ADAPTER
         return VPN_BRIDGE_SUCCESS;
-    }
-
-    // Try to get IP from translator (only for C adapter)
-    #if (defined(UNIX_MACOS) && !defined(UNIX_IOS)) || defined(UNIX_LINUX)
+    #elif (defined(UNIX_MACOS) && !defined(UNIX_IOS)) || defined(UNIX_LINUX)
+        // Try to get IP from translator (only for C adapter)
         void* ctx_ptr = client->softether_session->PacketAdapter->Param;
         if (!ctx_ptr) {
             return VPN_BRIDGE_SUCCESS;
@@ -1343,24 +1330,23 @@ int vpn_bridge_get_gateway_mac(
         return VPN_BRIDGE_SUCCESS;
     }
 
-    // Try to get MAC from translator (runtime adapter selection)
-    #if (defined(UNIX_MACOS) && !defined(UNIX_IOS)) || defined(UNIX_LINUX)
+    // Try to get MAC from translator
+    #if USE_ZIG_ADAPTER
+        // Zig adapter: translator is inside the Zig adapter structure
+        // For now, skip MAC retrieval (Zig adapter handles it internally)
+        // TODO: Add zig_adapter_get_gateway_mac() function
+        return VPN_BRIDGE_SUCCESS;
+    #elif (defined(UNIX_MACOS) && !defined(UNIX_IOS)) || defined(UNIX_LINUX)
         void* ctx_ptr = client->softether_session->PacketAdapter->Param;
         if (!ctx_ptr) {
             return VPN_BRIDGE_SUCCESS;
         }
 
         #if defined(UNIX_MACOS) && !defined(UNIX_IOS)
-            if (client->use_zig_adapter) {
-                // Zig adapter: translator is inside the Zig adapter structure
-                // For now, skip MAC retrieval (Zig adapter handles it internally)
-                // TODO: Add zig_adapter_get_gateway_mac() function
-            } else {
-                // C adapter: translator is in MACOS_TUN_CONTEXT
-                MACOS_TUN_CONTEXT* ctx = (MACOS_TUN_CONTEXT*)ctx_ptr;
-                if (ctx->translator) {
-                    *has_mac = taptun_get_gateway_mac(ctx->translator, mac) ? 1 : 0;
-                }
+            // C adapter: translator is in MACOS_TUN_CONTEXT
+            MACOS_TUN_CONTEXT* ctx = (MACOS_TUN_CONTEXT*)ctx_ptr;
+            if (ctx->translator) {
+                *has_mac = taptun_get_gateway_mac(ctx->translator, mac) ? 1 : 0;
             }
         #endif
         // Linux implementation can be added similarly

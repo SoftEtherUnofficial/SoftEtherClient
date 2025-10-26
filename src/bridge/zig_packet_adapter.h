@@ -52,10 +52,20 @@ extern bool zig_adapter_configure_interface(ZigPacketAdapter* adapter, uint32_t 
 // Create SoftEther PACKET_ADAPTER that wraps Zig adapter
 PACKET_ADAPTER* NewZigPacketAdapter(void);
 
+// TapTun Translator C FFI (from TapTun/src/c_ffi.zig)
+typedef struct TapTunTranslator TapTunTranslator;
+extern TapTunTranslator* taptun_translator_create(const uint8_t* our_mac);
+extern void taptun_translator_destroy(TapTunTranslator* handle);
+extern int taptun_ethernet_to_ip(TapTunTranslator* handle, const uint8_t* eth_frame, size_t frame_len, uint8_t* out_ip_packet, size_t out_buffer_size);
+extern int taptun_ip_to_ethernet(TapTunTranslator* handle, const uint8_t* ip_packet, size_t packet_len, uint8_t* out_eth_frame, size_t out_buffer_size);
+extern void taptun_translator_set_our_ip(TapTunTranslator* handle, uint32_t ip);
+extern void taptun_translator_set_gateway_mac(TapTunTranslator* handle, const uint8_t* mac);
+
 // Context for Zig adapter wrapper
 typedef struct {
     SESSION* session;
-    ZigPacketAdapter* zig_adapter;
+    ZigPacketAdapter* zig_adapter;     // NULL on iOS (uses mobile FFI)
+    TapTunTranslator* taptun_translator; // iOS: TapTun translator for L2↔L3 + DHCP
     CANCEL* cancel;
     bool halt;
     
