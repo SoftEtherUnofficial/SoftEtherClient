@@ -1064,6 +1064,9 @@ int vpn_bridge_get_dhcp_info(const VpnBridgeClient* client, VpnBridgeDhcpInfo* d
     // ============================================================================
     
     SESSION *s = client->softether_session;
+    LOG_INFO("BRIDGE", "vpn_bridge_get_dhcp_info: s=%p, ClientStatus=%d (need %d=ESTABLISHED)", 
+             s, s ? s->ClientStatus : -1, CLIENT_STATUS_ESTABLISHED);
+    
     if (s != NULL && s->ClientStatus == CLIENT_STATUS_ESTABLISHED) {
         // Check if static IPv4 configuration is provided
         if (client->use_static_ipv4 && 
@@ -1176,7 +1179,8 @@ int vpn_bridge_get_dhcp_info(const VpnBridgeClient* client, VpnBridgeDhcpInfo* d
         return VPN_BRIDGE_SUCCESS;
     }
     
-    printf("[vpn_bridge_get_dhcp_info] ⚠️ Session not established yet\n");
+    LOG_INFO("BRIDGE", "vpn_bridge_get_dhcp_info: ❌ Session not ESTABLISHED (ClientStatus=%d, need %d)", 
+             s ? s->ClientStatus : -1, CLIENT_STATUS_ESTABLISHED);
     return VPN_BRIDGE_ERROR_NOT_CONNECTED;
 }
 
