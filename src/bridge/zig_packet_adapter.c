@@ -199,24 +199,25 @@ static bool ZigAdapterInit(SESSION* s) {
     printf("[ZigAdapterInit] TUN device opened successfully\n");
     ctx->taptun_translator = NULL;  // Not used on desktop
 #else
-    // iOS: Use TapTun translator for DHCP/ARP logic WITHOUT TUN device
+    // iOS: Create Zig adapter (includes iOS adapter for DHCP state), but don't open TUN
     // NEPacketTunnelProvider manages utun, packets flow through mobile FFI
-    // But we still need translator for:
+    // But we still need the iOS adapter for:
     // - L2↔L3 conversion (Ethernet ↔ IP)
-    // - DHCP packet detection and parsing
+    // - DHCP state storage and retrieval
     // - ARP handling and MAC learning
     
-    // Initialize TapTun translator with our MAC address
-    ctx->taptun_translator = taptun_translator_create(ctx->my_mac);
-    if (!ctx->taptun_translator) {
-        printf("[ZigAdapterInit] ❌ Failed to create TapTun translator for iOS\n");
+    ctx->zig_adapter = zig_adapter_create(&config);
+    if (!ctx->zig_adapter) {
+        printf("[ZigAdapterInit] ❌ Failed to create Zig adapter for iOS\n");
         ReleaseCancel(ctx->cancel);
         Free(ctx);
         return false;
     }
     
-    ctx->zig_adapter = NULL;  // No TUN device on iOS
-    printf("[ZigAdapterInit] ✅ iOS mode - using TapTun translator (Zig-powered DHCP + ARP)\n");
+    printf("[ZigAdapterInit] ✅ iOS mode - Zig adapter created (DHCP state available)\n");
+    // Don't call zig_adapter_open() - no TUN device on iOS
+    
+    ctx->taptun_translator = NULL;  // Not used on iOS (using ZigPacketAdapter's iOS adapter instead)
 #endif
     
     // **CRITICAL FIX**: Do NOT start async threads!
@@ -723,6 +724,21 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                             LOG_INFO("ZigPutPacket", "📍 Confirmed translator gateway IP: %u.%u.%u.%u (0x%08X)",
                                    (gw >> 24) & 0xFF, (gw >> 16) & 0xFF, (gw >> 8) & 0xFF, gw & 0xFF, gw);
                             
+#ifdef UNIX_IOS
+                            // iOS: NEPacketTunnelProvider manages the interface, no device name needed
+                            LOG_INFO("ZigPutPacket", "📱 iOS mode - interface configured by NEPacketTunnelProvider");
+                            LOG_INFO("ZigPutPacket", "📱 DHCP: IP=%u.%u.%u.%u GW=%u.%u.%u.%u",
+                                   (ctx->our_ip >> 24) & 0xFF, (ctx->our_ip >> 16) & 0xFF,
+                                   (ctx->our_ip >> 8) & 0xFF, ctx->our_ip & 0xFF,
+                                   (ctx->offered_gw >> 24) & 0xFF, (ctx->offered_gw >> 16) & 0xFF,
+                                   (ctx->offered_gw >> 8) & 0xFF, ctx->offered_gw & 0xFF);
+                            
+                            // Set flags for ARP  
+                            ctx->need_gratuitous_arp_configured = true;
+                            ctx->need_gateway_arp = true;
+                            
+                            LOG_INFO("ZigPutPacket", "✅ DHCP configuration complete for iOS");
+#else
                             // Get device name
                             uint8_t dev_name_buf[64];
                             uint64_t dev_name_len = zig_adapter_get_device_name(ctx->zig_adapter, dev_name_buf, sizeof(dev_name_buf));
@@ -730,9 +746,7 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                             if (dev_name_len > 0 && dev_name_len < sizeof(dev_name_buf)) {
                                 dev_name_buf[dev_name_len] = '\0';
                                 
-#ifndef UNIX_IOS
                                 // Configure interface with DHCP-assigned IP
-                                // NOTE: On iOS, NEPacketTunnelProvider handles interface configuration
                                 char cmd[512];
                                 snprintf(cmd, sizeof(cmd), "ifconfig %s inet %u.%u.%u.%u %u.%u.%u.%u netmask 255.255.0.0 up",
                                         (char*)dev_name_buf,
@@ -742,14 +756,6 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                         (ctx->offered_gw >> 8) & 0xFF, ctx->offered_gw & 0xFF);
                                 printf("[●] DHCP: Executing: %s\n", cmd);
                                 system(cmd);
-#else
-                                LOG_INFO("ZigPutPacket", "📱 iOS mode - interface configured by NEPacketTunnelProvider");
-                                LOG_INFO("ZigPutPacket", "📱 DHCP: IP=%u.%u.%u.%u GW=%u.%u.%u.%u",
-                                       (ctx->our_ip >> 24) & 0xFF, (ctx->our_ip >> 16) & 0xFF,
-                                       (ctx->our_ip >> 8) & 0xFF, ctx->our_ip & 0xFF,
-                                       (ctx->offered_gw >> 24) & 0xFF, (ctx->offered_gw >> 16) & 0xFF,
-                                       (ctx->offered_gw >> 8) & 0xFF, ctx->offered_gw & 0xFF);
-#endif
                                 
                                 // ZIGSE-80: Configure VPN routing through ZigTapTun RouteManager
                                 // ctx->offered_gw is already in host byte order (10.21.0.1 = 0x0A150001)
@@ -774,7 +780,10 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                 // SoftEther's MAC/IP table, enabling return traffic routing!
                                 // The gateway won't reply, but the REQUEST itself registers us.
                                 ctx->need_gateway_arp = true;
+                            } else {
+                                LOG_ERROR("ZigPutPacket", "❌ Failed to get device name (len=%llu)", dev_name_len);
                             }
+#endif
                         } else {
                             LOG_INFO("ZigPutPacket", "⚠️  Ignoring DHCP packet with msg_type=%u (not ACK)", msg_type);
                         }
