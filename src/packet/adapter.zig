@@ -1083,6 +1083,22 @@ export fn ios_adapter_get_outgoing_packet(buffer: [*]u8, buffer_size: u32) c_int
     return @intCast(length);
 }
 
+/// Set DHCP configuration in iOS adapter (called from C adapter after DHCP processing)
+/// This synchronizes the C adapter's DHCP state with the Zig iOS adapter's state
+export fn ios_adapter_set_dhcp_info(
+    client_ip: u32,
+    subnet_mask: u32,
+    gateway: u32,
+    dns_server1: u32,
+    dns_server2: u32,
+    dhcp_server: u32,
+) void {
+    if (!is_ios) return;
+
+    const adapter = global_ios_adapter orelse return;
+    adapter.ios_adapter.*.setDhcpInfo(client_ip, subnet_mask, gateway, dns_server1, dns_server2, dhcp_server);
+}
+
 /// Get DHCP configuration from iOS adapter
 /// Returns 0 on success with valid DHCP data, -1 if not available
 export fn ios_adapter_get_dhcp_info(

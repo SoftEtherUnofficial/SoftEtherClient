@@ -368,12 +368,68 @@ pub const IosAdapter = struct {
         }
     }
 
-    /// Get DHCP configuration (for Swift to apply network settings)
-    pub fn getDhcpInfo(self: *IosAdapter) ?DhcpState {
+    /// Set DHCP configuration manually (called from C adapter after DHCP processing)
+    /// This allows the C adapter to share its DHCP state with the iOS adapter
+    pub fn setDhcpInfo(
+        self: *IosAdapter,
+        client_ip: u32,
+        subnet_mask: u32,
+        gateway: u32,
+        dns_server1: u32,
+        dns_server2: u32,
+        dhcp_server: u32,
+    ) void {
+        const log = std.log.scoped(.ios_adapter);
+        log.info("[setDhcpInfo] 🔧 Setting DHCP info: IP={}.{}.{}.{} GW={}.{}.{}.{} valid=true", .{
+            (client_ip >> 24) & 0xFF,
+            (client_ip >> 16) & 0xFF,
+            (client_ip >> 8) & 0xFF,
+            client_ip & 0xFF,
+            (gateway >> 24) & 0xFF,
+            (gateway >> 16) & 0xFF,
+            (gateway >> 8) & 0xFF,
+            gateway & 0xFF,
+        });
+
         self.dhcp_mutex.lock();
         defer self.dhcp_mutex.unlock();
 
-        if (!self.dhcp_state.valid) return null;
+        self.dhcp_state.client_ip = client_ip;
+        self.dhcp_state.subnet_mask = subnet_mask;
+        self.dhcp_state.gateway = gateway;
+        self.dhcp_state.dns_server1 = dns_server1;
+        self.dhcp_state.dns_server2 = dns_server2;
+        self.dhcp_state.dhcp_server = dhcp_server;
+        self.dhcp_state.valid = true;
+
+        log.info("[setDhcpInfo] ✅ DHCP state updated successfully", .{});
+
+        // Also update translator with our IP
+        self.translator.setOurIp(client_ip);
+    }
+
+    /// Get DHCP configuration (for Swift to apply network settings)
+    pub fn getDhcpInfo(self: *IosAdapter) ?DhcpState {
+        const log = std.log.scoped(.ios_adapter);
+        self.dhcp_mutex.lock();
+        defer self.dhcp_mutex.unlock();
+
+        log.info("[getDhcpInfo] 🔍 Called: valid={}", .{self.dhcp_state.valid});
+        if (!self.dhcp_state.valid) {
+            log.warn("[getDhcpInfo] ⚠️  DHCP state is NOT valid, returning null", .{});
+            return null;
+        }
+
+        log.info("[getDhcpInfo] ✅ Returning DHCP info: IP={}.{}.{}.{} GW={}.{}.{}.{}", .{
+            (self.dhcp_state.client_ip >> 24) & 0xFF,
+            (self.dhcp_state.client_ip >> 16) & 0xFF,
+            (self.dhcp_state.client_ip >> 8) & 0xFF,
+            self.dhcp_state.client_ip & 0xFF,
+            (self.dhcp_state.gateway >> 24) & 0xFF,
+            (self.dhcp_state.gateway >> 16) & 0xFF,
+            (self.dhcp_state.gateway >> 8) & 0xFF,
+            self.dhcp_state.gateway & 0xFF,
+        });
 
         return self.dhcp_state;
     }

@@ -681,15 +681,18 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
         LOG_INFO("ZigPutPacket", "✅ State check passed! Checking packet headers for DHCP ACK (state=REQUEST_SENT, size=%u)", size);
         if (size >= 42 && data != NULL) {
             const UCHAR* pkt = (const UCHAR*)data;
+            LOG_INFO("ZigPutPacket", "🔍 ACK check: pkt[12]=0x%02x pkt[13]=0x%02x pkt[23]=0x%02x (expect: 0x08 0x00 0x11)", 
+                     pkt[12], pkt[13], pkt[23]);
             if (pkt[12] == 0x08 && pkt[13] == 0x00 && pkt[23] == 17) {
                 UINT dest_port = ((UINT)pkt[36] << 8) | pkt[37];
+                LOG_INFO("ZigPutPacket", "🔍 UDP dest_port=%u (expect 68)", dest_port);
                 if (dest_port == 68) {
                     // Parse DHCP packet and check message type
-                    printf("[ZigAdapterPutPacket] 🔍 DHCP packet detected (UDP port 68), size=%u [waiting for ACK]\n", size);
+                    LOG_INFO("ZigPutPacket", "🔍 DHCP packet detected (UDP port 68), size=%u [waiting for ACK]", size);
                     UINT32 acked_ip = 0, gw = 0, mask = 0, server_ip = 0;
                     UCHAR msg_type = 0;
                     if (ParseDhcpPacket(pkt, size, &acked_ip, &gw, &mask, &msg_type, &server_ip)) {
-                        printf("[ZigAdapterPutPacket] 🔍 Parsed: IP=%u.%u.%u.%u, msg_type=%u (5=ACK expected)\n",
+                        LOG_INFO("ZigPutPacket", "🔍 Parsed: IP=%u.%u.%u.%u, msg_type=%u (5=ACK expected)",
                                (acked_ip >> 24) & 0xFF, (acked_ip >> 16) & 0xFF,
                                (acked_ip >> 8) & 0xFF, acked_ip & 0xFF, msg_type);
                         if (msg_type == 5) {
@@ -697,16 +700,33 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                             ctx->our_ip = acked_ip;
                             ctx->offered_gw = gw;  // Update gateway from ACK
                             ctx->dhcp_state = DHCP_STATE_CONFIGURED;
-                            printf("[ZigAdapterPutPacket] ✅ DHCP ACK received! Configuring interface...\n");
+                            LOG_INFO("ZigPutPacket", "✅ DHCP ACK received! Configuring interface...");
+                            
+#ifdef UNIX_IOS
+                            // iOS: Update Zig iOS adapter's DHCP state so mobile FFI can retrieve it
+                            extern void ios_adapter_set_dhcp_info(uint32_t client_ip, uint32_t subnet_mask, 
+                                                                   uint32_t gateway, uint32_t dns1, uint32_t dns2, 
+                                                                   uint32_t dhcp_server);
+                            ios_adapter_set_dhcp_info(
+                                ctx->our_ip,
+                                ctx->offered_mask,
+                                ctx->offered_gw,
+                                0x08080808,  // Google DNS 8.8.8.8
+                                0x08080404,  // Google DNS 8.8.4.4
+                                server_ip
+                            );
+                            LOG_INFO("ZigPutPacket", "✅ iOS: Synchronized DHCP state with iOS adapter");
+#endif
                             
                             // Tell Zig translator the gateway IP (in case it changed from OFFER)
                             zig_adapter_set_gateway(ctx->zig_adapter, gw);
-                            printf("[ZigAdapterPutPacket] 📍 Confirmed translator gateway IP: %u.%u.%u.%u (0x%08X)\n",
+                            LOG_INFO("ZigPutPacket", "📍 Confirmed translator gateway IP: %u.%u.%u.%u (0x%08X)",
                                    (gw >> 24) & 0xFF, (gw >> 16) & 0xFF, (gw >> 8) & 0xFF, gw & 0xFF, gw);
                             
                             // Get device name
                             uint8_t dev_name_buf[64];
                             uint64_t dev_name_len = zig_adapter_get_device_name(ctx->zig_adapter, dev_name_buf, sizeof(dev_name_buf));
+                            LOG_INFO("ZigPutPacket", "🔍 Device name length: %llu (need >0 and <64)", dev_name_len);
                             if (dev_name_len > 0 && dev_name_len < sizeof(dev_name_buf)) {
                                 dev_name_buf[dev_name_len] = '\0';
                                 
@@ -723,8 +743,8 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                 printf("[●] DHCP: Executing: %s\n", cmd);
                                 system(cmd);
 #else
-                                printf("[●] DHCP: iOS mode - interface configured by NEPacketTunnelProvider\n");
-                                printf("[●] DHCP: IP=%u.%u.%u.%u GW=%u.%u.%u.%u\n",
+                                LOG_INFO("ZigPutPacket", "📱 iOS mode - interface configured by NEPacketTunnelProvider");
+                                LOG_INFO("ZigPutPacket", "📱 DHCP: IP=%u.%u.%u.%u GW=%u.%u.%u.%u",
                                        (ctx->our_ip >> 24) & 0xFF, (ctx->our_ip >> 16) & 0xFF,
                                        (ctx->our_ip >> 8) & 0xFF, ctx->our_ip & 0xFF,
                                        (ctx->offered_gw >> 24) & 0xFF, (ctx->offered_gw >> 16) & 0xFF,
@@ -734,14 +754,14 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                 // ZIGSE-80: Configure VPN routing through ZigTapTun RouteManager
                                 // ctx->offered_gw is already in host byte order (10.21.0.1 = 0x0A150001)
                                 // Just pass it directly - Zig will extract bytes correctly
-                                printf("[●] DHCP: Configuring VPN routing through ZigTapTun...\n");
+                                LOG_INFO("ZigPutPacket", "🛣️  Configuring VPN routing through ZigTapTun...");
                                 if (zig_adapter_configure_routing(ctx->zig_adapter, ctx->offered_gw, 0)) {
-                                    printf("[●] DHCP: ✅ VPN routing configured by ZigTapTun RouteManager\n");
+                                    LOG_INFO("ZigPutPacket", "✅ VPN routing configured by ZigTapTun RouteManager");
                                 } else {
-                                    printf("[●] DHCP: ⚠️  Failed to configure routing, routes may not be set\n");
+                                    LOG_ERROR("ZigPutPacket", "⚠️  Failed to configure routing, routes may not be set");
                                 }
                                 
-                                printf("[●] DHCP: ✅ Interface configured with DHCP IP %u.%u.%u.%u\n",
+                                LOG_INFO("ZigPutPacket", "✅ Interface configured with DHCP IP %u.%u.%u.%u",
                                        (ctx->our_ip >> 24) & 0xFF, (ctx->our_ip >> 16) & 0xFF,
                                        (ctx->our_ip >> 8) & 0xFF, ctx->our_ip & 0xFF);
                                 
@@ -756,11 +776,13 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                 ctx->need_gateway_arp = true;
                             }
                         } else {
-                            printf("[ZigAdapterPutPacket] ⚠️  Ignoring DHCP packet with msg_type=%u (not ACK)\n", msg_type);
+                            LOG_INFO("ZigPutPacket", "⚠️  Ignoring DHCP packet with msg_type=%u (not ACK)", msg_type);
                         }
                     } else {
-                        printf("[ZigAdapterPutPacket] ⚠️  Failed to parse DHCP packet for ACK\n");
+                        LOG_ERROR("ZigPutPacket", "⚠️  Failed to parse DHCP packet for ACK");
                     }
+                } else {
+                    LOG_INFO("ZigPutPacket", "❌ UDP dest_port=%u, not DHCP client port 68", dest_port);
                 }
             }
         }
