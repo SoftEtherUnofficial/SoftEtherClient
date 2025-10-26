@@ -410,6 +410,12 @@ void SessionMain(SESSION *s)
 		{
 			BLOCK *b;
 			packet_put = false;
+			
+			UINT queue_size = c->ReceivedBlocks->num_item;
+			if (loop_count <= 10 || queue_size > 0) {
+				LOG_INFO("SESSION", "🔄 Processing ReceivedBlocks queue: size=%u", queue_size);
+			}
+			
 			while (true)
 			{
 				b = GetNext(c->ReceivedBlocks);
@@ -418,6 +424,7 @@ void SessionMain(SESSION *s)
 					break;
 				}
 
+				LOG_INFO("SESSION", "📦 Got block from queue: size=%u, calling PutPacket...", b->Size);
 				PROBE_DATA2("GetNext", b->Buf, b->Size);
 
 				update_hub_last_comm = true;

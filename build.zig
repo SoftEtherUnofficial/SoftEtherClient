@@ -142,7 +142,7 @@ pub fn build(b: *std.Build) void {
         "SoftEtherVPN/src/Cedar/Cedar.c",
         "src/bridge/Cedar/Client.c", // PATCHED: USE_ZIG_ADAPTER, NoSaveLog=true, Eraser null check
         "src/bridge/Cedar/Protocol.c", // PATCHED
-        "SoftEtherVPN/src/Cedar/Connection.c",
+        "src/bridge/Cedar/Connection.c", // PATCHED: iOS debug logging for ConnectionReceive
         "src/bridge/Cedar/Session.c", // PATCHED
         "SoftEtherVPN/src/Cedar/Account.c",
         "SoftEtherVPN/src/Cedar/Admin.c",

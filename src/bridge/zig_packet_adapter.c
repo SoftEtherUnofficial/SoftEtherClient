@@ -592,75 +592,93 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
     static uint64_t packet_count = 0;
     
     if (!s || !s->PacketAdapter || !s->PacketAdapter->Param) {
+        LOG_ERROR("ZigPutPacket", "Invalid parameters: s=%p", s);
         return false;
     }
     
     ZIG_ADAPTER_CONTEXT* ctx = (ZIG_ADAPTER_CONTEXT*)s->PacketAdapter->Param;
     
     if (ctx->halt) {
+        LOG_ERROR("ZigPutPacket", "Context halted, dropping packet");
         return false;
     }
     
     // NULL packet is a flush operation (SoftEther API design)
     if (!data || size == 0) {
         packet_count++;
+        LOG_DEBUG("ZigPutPacket", "Flush operation (packet #%llu)", packet_count);
         return true; // Success: flush acknowledged
     }
     
+    packet_count++;
+    LOG_INFO("ZigPutPacket", "📦 PutPacket #%llu: size=%u, dhcp_state=%d", packet_count, size, ctx->dhcp_state);
+    
     // Check for DHCP OFFER packet (only when expecting one)
     if (ctx->dhcp_state == DHCP_STATE_DISCOVER_SENT && size >= 282) { // Min DHCP packet size
+        LOG_INFO("ZigPutPacket", "✅ State check passed! Checking packet headers for DHCP OFFER (state=DISCOVER_SENT, size=%u)", size);
         // Check if this is a DHCP packet: UDP port 68 (BOOTP client)
         if (size >= 42 && data != NULL) {
             const UCHAR* pkt = (const UCHAR*)data;
+            LOG_INFO("ZigPutPacket", "   EtherType: 0x%02X%02X (expect 0x0800=IPv4)", pkt[12], pkt[13]);
             // Check Ethernet type (0x0800 = IPv4) at offset 12-13
             if (pkt[12] == 0x08 && pkt[13] == 0x00) {
+                LOG_INFO("ZigPutPacket", "   IP Protocol: 0x%02X (expect 0x11=UDP)", pkt[23]);
                 // Check IP protocol (17 = UDP) at offset 23
                 if (pkt[23] == 17) {
                     // Check UDP dest port (68 = BOOTP client) at offset 36-37
                     UINT dest_port = ((UINT)pkt[36] << 8) | pkt[37];
+                    LOG_INFO("ZigPutPacket", "   UDP dest port: %u (expect 68=BOOTP client)", dest_port);
                     if (dest_port == 68) {
                         // This is a DHCP response! Parse it
-                        printf("[ZigAdapterPutPacket] 🔍 DHCP packet detected (UDP port 68), size=%u\n", size);
+                        LOG_INFO("ZigPutPacket", "🔍 DHCP packet detected! Calling ParseDhcpPacket (size=%u)...", size);
                         UINT32 offered_ip = 0, gw = 0, mask = 0, server_ip = 0;
                         UCHAR msg_type = 0;
                         if (ParseDhcpPacket(pkt, size, &offered_ip, &gw, &mask, &msg_type, &server_ip)) {
-                            printf("[ZigAdapterPutPacket] 🔍 Parsed: IP=%u.%u.%u.%u, msg_type=%u (2=OFFER, 5=ACK)\n",
-                                   (offered_ip >> 24) & 0xFF, (offered_ip >> 16) & 0xFF,
-                                   (offered_ip >> 8) & 0xFF, offered_ip & 0xFF, msg_type);
+                            LOG_INFO("ZigPutPacket", "✅ ParseDhcpPacket SUCCESS! msg_type=%u IP=%u.%u.%u.%u",
+                                     msg_type, (offered_ip >> 24) & 0xFF, (offered_ip >> 16) & 0xFF,
+                                     (offered_ip >> 8) & 0xFF, offered_ip & 0xFF);
+                            LOG_INFO("ZigPutPacket", "✅ ParseDhcpPacket SUCCESS! msg_type=%u IP=%u.%u.%u.%u",
+                                     msg_type, (offered_ip >> 24) & 0xFF, (offered_ip >> 16) & 0xFF,
+                                     (offered_ip >> 8) & 0xFF, offered_ip & 0xFF);
                             // Only process OFFER (type=2), not ACK (type=5)
                             if (msg_type == 2) {
+                                LOG_INFO("ZigPutPacket", "🎉 Processing DHCP OFFER! Updating state...");
                                 ctx->offered_ip = offered_ip;
                                 ctx->offered_gw = gw;
                                 ctx->offered_mask = mask;
                                 ctx->dhcp_server_ip = server_ip;
                                 ctx->dhcp_state = DHCP_STATE_OFFER_RECEIVED;
                                 ctx->last_dhcp_send_time = Tick64();
-                                printf("[ZigAdapterPutPacket] ✅ DHCP OFFER received: IP=%u.%u.%u.%u, GW=%u.%u.%u.%u, Server=%u.%u.%u.%u\n",
+                                LOG_INFO("ZigPutPacket", "✅ DHCP OFFER processed! IP=%u.%u.%u.%u GW=%u.%u.%u.%u state=%d",
                                        (offered_ip >> 24) & 0xFF, (offered_ip >> 16) & 0xFF,
                                        (offered_ip >> 8) & 0xFF, offered_ip & 0xFF,
                                        (gw >> 24) & 0xFF, (gw >> 16) & 0xFF,
-                                       (gw >> 8) & 0xFF, gw & 0xFF,
-                                       (server_ip >> 24) & 0xFF, (server_ip >> 16) & 0xFF,
-                                       (server_ip >> 8) & 0xFF, server_ip & 0xFF);
+                                       (gw >> 8) & 0xFF, gw & 0xFF, ctx->dhcp_state);
                                 // Tell Zig translator the gateway IP so it can learn MAC from ARP replies
                                 // Pass the IP as-is (host byte order) - Zig will read ARP packets with same byte order
-                                zig_adapter_set_gateway(ctx->zig_adapter, gw);
-                                printf("[ZigAdapterPutPacket] 📍 Told translator gateway IP: %u.%u.%u.%u (0x%08X)\n",
-                                       (gw >> 24) & 0xFF, (gw >> 16) & 0xFF, (gw >> 8) & 0xFF, gw & 0xFF, gw);
+                                if (ctx->zig_adapter) {
+                                    zig_adapter_set_gateway(ctx->zig_adapter, gw);
+                                    LOG_INFO("ZigPutPacket", "📍 Set gateway in translator: %u.%u.%u.%u",
+                                           (gw >> 24) & 0xFF, (gw >> 16) & 0xFF, (gw >> 8) & 0xFF, gw & 0xFF);
+                                }
                             } else {
-                                printf("[ZigAdapterPutPacket] ⚠️  Ignoring DHCP packet with msg_type=%u (not OFFER)\n", msg_type);
+                                LOG_INFO("ZigPutPacket", "⚠️  Ignoring DHCP msg_type=%u (not OFFER)", msg_type);
                             }
                         } else {
-                            printf("[ZigAdapterPutPacket] ⚠️  Failed to parse DHCP packet\n");
+                            LOG_ERROR("ZigPutPacket", "❌ ParseDhcpPacket FAILED for size=%u", size);
                         }
                     }
                 }
             }
         }
+    } else if (size >= 282) {
+        LOG_INFO("ZigPutPacket", "⏭️  Skipping OFFER check: dhcp_state=%d (need %d=DISCOVER_SENT), size=%u", 
+                 ctx->dhcp_state, DHCP_STATE_DISCOVER_SENT, size);
     }
     
     // Check for DHCP ACK packet
     if (ctx->dhcp_state == DHCP_STATE_REQUEST_SENT && size >= 282) {
+        LOG_INFO("ZigPutPacket", "✅ State check passed! Checking packet headers for DHCP ACK (state=REQUEST_SENT, size=%u)", size);
         if (size >= 42 && data != NULL) {
             const UCHAR* pkt = (const UCHAR*)data;
             if (pkt[12] == 0x08 && pkt[13] == 0x00 && pkt[23] == 17) {
@@ -892,6 +910,7 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
 #else
     // iOS: Packets are handled by mobile FFI (mobile_vpn_read_packet)
     // Don't call zig_adapter functions - there is no zig_adapter on iOS!
+    LOG_DEBUG("ZigPutPacket", "✅ iOS: packet processed (size=%u)", size);
     return true;
 #endif
 }
