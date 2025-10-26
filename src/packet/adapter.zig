@@ -334,6 +334,17 @@ pub const ZigPacketAdapter = struct {
 
     /// Put packet for transmission
     pub fn putPacket(self: *ZigPacketAdapter, data: []const u8) bool {
+        // iOS: Use iOS adapter's outgoing queue (SoftEther → iOS)
+        if (is_ios) {
+            const ios_adp = self.ios_adapter;
+            const success = ios_adp.outgoing_queue.enqueue(data);
+            if (!success) {
+                _ = ios_adp.queue_drops_out.fetchAdd(1, .release);
+            }
+            return success;
+        }
+
+        // macOS/Linux: Use packet pool + send queue
         // Get buffer from pool
         const buffer = self.packet_pool.alloc() orelse return false;
 
