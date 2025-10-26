@@ -322,31 +322,37 @@ int mobile_vpn_write_packet(MobileVpnHandle handle, const uint8_t* data, uint64_
 
 // Get network configuration from VPN DHCP
 int mobile_vpn_get_network_info(MobileVpnHandle handle, MobileNetworkInfo* info) {
-    if (!handle || !info) return -1;
+    LOG_INFO("MOBILE_FFI", "mobile_vpn_get_network_info: CALLED");
+    
+    if (!handle || !info) {
+        LOG_ERROR("MOBILE_FFI", "mobile_vpn_get_network_info: Invalid parameters");
+        return -1;
+    }
     
     MobileVpnContextC* ctx = (MobileVpnContextC*)handle;
     if (!ctx->bridge_client || !ctx->is_connected) {
+        LOG_INFO("MOBILE_FFI", "mobile_vpn_get_network_info: Not connected yet");
         memset(info, 0, sizeof(MobileNetworkInfo));
         return -1;
     }
+    
+    LOG_INFO("MOBILE_FFI", "mobile_vpn_get_network_info: Calling vpn_bridge_get_dhcp_info...");
     
     // Fetch fresh DHCP info from the bridge
     VpnBridgeDhcpInfo bridge_dhcp;
     int result = vpn_bridge_get_dhcp_info(ctx->bridge_client, &bridge_dhcp);
     
     if (result != 0 || !bridge_dhcp.valid) {
-        printf("[mobile_vpn_get_network_info] Failed to get DHCP info from bridge (result=%d, valid=%d)\n", result, bridge_dhcp.valid);
+        LOG_INFO("MOBILE_FFI", "mobile_vpn_get_network_info: DHCP not ready (result=%d, valid=%d)", result, bridge_dhcp.valid);
         memset(info, 0, sizeof(MobileNetworkInfo));
         return -1;
     }
     
-    printf("[mobile_vpn_get_network_info] Got DHCP: IP=%u.%u.%u.%u Gateway=%u.%u.%u.%u Mask=%u.%u.%u.%u\n",
+    LOG_INFO("MOBILE_FFI", "mobile_vpn_get_network_info: ✅ Got DHCP: IP=%u.%u.%u.%u Gateway=%u.%u.%u.%u",
            (bridge_dhcp.client_ip >> 24) & 0xFF, (bridge_dhcp.client_ip >> 16) & 0xFF,
            (bridge_dhcp.client_ip >> 8) & 0xFF, bridge_dhcp.client_ip & 0xFF,
            (bridge_dhcp.gateway >> 24) & 0xFF, (bridge_dhcp.gateway >> 16) & 0xFF,
-           (bridge_dhcp.gateway >> 8) & 0xFF, bridge_dhcp.gateway & 0xFF,
-           (bridge_dhcp.subnet_mask >> 24) & 0xFF, (bridge_dhcp.subnet_mask >> 16) & 0xFF,
-           (bridge_dhcp.subnet_mask >> 8) & 0xFF, bridge_dhcp.subnet_mask & 0xFF);
+           (bridge_dhcp.gateway >> 8) & 0xFF, bridge_dhcp.gateway & 0xFF);
     
     // Convert uint32_t network byte order to byte arrays
     uint32_t client_ip = bridge_dhcp.client_ip;

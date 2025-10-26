@@ -1037,6 +1037,7 @@ uint32_t vpn_bridge_get_last_error(const VpnBridgeClient* client) {
 // Get DHCP information
 int vpn_bridge_get_dhcp_info(const VpnBridgeClient* client, VpnBridgeDhcpInfo* dhcp_info) {
     if (!client || !dhcp_info) {
+        LOG_ERROR("BRIDGE", "vpn_bridge_get_dhcp_info: Invalid parameters");
         return VPN_BRIDGE_ERROR_INVALID_PARAM;
     }
     
@@ -1044,9 +1045,16 @@ int vpn_bridge_get_dhcp_info(const VpnBridgeClient* client, VpnBridgeDhcpInfo* d
     Zero(dhcp_info, sizeof(VpnBridgeDhcpInfo));
     dhcp_info->valid = false;
     
+    LOG_INFO("BRIDGE", "vpn_bridge_get_dhcp_info: Checking session status=%d (need %d=CONNECTED)", 
+             client->status, VPN_STATUS_CONNECTED);
+    
     if (!client->softether_session || client->status != VPN_STATUS_CONNECTED) {
+        LOG_INFO("BRIDGE", "vpn_bridge_get_dhcp_info: Session not ready (session=%p, status=%d)", 
+                 client->softether_session, client->status);
         return VPN_BRIDGE_ERROR_NOT_CONNECTED;
     }
+    
+    LOG_INFO("BRIDGE", "vpn_bridge_get_dhcp_info: Session OK, checking ClientStatus...");
     
     // ============================================================================
     // PROPER STATIC IP CONFIGURATION SUPPORT
