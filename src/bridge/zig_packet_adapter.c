@@ -587,12 +587,33 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
     // Read directly from TUN device when session polls - no async threads!
     // This ensures packets flow through SoftEther's session management properly.
     
-    // iOS: Skip TUN reading entirely - packets come via mobile_vpn_write_packet instead
-    // On iOS, we ONLY generate DHCP/ARP packets above, never read from TUN
-    
     uint8_t temp_buf[2048];
     ssize_t bytes_read = -1;
     
+#ifdef UNIX_IOS
+    // **iOS path**: Check outgoing queue for packets from SessionMain (ARP replies, data packets)
+    // This is CRITICAL - without this, iOS never receives ARP replies or data from server!
+    // NOTE: On iOS, zig_adapter exists but zig_adapter_read_sync returns 0 (iOS uses push model)
+    
+    // DEBUG: Log that we're using iOS path
+    static int ios_path_log_count = 0;
+    if (ios_path_log_count < 5) {
+        LOG_INFO("ZigAdapterGetNextPacket", "🔵 iOS PATH: Calling ios_adapter_get_outgoing_packet");
+        ios_path_log_count++;
+    }
+    
+    extern int ios_adapter_get_outgoing_packet(uint8_t* buffer, uint32_t buffer_size);
+    int packet_size = ios_adapter_get_outgoing_packet(temp_buf, sizeof(temp_buf));
+    
+    if (packet_size > 0) {
+        bytes_read = packet_size;
+        LOG_INFO("ZigAdapterGetNextPacket", "✅ iOS PATH: Got packet size=%d", packet_size);
+    } else {
+        // No packet available from outgoing queue
+        return 0;
+    }
+#else
+    // **macOS/Linux path**: Read from TUN device
     if (ctx->zig_adapter) {
         bytes_read = zig_adapter_read_sync(ctx->zig_adapter, temp_buf, sizeof(temp_buf));
         
@@ -601,9 +622,9 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
             return 0;
         }
     } else {
-        // iOS path: no TUN device, return 0 (DHCP/ARP already handled above)
-        return 0;
+        return 0;  // No adapter available
     }
+#endif
     
     uint64_t packet_len = (uint64_t)bytes_read;
     uint8_t* packet_data = temp_buf;
@@ -971,25 +992,23 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
     
     // macOS/Linux: Send packet to Zig adapter (TUN device)
     // iOS: Packets are handled by mobile FFI (mobile_vpn_read_packet)
-#ifndef UNIX_IOS
     if (ctx->zig_adapter) {
-        // Send packet to Zig adapter (queues in send_queue)
+        // Send packet to Zig adapter (queues to outgoing_queue on iOS, send_queue on macOS)
         bool result = zig_adapter_put_packet(ctx->zig_adapter, (const uint8_t*)data, (uint64_t)size);
         
-        // **CRITICAL**: Synchronously write queued packets to TUN device!
+#ifndef UNIX_IOS
+        // **macOS/Linux**: Synchronously write queued packets to TUN device!
         // Without this, packets accumulate in send_queue and never reach TUN
         zig_adapter_write_sync(ctx->zig_adapter);
+#else
+        // **iOS**: Packets queued to outgoing_queue, will be retrieved via mobile_vpn_read_packet
+        LOG_DEBUG("ZigPutPacket", "✅ iOS: packet queued to outgoing_queue (size=%u)", size);
+#endif
         
         return result;
     } else {
-        return false;  // Should never happen on macOS/Linux
+        return false;  // Should never happen - zig_adapter should always exist
     }
-#else
-    // iOS: Packets are handled by mobile FFI (mobile_vpn_read_packet)
-    // Don't call zig_adapter functions - there is no zig_adapter on iOS!
-    LOG_DEBUG("ZigPutPacket", "✅ iOS: packet processed (size=%u)", size);
-    return true;
-#endif
 }
 
 // Free adapter

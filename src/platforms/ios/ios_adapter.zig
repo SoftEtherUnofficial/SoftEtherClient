@@ -231,8 +231,20 @@ pub const IosAdapter = struct {
     /// Get outgoing packet for iOS (L3 IP packet for NEPacketTunnelFlow)
     /// Returns packet length or null if no packet available
     pub fn getOutgoingPacket(self: *IosAdapter, buffer: []u8) ?usize {
+        // DEBUG: Log queue state
+        const count = self.outgoing_queue.count.load(.acquire);
+        if (count > 0) {
+            std.log.info("🔍 Zig getOutgoingPacket: Queue has {d} packets", .{count});
+        }
+
         // Dequeue Ethernet frame from SoftEther
-        const eth_packet = self.outgoing_queue.dequeue(0) orelse return null;
+        const eth_packet = self.outgoing_queue.dequeue(0) orelse {
+            // DEBUG: Log when queue is empty
+            if (count > 0) {
+                std.log.err("⚠️  Zig getOutgoingPacket: dequeue returned null but count={d}!", .{count});
+            }
+            return null;
+        };
 
         // Check if this is a DHCP packet - parse and store state
         self.parseDhcpIfNeeded(eth_packet.data[0..eth_packet.length]);

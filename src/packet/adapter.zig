@@ -1086,11 +1086,15 @@ export fn ios_adapter_inject_packet(data: [*]const u8, length: u32) c_int {
 export fn ios_adapter_get_outgoing_packet(buffer: [*]u8, buffer_size: u32) c_int {
     if (!is_ios) return -1; // Not iOS build
 
-    const adapter = global_ios_adapter orelse return -1;
+    const adapter = global_ios_adapter orelse {
+        std.log.err("⚠️  ios_adapter_get_outgoing_packet: global_ios_adapter is NULL!", .{});
+        return -1;
+    };
 
     const buf = buffer[0..buffer_size];
     const length = adapter.ios_adapter.*.getOutgoingPacket(buf) orelse return 0;
 
+    std.log.info("✅ ios_adapter_get_outgoing_packet: Returning packet length={d}", .{length});
     return @intCast(length);
 }
 
