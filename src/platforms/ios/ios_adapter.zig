@@ -12,10 +12,15 @@ const std = @import("std");
 const taptun = @import("taptun");
 const protocol = @import("protocol");
 
-// C printf for debugging (Zig logs may not appear in iOS Console)
-extern fn printf(format: [*:0]const u8, ...) c_int;
-// iOS NSLog - actually appears in iOS Console
-extern fn NSLog(format: [*:0]const u8, ...) void;
+// iOS NSLog bridge (appears in Console.app)
+extern fn ios_log_message([*:0]const u8) void;
+
+// iOS logging macro
+fn IOS_LOG(comptime fmt: []const u8, args: anytype) void {
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrintZ(&buf, fmt, args) catch return;
+    ios_log_message(msg.ptr);
+}
 
 /// Maximum packet size (Ethernet frame)
 const MAX_PACKET_SIZE = 2048;
@@ -431,11 +436,11 @@ pub const IosAdapter = struct {
     fn sendGatewayArpRequest(self: *IosAdapter) !void {
         const log = std.log.scoped(.ios_adapter);
 
-        // Use NSLog for visibility on iOS
-        NSLog("[IOS_ADAPTER] sendGatewayArpRequest CALLED!");
+        // Use IOS_LOG for visibility (stderr is captured by Console.app)
+        IOS_LOG("[IOS_ADAPTER] sendGatewayArpRequest CALLED!", .{});
 
         if (!self.dhcp_state.valid) {
-            NSLog("[IOS_ADAPTER] ERROR: DHCP not valid");
+            IOS_LOG("[IOS_ADAPTER] ERROR: DHCP not valid", .{});
             log.warn("[sendGatewayArpRequest] ⚠️  DHCP not valid, cannot send ARP", .{});
             return;
         }
@@ -444,33 +449,22 @@ pub const IosAdapter = struct {
         const gateway_ip = self.dhcp_state.gateway;
         const our_mac = self.translator.options.our_mac;
 
-        // Extract IP octets to variables (safer for NSLog varargs)
-        const ip_a: u8 = @truncate((our_ip >> 24) & 0xFF);
-        const ip_b: u8 = @truncate((our_ip >> 16) & 0xFF);
-        const ip_c: u8 = @truncate((our_ip >> 8) & 0xFF);
-        const ip_d: u8 = @truncate(our_ip & 0xFF);
-        const gw_a: u8 = @truncate((gateway_ip >> 24) & 0xFF);
-        const gw_b: u8 = @truncate((gateway_ip >> 16) & 0xFF);
-        const gw_c: u8 = @truncate((gateway_ip >> 8) & 0xFF);
-        const gw_d: u8 = @truncate(gateway_ip & 0xFF);
-
-        NSLog("[IOS_ADAPTER] Building ARP: src_ip=%u.%u.%u.%u target_ip=%u.%u.%u.%u", @as(c_uint, ip_a), @as(c_uint, ip_b), @as(c_uint, ip_c), @as(c_uint, ip_d), @as(c_uint, gw_a), @as(c_uint, gw_b), @as(c_uint, gw_c), @as(c_uint, gw_d));
+        IOS_LOG("[IOS_ADAPTER] Building ARP: src_ip={}.{}.{}.{} target_ip={}.{}.{}.{}", .{ (our_ip >> 24) & 0xFF, (our_ip >> 16) & 0xFF, (our_ip >> 8) & 0xFF, our_ip & 0xFF, (gateway_ip >> 24) & 0xFF, (gateway_ip >> 16) & 0xFF, (gateway_ip >> 8) & 0xFF, gateway_ip & 0xFF });
 
         // Build ARP request using protocol.buildArpRequest
         var arp_buffer: [64]u8 = undefined;
         const arp_size = try protocol.buildArpRequest(our_mac, our_ip, gateway_ip, &arp_buffer);
 
-        const arp_size_int = @as(c_ulong, @intCast(arp_size));
-        NSLog("[IOS_ADAPTER] Built ARP request: %lu bytes", arp_size_int);
+        IOS_LOG("[IOS_ADAPTER] Built ARP request: {} bytes", .{arp_size});
 
         // Queue to incoming_queue for sending to server
         const queued = self.incoming_queue.enqueue(arp_buffer[0..arp_size]);
         if (!queued) {
-            NSLog("[IOS_ADAPTER] ERROR: Failed to queue ARP (queue full)");
+            IOS_LOG("[IOS_ADAPTER] ERROR: Failed to queue ARP (queue full)", .{});
             return error.QueueFull;
         }
 
-        NSLog("[IOS_ADAPTER] ARP Request queued to incoming_queue SUCCESS!");
+        IOS_LOG("[IOS_ADAPTER] ARP Request queued to incoming_queue SUCCESS!", .{});
     }
 
     /// Set DHCP configuration manually (called from C adapter after DHCP processing)
@@ -484,8 +478,6 @@ pub const IosAdapter = struct {
         dns_server2: u32,
         dhcp_server: u32,
     ) void {
-        NSLog("[IOS_ADAPTER] setDhcpInfo ENTERED");
-
         const log = std.log.scoped(.ios_adapter);
         log.info("[setDhcpInfo] 🔧 Setting DHCP info: IP={}.{}.{}.{} GW={}.{}.{}.{} valid=true", .{
             (client_ip >> 24) & 0xFF,
@@ -509,8 +501,7 @@ pub const IosAdapter = struct {
         self.dhcp_state.dhcp_server = dhcp_server;
         self.dhcp_state.valid = true;
 
-        const arp_flag: c_int = if (self.need_gateway_arp) 1 else 0;
-        NSLog("[IOS_ADAPTER] setDhcpInfo: need_gateway_arp=%d", arp_flag);
+        IOS_LOG("[IOS_ADAPTER] setDhcpInfo: need_gateway_arp={}", .{self.need_gateway_arp});
         log.info("[setDhcpInfo] ✅ DHCP state updated successfully", .{});
 
         // Also update translator with our IP and gateway
@@ -520,16 +511,16 @@ pub const IosAdapter = struct {
         // Send ARP Request to learn gateway MAC (like CLI does)
         // This is CRITICAL for SoftEther server's MAC/IP table population
         if (self.need_gateway_arp) {
-            NSLog("[IOS_ADAPTER] setDhcpInfo: Calling sendGatewayArpRequest...");
+            IOS_LOG("[IOS_ADAPTER] setDhcpInfo: Calling sendGatewayArpRequest...", .{});
             self.need_gateway_arp = false; // Mark as sent (don't send again)
             log.info("[setDhcpInfo] 🔍 Sending gateway ARP request...", .{});
             self.sendGatewayArpRequest() catch |err| {
-                NSLog("[IOS_ADAPTER] setDhcpInfo: sendGatewayArpRequest FAILED: %d", @intFromError(err));
+                IOS_LOG("[IOS_ADAPTER] setDhcpInfo: sendGatewayArpRequest FAILED: {}", .{@intFromError(err)});
                 log.err("[setDhcpInfo] ⚠️  Failed to send gateway ARP request: {}", .{err});
             };
-            NSLog("[IOS_ADAPTER] setDhcpInfo: sendGatewayArpRequest returned successfully");
+            IOS_LOG("[IOS_ADAPTER] setDhcpInfo: sendGatewayArpRequest returned successfully", .{});
         } else {
-            NSLog("[IOS_ADAPTER] setDhcpInfo: SKIPPING ARP (need_gateway_arp=false)");
+            IOS_LOG("[IOS_ADAPTER] setDhcpInfo: SKIPPING ARP (need_gateway_arp=false)", .{});
         }
     }
 

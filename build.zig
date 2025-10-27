@@ -390,6 +390,12 @@ pub fn build(b: *std.Build) void {
             .file = b.path("src/ffi/mobile_ffi_c.c"),
             .flags = c_flags,
         });
+
+        // Add iOS logging bridge (Objective-C NSLog)
+        mobile_ffi_lib.addCSourceFile(.{
+            .file = b.path("src/platforms/ios/ios_log.m"),
+            .flags = c_flags,
+        });
     }
 
     // Add all include paths
@@ -402,9 +408,22 @@ pub fn build(b: *std.Build) void {
 
     if (is_ios) {
         mobile_ffi_lib.addIncludePath(b.path("src/bridge/ios_include"));
-        // No iOS frameworks needed - SoftEther VPN client uses standard POSIX APIs
-    }
+        mobile_ffi_lib.addIncludePath(b.path("src/platforms/ios"));
 
+        // Link Foundation framework for NSLog support
+        // Need to pass framework path explicitly via linker flags
+        const ios_sdk = if (target.result.abi == .simulator)
+            "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk"
+        else
+            "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk";
+
+        const framework_path = b.allocator.alloc(u8, ios_sdk.len + "/System/Library/Frameworks".len) catch unreachable;
+        _ = std.fmt.bufPrint(framework_path, "{s}/System/Library/Frameworks", .{ios_sdk}) catch unreachable;
+
+        // Use LazyPath.cwd_relative to add framework search path
+        mobile_ffi_lib.addFrameworkPath(.{ .cwd_relative = framework_path });
+        mobile_ffi_lib.linkFramework("Foundation");
+    }
     mobile_ffi_lib.root_module.addImport("taptun", taptun_module);
 
     // Add Zig packet adapter module and TapTun for iOS
