@@ -10,6 +10,10 @@
 
 const std = @import("std");
 const taptun = @import("taptun");
+const protocol = @import("protocol");
+
+// C printf for debugging (Zig logs may not appear in iOS Console)
+extern fn printf(format: [*:0]const u8, ...) c_int;
 
 /// Maximum packet size (Ethernet frame)
 const MAX_PACKET_SIZE = 2048;
@@ -94,6 +98,14 @@ pub const PacketQueue = struct {
         }
 
         const read_pos = self.read_idx.load(.acquire);
+        const write_pos = self.write_idx.load(.acquire);
+
+        // CRITICAL DEBUG: Check for queue corruption
+        if (read_pos >= self.capacity or write_pos >= self.capacity) {
+            std.log.err("⚠️  QUEUE CORRUPTION: read={d} write={d} capacity={d}", .{ read_pos, write_pos, self.capacity });
+            return null;
+        }
+
         const packet = self.packets[read_pos];
 
         const next_read = (read_pos + 1) % self.capacity;
@@ -135,6 +147,7 @@ pub const IosAdapter = struct {
     // DHCP state
     dhcp_state: DhcpState,
     dhcp_mutex: std.Thread.Mutex,
+    need_gateway_arp: bool, // Flag to send ARP request after DHCP completes
 
     // Statistics
     packets_received: std.atomic.Value(u64),
@@ -146,6 +159,10 @@ pub const IosAdapter = struct {
     l2_to_l3_translated: std.atomic.Value(u64),
     l3_to_l2_translated: std.atomic.Value(u64),
     arp_packets_handled: std.atomic.Value(u64),
+
+    // Debug: Last error code (for C bridge debugging)
+    // -100: dequeue failed, -200: translation error, -300: buffer too small, -400: ARP packet, 0: success
+    last_error_code: std.atomic.Value(i32),
 
     pub fn init(allocator: std.mem.Allocator) !*IosAdapter {
         const self = try allocator.create(IosAdapter);
@@ -181,6 +198,7 @@ pub const IosAdapter = struct {
             .translator = translator,
             .dhcp_state = .{},
             .dhcp_mutex = .{},
+            .need_gateway_arp = false,
             .packets_received = std.atomic.Value(u64).init(0),
             .packets_sent = std.atomic.Value(u64).init(0),
             .bytes_received = std.atomic.Value(u64).init(0),
@@ -190,6 +208,7 @@ pub const IosAdapter = struct {
             .l2_to_l3_translated = std.atomic.Value(u64).init(0),
             .l3_to_l2_translated = std.atomic.Value(u64).init(0),
             .arp_packets_handled = std.atomic.Value(u64).init(0),
+            .last_error_code = std.atomic.Value(i32).init(0),
         };
 
         return self;
@@ -209,12 +228,13 @@ pub const IosAdapter = struct {
 
         // Translate L3 (IP) → L2 (Ethernet) using TapTun
         const eth_frame = try self.translator.ipToEthernet(ip_packet);
+        defer self.allocator.free(eth_frame); // CRITICAL: Free allocated Ethernet frame!
 
         if (eth_frame.len == 0) {
             return false; // Translation failed
         }
 
-        // Enqueue Ethernet frame for SoftEther
+        // Enqueue Ethernet frame for SoftEther (queue copies the data)
         const success = self.incoming_queue.enqueue(eth_frame);
 
         if (success) {
@@ -239,34 +259,56 @@ pub const IosAdapter = struct {
 
         // Dequeue Ethernet frame from SoftEther
         const eth_packet = self.outgoing_queue.dequeue(0) orelse {
-            // DEBUG: Log when queue is empty
+            // DEBUG: Dequeue failed
             if (count > 0) {
                 std.log.err("⚠️  Zig getOutgoingPacket: dequeue returned null but count={d}!", .{count});
             }
+            // ERROR_CODE: -100 means dequeue failed
+            self.last_error_code.store(-100, .release);
             return null;
         };
+
+        std.log.info("✅ Dequeued Ethernet packet: length={d}", .{eth_packet.length});
 
         // Check if this is a DHCP packet - parse and store state
         self.parseDhcpIfNeeded(eth_packet.data[0..eth_packet.length]);
 
         // Translate L2 (Ethernet) → L3 (IP) using TapTun
+        std.log.info("🔄 Calling ethernetToIp for translation...", .{});
         const maybe_ip = self.translator.ethernetToIp(
             eth_packet.data[0..eth_packet.length],
-        ) catch return null;
+        ) catch |err| {
+            std.log.err("⚠️  ethernetToIp failed with error: {}", .{err});
+            // ERROR_CODE: -200 means translation error
+            self.last_error_code.store(-200, .release);
+            return null;
+        };
 
         if (maybe_ip) |ip_packet| {
+            std.log.info("✅ Translation successful: IP packet length={d}", .{ip_packet.len});
             // Got an IP packet - copy to output buffer
-            if (ip_packet.len > buffer.len) return null;
+            defer self.allocator.free(ip_packet); // CRITICAL: Free translated packet!
+
+            if (ip_packet.len > buffer.len) {
+                // ERROR_CODE: -300 means buffer too small
+                self.last_error_code.store(-300, .release);
+                return null;
+            }
             @memcpy(buffer[0..ip_packet.len], ip_packet);
 
             _ = self.packets_sent.fetchAdd(1, .release);
             _ = self.bytes_sent.fetchAdd(ip_packet.len, .release);
             _ = self.l2_to_l3_translated.fetchAdd(1, .release);
 
+            // Success!
+            self.last_error_code.store(0, .release);
             return ip_packet.len;
         } else {
             // ARP packet handled internally by TapTun
+            std.log.info("ℹ️  ethernetToIp returned null (ARP packet - handled internally)", .{});
             _ = self.arp_packets_handled.fetchAdd(1, .release);
+            // ERROR_CODE: -400 means ARP packet (not an error, just informational)
+            self.last_error_code.store(-400, .release);
             return null; // No packet for iOS
         }
     }
@@ -375,9 +417,47 @@ pub const IosAdapter = struct {
             self.dhcp_state.dhcp_server = server_ip;
             self.dhcp_state.valid = true;
 
-            // Configure translator with our IP
+            // Configure translator with our IP and gateway
             self.translator.setOurIp(your_ip);
+            self.translator.setGateway(self.dhcp_state.gateway);
         }
+    }
+
+    /// Send ARP Request to learn gateway MAC address
+    /// This populates SoftEther server's MAC/IP table and enables bidirectional routing
+    /// Called once after DHCP completes (similar to CLI behavior)
+    fn sendGatewayArpRequest(self: *IosAdapter) !void {
+        const log = std.log.scoped(.ios_adapter);
+
+        // Use C printf for visibility (Zig logs might be filtered)
+        _ = printf("[IOS_ADAPTER] sendGatewayArpRequest CALLED!\n");
+
+        if (!self.dhcp_state.valid) {
+            _ = printf("[IOS_ADAPTER] ERROR: DHCP not valid\n");
+            log.warn("[sendGatewayArpRequest] ⚠️  DHCP not valid, cannot send ARP", .{});
+            return;
+        }
+
+        const our_ip = self.dhcp_state.client_ip;
+        const gateway_ip = self.dhcp_state.gateway;
+        const our_mac = self.translator.options.our_mac;
+
+        _ = printf("[IOS_ADAPTER] Building ARP: src_ip=%u.%u.%u.%u target_ip=%u.%u.%u.%u\n", (our_ip >> 24) & 0xFF, (our_ip >> 16) & 0xFF, (our_ip >> 8) & 0xFF, our_ip & 0xFF, (gateway_ip >> 24) & 0xFF, (gateway_ip >> 16) & 0xFF, (gateway_ip >> 8) & 0xFF, gateway_ip & 0xFF);
+
+        // Build ARP request using protocol.buildArpRequest
+        var arp_buffer: [64]u8 = undefined;
+        const arp_size = try protocol.buildArpRequest(our_mac, our_ip, gateway_ip, &arp_buffer);
+
+        _ = printf("[IOS_ADAPTER] Built ARP request: %zu bytes\n", arp_size);
+
+        // Queue to incoming_queue for sending to server
+        const queued = self.incoming_queue.enqueue(arp_buffer[0..arp_size]);
+        if (!queued) {
+            _ = printf("[IOS_ADAPTER] ERROR: Failed to queue ARP (queue full)\n");
+            return error.QueueFull;
+        }
+
+        _ = printf("[IOS_ADAPTER] ARP Request queued to incoming_queue SUCCESS!\n");
     }
 
     /// Set DHCP configuration manually (called from C adapter after DHCP processing)
@@ -414,10 +494,27 @@ pub const IosAdapter = struct {
         self.dhcp_state.dhcp_server = dhcp_server;
         self.dhcp_state.valid = true;
 
+        _ = printf("[IOS_ADAPTER] setDhcpInfo: need_gateway_arp=%d\n", if (self.need_gateway_arp) @as(c_int, 1) else @as(c_int, 0));
         log.info("[setDhcpInfo] ✅ DHCP state updated successfully", .{});
 
-        // Also update translator with our IP
+        // Also update translator with our IP and gateway
         self.translator.setOurIp(client_ip);
+        self.translator.setGateway(gateway);
+
+        // Send ARP Request to learn gateway MAC (like CLI does)
+        // This is CRITICAL for SoftEther server's MAC/IP table population
+        if (self.need_gateway_arp) {
+            _ = printf("[IOS_ADAPTER] setDhcpInfo: Calling sendGatewayArpRequest...\n");
+            self.need_gateway_arp = false; // Mark as sent (don't send again)
+            log.info("[setDhcpInfo] 🔍 Sending gateway ARP request...", .{});
+            self.sendGatewayArpRequest() catch |err| {
+                _ = printf("[IOS_ADAPTER] setDhcpInfo: sendGatewayArpRequest FAILED: %d\n", @intFromError(err));
+                log.err("[setDhcpInfo] ⚠️  Failed to send gateway ARP request: {}", .{err});
+            };
+            _ = printf("[IOS_ADAPTER] setDhcpInfo: sendGatewayArpRequest returned successfully\n");
+        } else {
+            _ = printf("[IOS_ADAPTER] setDhcpInfo: SKIPPING ARP (need_gateway_arp=false)\n");
+        }
     }
 
     /// Get DHCP configuration (for Swift to apply network settings)

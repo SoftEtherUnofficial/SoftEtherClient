@@ -447,18 +447,14 @@ pub fn build(b: *std.Build) void {
         });
         mobile_ffi_lib.addObject(protocol_obj_mobile);
 
-        std.debug.print("Added TapTun C FFI exports, DHCP parser, and protocol builders\n", .{});
-    }
-
-    // Add Zig packet adapter module for iOS (provides ios_adapter_* FFI exports)
-    if (is_ios) {
-        // Create ios_adapter module first
+        // Create ios_adapter module (provides ios_adapter_* FFI exports)
         const ios_adapter_module = b.createModule(.{
             .root_source_file = b.path("src/platforms/ios/ios_adapter.zig"),
             .target = target,
             .optimize = optimize,
         });
         ios_adapter_module.addImport("taptun", taptun_module);
+        ios_adapter_module.addImport("protocol", protocol_module_mobile);
 
         // Create main adapter module with ios_adapter import
         const mobile_adapter_module = b.createModule(.{
@@ -476,7 +472,7 @@ pub fn build(b: *std.Build) void {
         mobile_adapter_obj.addIncludePath(b.path("src/bridge"));
         mobile_ffi_lib.addObject(mobile_adapter_obj);
 
-        std.debug.print("iOS build: Added Zig iOS adapter module\n", .{});
+        std.debug.print("Added TapTun C FFI exports, DHCP parser, protocol builders, and iOS adapter module\n", .{});
     }
 
     mobile_ffi_lib.linkLibC();

@@ -1505,7 +1505,25 @@ int vpn_bridge_read_packet(
     static uint64_t read_call_count = 0;
     read_call_count++;
     
-    // Use the packet adapter's GetNextPacket function
+#ifdef UNIX_IOS
+    // **iOS DIRECT PATH**: Call ios_adapter_get_outgoing_packet to get IP packets
+    // This bypasses SessionMain's Ethernet-based routing and returns L3 IP packets
+    // directly to PacketTunnelProvider (which needs IP, not Ethernet)
+    
+    extern int ios_adapter_get_outgoing_packet(uint8_t* buffer, uint32_t buffer_size, void (*log_callback)(const char*, int));
+    
+    // Callback for Zig logging
+    extern void zig_ios_log(const char* msg, int value); // Reuse existing callback from zig_packet_adapter.c
+    
+    int packet_size = ios_adapter_get_outgoing_packet(buffer, buffer_len, zig_ios_log);
+    
+    if (read_call_count <= 10) {
+        LOG_INFO("VPN", "📡 read_packet #%llu: ios_adapter_get_outgoing_packet returned size=%d", read_call_count, packet_size);
+    }
+    
+    return packet_size;  // Return directly (IP packet or 0 if none, -1 on error)
+#else
+    // **macOS/Linux/Android**: Use the packet adapter's GetNextPacket function
     void* packet_data = NULL;
     UINT packet_size = session->PacketAdapter->GetNextPacket(session, &packet_data);
     
@@ -1528,6 +1546,7 @@ int vpn_bridge_read_packet(
     // Copy packet data to output buffer
     memcpy(buffer, packet_data, packet_size);
     Free(packet_data);
+#endif
     
     return (int)packet_size;
 }
@@ -1550,7 +1569,16 @@ int vpn_bridge_write_packet(
         return -1;
     }
     
-    // Allocate packet buffer
+#ifdef UNIX_IOS
+    // **iOS DIRECT PATH**: iOS sends L3 (IP) packets, need L3→L2 translation
+    // Use ios_adapter_inject_packet which wraps IP in Ethernet headers
+    extern int ios_adapter_inject_packet(const uint8_t* data, uint32_t length);
+    
+    int result = ios_adapter_inject_packet(data, data_len);
+    return result; // Returns 0 on success, -1 on error
+#else
+    // **macOS/Linux/Android**: Allocate and use PutPacket directly
+    // (These platforms send Ethernet frames already)
     void* packet_data = Malloc(data_len);
     if (!packet_data) {
         LOG_ERROR("VPN", "Failed to allocate packet buffer");
@@ -1569,6 +1597,7 @@ int vpn_bridge_write_packet(
     }
     
     return 0;
+#endif
 }
 
 

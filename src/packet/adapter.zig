@@ -10,6 +10,9 @@
 // - macOS/Linux: TUN device I/O (this file)
 // - iOS: PacketFlow queue bridge (ios_adapter.zig)
 
+// C printf for debugging (Zig logs don't appear in iOS Console)
+extern fn printf(format: [*:0]const u8, ...) c_int;
+
 const std = @import("std");
 const builtin = @import("builtin");
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
@@ -28,6 +31,9 @@ const IosAdapterModule = if (builtin.os.tag == .ios) struct {
     pub const IosAdapter = struct {};
 };
 const is_ios = builtin.os.tag == .ios;
+
+// C printf for debugging (Zig std.log may not appear in iOS console)
+extern "c" fn printf([*:0]const u8, ...) c_int;
 
 // C FFI for logging (macOS only - iOS uses std.log)
 const c = if (!is_ios) @cImport({
@@ -324,6 +330,30 @@ pub const ZigPacketAdapter = struct {
 
     /// Get next packet (called by SoftEther protocol layer)
     pub fn getNextPacket(self: *ZigPacketAdapter) ?PacketBuffer {
+        // iOS: Read from iOS adapter's incoming queue (iOS → SoftEther)
+        if (is_ios) {
+            const ios_adp = self.ios_adapter;
+            const queued = ios_adp.incoming_queue.dequeue(0) orelse return null;
+
+            // Allocate buffer from pool
+            const buffer = self.packet_pool.alloc() orelse return null;
+
+            // Copy data from queued packet
+            if (queued.length > buffer.len) {
+                self.packet_pool.free(buffer);
+                return null;
+            }
+
+            @memcpy(buffer[0..queued.length], queued.data[0..queued.length]);
+
+            return PacketBuffer{
+                .data = buffer,
+                .len = queued.length,
+                .timestamp = queued.timestamp,
+            };
+        }
+
+        // macOS/Linux: Read from recv_queue
         return self.recv_queue.pop();
     }
 
@@ -1083,19 +1113,59 @@ export fn ios_adapter_inject_packet(data: [*]const u8, length: u32) c_int {
 
 /// Get outgoing packet for iOS NEPacketTunnelFlow (adapter queue → L3 IP packet)
 /// Returns packet length (>0), 0 if no packet, -1 on error
-export fn ios_adapter_get_outgoing_packet(buffer: [*]u8, buffer_size: u32) c_int {
+export fn ios_adapter_get_outgoing_packet(buffer: [*]u8, buffer_size: u32, log_callback: ?*const fn ([*:0]const u8, c_int) void) c_int {
     if (!is_ios) return -1; // Not iOS build
 
     const adapter = global_ios_adapter orelse {
         std.log.err("⚠️  ios_adapter_get_outgoing_packet: global_ios_adapter is NULL!", .{});
+        if (log_callback) |log| log("adapter_is_NULL", -1);
         return -1;
     };
 
+    // Log adapter pointer address to check for instance mismatch
+    const addr: usize = @intFromPtr(adapter.ios_adapter);
+    if (log_callback) |log| {
+        // Split 64-bit address into two 32-bit parts for logging
+        const addr_high: c_int = @intCast((addr >> 32) & 0xFFFFFFFF);
+        const addr_low: c_int = @intCast(addr & 0xFFFFFFFF);
+        log("adapter_ptr_high", addr_high);
+        log("adapter_ptr_low", addr_low);
+    }
+
+    // Check queue count BEFORE dequeue attempt
+    const count = adapter.ios_adapter.*.outgoing_queue.count.load(.acquire);
+    if (log_callback) |log| log("queue_count", @intCast(count));
+
     const buf = buffer[0..buffer_size];
-    const length = adapter.ios_adapter.*.getOutgoingPacket(buf) orelse return 0;
+
+    // Try to get packet
+    const length = adapter.ios_adapter.*.getOutgoingPacket(buf) orelse {
+        // Failed to get packet - determine why
+        // Re-check count to see if it changed
+        const count_after = adapter.ios_adapter.*.outgoing_queue.count.load(.acquire);
+
+        // Get error code to diagnose failure
+        const error_code = adapter.ios_adapter.*.last_error_code.load(.acquire);
+
+        if (log_callback) |log| {
+            log("failed_count_before", @intCast(count));
+            log("failed_count_after", @intCast(count_after));
+            log("error_code", error_code);
+        }
+        return 0;
+    };
 
     std.log.info("✅ ios_adapter_get_outgoing_packet: Returning packet length={d}", .{length});
+    if (log_callback) |log| log("returning_packet_size", @intCast(length));
     return @intCast(length);
+}
+
+/// Get last error code from iOS adapter (for debugging)
+/// Returns: 0=success, -100=dequeue_failed, -200=translation_error, -300=buffer_too_small, -400=arp_packet
+export fn ios_adapter_get_last_error() c_int {
+    if (!is_ios) return 0;
+    const adapter = global_ios_adapter orelse return -999; // -999 = no adapter
+    return adapter.ios_adapter.*.last_error_code.load(.acquire);
 }
 
 /// Set DHCP configuration in iOS adapter (called from C adapter after DHCP processing)
@@ -1108,10 +1178,30 @@ export fn ios_adapter_set_dhcp_info(
     dns_server2: u32,
     dhcp_server: u32,
 ) void {
-    if (!is_ios) return;
+    std.log.info("[FFI] ios_adapter_set_dhcp_info CALLED: IP={}.{}.{}.{} GW={}.{}.{}.{}", .{
+        (client_ip >> 24) & 0xFF,
+        (client_ip >> 16) & 0xFF,
+        (client_ip >> 8) & 0xFF,
+        client_ip & 0xFF,
+        (gateway >> 24) & 0xFF,
+        (gateway >> 16) & 0xFF,
+        (gateway >> 8) & 0xFF,
+        gateway & 0xFF,
+    });
 
-    const adapter = global_ios_adapter orelse return;
+    if (!is_ios) {
+        std.log.err("[FFI] ERROR: is_ios=false, cannot set DHCP info!", .{});
+        return;
+    }
+
+    const adapter = global_ios_adapter orelse {
+        std.log.err("[FFI] ERROR: global_ios_adapter is null!", .{});
+        return;
+    };
+
+    std.log.info("[FFI] Calling adapter.ios_adapter.setDhcpInfo...", .{});
     adapter.ios_adapter.*.setDhcpInfo(client_ip, subnet_mask, gateway, dns_server1, dns_server2, dhcp_server);
+    std.log.info("[FFI] setDhcpInfo returned successfully", .{});
 }
 
 /// Get DHCP configuration from iOS adapter
@@ -1136,6 +1226,14 @@ export fn ios_adapter_get_dhcp_info(
     dns_server2.* = dhcp.dns_server2;
 
     return 0;
+}
+
+/// Set flag to send ARP request to gateway (called from C after DHCP completes)
+export fn ios_adapter_set_need_gateway_arp(need_arp: bool) void {
+    if (!is_ios) return;
+
+    const adapter = global_ios_adapter orelse return;
+    adapter.ios_adapter.*.need_gateway_arp = need_arp;
 }
 
 /// Get iOS adapter statistics

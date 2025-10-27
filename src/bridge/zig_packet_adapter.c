@@ -288,6 +288,18 @@ static CANCEL* ZigAdapterGetCancel(SESSION* s) {
     return ctx->cancel;
 }
 
+#ifdef UNIX_IOS
+// Zig logging callback (iOS doesn't show printf output from frameworks)
+// Non-static so it can be used by softether_bridge.c
+void zig_ios_log(const char* msg, int value) {
+    static int log_count = 0;
+    if (log_count < 100) {  // Increased limit to catch more events
+        LOG_ERROR("ZigInternal", "%s: %d", msg, value);
+        log_count++;
+    }
+}
+#endif
+
 // Get next packet (single packet mode - for compatibility)
 static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
     static uint64_t get_count = 0;
@@ -591,27 +603,8 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
     ssize_t bytes_read = -1;
     
 #ifdef UNIX_IOS
-    // **iOS path**: Check outgoing queue for packets from SessionMain (ARP replies, data packets)
-    // This is CRITICAL - without this, iOS never receives ARP replies or data from server!
-    // NOTE: On iOS, zig_adapter exists but zig_adapter_read_sync returns 0 (iOS uses push model)
-    
-    // DEBUG: Log that we're using iOS path
-    static int ios_path_log_count = 0;
-    if (ios_path_log_count < 5) {
-        LOG_INFO("ZigAdapterGetNextPacket", "🔵 iOS PATH: Calling ios_adapter_get_outgoing_packet");
-        ios_path_log_count++;
-    }
-    
-    extern int ios_adapter_get_outgoing_packet(uint8_t* buffer, uint32_t buffer_size);
-    int packet_size = ios_adapter_get_outgoing_packet(temp_buf, sizeof(temp_buf));
-    
-    if (packet_size > 0) {
-        bytes_read = packet_size;
-        LOG_INFO("ZigAdapterGetNextPacket", "✅ iOS PATH: Got packet size=%d", packet_size);
-    } else {
-        // No packet available from outgoing queue
-        return 0;
-    }
+    // iOS: No TUN device - return 0 (packets go through ios_adapter_get_outgoing_packet in vpn_bridge_read_packet)
+    return 0;
 #else
     // **macOS/Linux path**: Read from TUN device
     if (ctx->zig_adapter) {
@@ -775,6 +768,18 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                             extern void ios_adapter_set_dhcp_info(uint32_t client_ip, uint32_t subnet_mask, 
                                                                    uint32_t gateway, uint32_t dns1, uint32_t dns2, 
                                                                    uint32_t dhcp_server);
+                            extern void ios_adapter_set_need_gateway_arp(bool need_arp);
+                            
+                            LOG_INFO("ZigPutPacket", "🔍 About to call ios_adapter_set_need_gateway_arp(true)");
+                            // Enable ARP request sending BEFORE setting DHCP info
+                            ios_adapter_set_need_gateway_arp(true);
+                            LOG_INFO("ZigPutPacket", "✅ ios_adapter_set_need_gateway_arp returned");
+                            
+                            LOG_INFO("ZigPutPacket", "🔍 About to call ios_adapter_set_dhcp_info(IP=%u.%u.%u.%u GW=%u.%u.%u.%u)",
+                                (ctx->our_ip >> 24) & 0xFF, (ctx->our_ip >> 16) & 0xFF, 
+                                (ctx->our_ip >> 8) & 0xFF, ctx->our_ip & 0xFF,
+                                (ctx->offered_gw >> 24) & 0xFF, (ctx->offered_gw >> 16) & 0xFF,
+                                (ctx->offered_gw >> 8) & 0xFF, ctx->offered_gw & 0xFF);
                             ios_adapter_set_dhcp_info(
                                 ctx->our_ip,
                                 ctx->offered_mask,
@@ -783,6 +788,7 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                 0x08080404,  // Google DNS 8.8.4.4
                                 server_ip
                             );
+                            LOG_INFO("ZigPutPacket", "✅ ios_adapter_set_dhcp_info returned");
                             LOG_INFO("ZigPutPacket", "✅ iOS: Synchronized DHCP state with iOS adapter");
 #endif
                             
@@ -800,9 +806,8 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                    (ctx->offered_gw >> 24) & 0xFF, (ctx->offered_gw >> 16) & 0xFF,
                                    (ctx->offered_gw >> 8) & 0xFF, ctx->offered_gw & 0xFF);
                             
-                            // Set flags for ARP  
-                            ctx->need_gratuitous_arp_configured = true;
-                            ctx->need_gateway_arp = true;
+                            // Note: ARP sending is now handled in ios_adapter.zig (Zig-side)
+                            // The need_gateway_arp flag was set via ios_adapter_set_need_gateway_arp()
                             
                             LOG_INFO("ZigPutPacket", "✅ DHCP configuration complete for iOS");
 #else
