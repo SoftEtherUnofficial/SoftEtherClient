@@ -597,9 +597,17 @@ int vpn_bridge_connect(VpnBridgeClient* client) {
     
     LOG_DEBUG("VPN", "TCP-ONLY MODE: PortUDP=%u (TCP only, no NAT-T, no UDP accel)", opt->PortUDP);
     
-    // Device name for virtual adapter - use generic VPN adapter name
-    // This enables proper Layer 2 bridging without special modes
-    StrCpy(opt->DeviceName, sizeof(opt->DeviceName), "vpn_adapter");
+    // iOS: Use Layer 2 bridge mode with VirtualTap handling ARP internally
+    // iOS PacketTunnelProvider is Layer 3-only, but we send/receive full Ethernet frames
+    // VirtualTap intercepts ARP requests and generates replies before they reach iOS tunnel
+    // This matches the behavior of SSTP Connect (which successfully handles ARP on iOS)
+    #ifdef UNIX_IOS
+        StrCpy(opt->DeviceName, sizeof(opt->DeviceName), "vpn_ios");  // Named adapter = Layer 2 mode
+        LOG_INFO("VPN", "🍎 iOS Layer 2 mode: DeviceName=\"vpn_ios\" (VirtualTap handles ARP internally)");
+    #else
+        StrCpy(opt->DeviceName, sizeof(opt->DeviceName), "vpn_adapter");
+        LOG_DEBUG("VPN", "�️ Desktop mode: DeviceName=\"vpn_adapter\" (standard Layer 2 bridge)");
+    #endif
     
     // Connection settings - TCP ONLY, configurable max connections
     // Multiple connections improve throughput through parallelization

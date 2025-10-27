@@ -69,11 +69,15 @@ static bool ParseDhcpPacket(const UCHAR* data, UINT size, UINT32* out_offered_ip
 }
 
 // Static buffer for Zig packet builders (max packet size)
-#define MAX_PACKET_SIZE 2048
-static uint8_t g_packet_buffer[MAX_PACKET_SIZE];
+// Note: Cedar.h defines MAX_PACKET_SIZE as 1600, we need a larger buffer for Ethernet frames
+#define ZIG_PACKET_BUFFER_SIZE 2048
+static uint8_t g_packet_buffer[ZIG_PACKET_BUFFER_SIZE];
 
 // Temporary: C packet builder for testing
 extern UCHAR *BuildDhcpDiscover(UCHAR *my_mac, UINT32 xid, UINT *out_size);
+
+// Forward declaration of iOS adapter type from ios_adapter.zig
+typedef struct IosAdapter IosAdapter;
 
 // Forward declarations of SoftEther callbacks
 static bool ZigAdapterInit(SESSION* s);
@@ -336,6 +340,45 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
         LOG_ERROR("ZigAdapter", "[ZigAdapterGetNextPacket] ✅ All checks passed, dhcp_state=%d", ctx->dhcp_state);
     }
     
+    // ===================================================================
+    // PRIORITY 1: Check for ARP replies from VirtualTap (in incoming_queue)
+    // VirtualTap generates ARP replies when server sends ARP requests
+    // These MUST be sent back to server ASAP for bidirectional traffic
+    // ===================================================================
+    extern IosAdapter* global_ios_adapter;  // From ios_adapter.zig
+    if (global_ios_adapter) {
+        // Try to get ARP reply from incoming queue (iOS → Server direction)
+        uint8_t arp_buffer[2048];
+        size_t arp_len = ios_adapter_get_packet_from_incoming(global_ios_adapter, arp_buffer, sizeof(arp_buffer));
+        
+        if (arp_len > 0) {
+            // Check if it's an ARP packet (EtherType 0x0806 at bytes 12-13)
+            if (arp_len >= 14) {
+                uint16_t ethertype = (arp_buffer[12] << 8) | arp_buffer[13];
+                if (ethertype == 0x0806) {
+                    LOG_ERROR("ZigAdapter", "🎯 CRITICAL: ARP REPLY from VirtualTap! %zu bytes - SENDING TO SERVER", arp_len);
+                    
+                    // Allocate and copy ARP reply
+                    void* packet = Malloc(arp_len);
+                    if (packet) {
+                        memcpy(packet, arp_buffer, arp_len);
+                        *data = packet;
+                        return (UINT)arp_len;
+                    }
+                } else {
+                    // Not ARP - it's an IP packet from iOS, also forward it
+                    LOG_ERROR("ZigAdapter", "📤 IP packet from iOS: %zu bytes (EtherType=0x%04x)", arp_len, ethertype);
+                    void* packet = Malloc(arp_len);
+                    if (packet) {
+                        memcpy(packet, arp_buffer, arp_len);
+                        *data = packet;
+                        return (UINT)arp_len;
+                    }
+                }
+            }
+        }
+    }
+    
     // DHCP state machine: Send Gratuitous ARP first (IMMEDIATELY on iOS - no delay)
     UINT64 now = Tick64();
     
@@ -397,7 +440,7 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
             UCHAR* c_pkt = BuildDhcpDiscover(ctx->my_mac, ctx->dhcp_xid, &c_size);
             
             size_t zig_size = 0;
-            bool zig_ok = zig_build_dhcp_discover(ctx->my_mac, ctx->dhcp_xid, g_packet_buffer, MAX_PACKET_SIZE, &zig_size);
+            bool zig_ok = zig_build_dhcp_discover(ctx->my_mac, ctx->dhcp_xid, g_packet_buffer, ZIG_PACKET_BUFFER_SIZE, &zig_size);
             
             // ALWAYS log packet details for first 2 DISCOVERs to diagnose iOS issue
             if (c_pkt && zig_ok && ctx->dhcp_retry_count <= 1) {
@@ -491,7 +534,7 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
     if (ctx->dhcp_state == DHCP_STATE_OFFER_RECEIVED) {
         LOG_ERROR("ZigAdapter", "🎯 DHCP_STATE_OFFER_RECEIVED detected! Building DHCP REQUEST...");
         size_t dhcp_size = 0;
-        if (zig_build_dhcp_request(ctx->my_mac, ctx->dhcp_xid, ctx->offered_ip, ctx->dhcp_server_ip, g_packet_buffer, MAX_PACKET_SIZE, &dhcp_size)) {
+        if (zig_build_dhcp_request(ctx->my_mac, ctx->dhcp_xid, ctx->offered_ip, ctx->dhcp_server_ip, g_packet_buffer, ZIG_PACKET_BUFFER_SIZE, &dhcp_size)) {
             LOG_ERROR("ZigAdapter", "📡 Sending DHCP REQUEST for IP %u.%u.%u.%u (size=%zu)",
                    (ctx->offered_ip >> 24) & 0xFF, (ctx->offered_ip >> 16) & 0xFF,
                    (ctx->offered_ip >> 8) & 0xFF, ctx->offered_ip & 0xFF, dhcp_size);
@@ -516,7 +559,7 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
         ctx->need_arp_reply = false;  // Send only once per request
         
         size_t reply_size = 0;
-        if (zig_build_arp_reply(ctx->my_mac, ctx->our_ip, ctx->arp_reply_to_mac, ctx->arp_reply_to_ip, g_packet_buffer, MAX_PACKET_SIZE, &reply_size)) {
+        if (zig_build_arp_reply(ctx->my_mac, ctx->our_ip, ctx->arp_reply_to_mac, ctx->arp_reply_to_ip, g_packet_buffer, ZIG_PACKET_BUFFER_SIZE, &reply_size)) {
             UCHAR* pkt_copy = Malloc(reply_size);
             memcpy(pkt_copy, g_packet_buffer, reply_size);
             *data = pkt_copy;
@@ -530,7 +573,7 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
         ctx->need_reactive_garp = false;  // Reset flag
         
         size_t garp_size = 0;
-        if (zig_build_gratuitous_arp(ctx->my_mac, ctx->our_ip, g_packet_buffer, MAX_PACKET_SIZE, &garp_size)) {
+        if (zig_build_gratuitous_arp(ctx->my_mac, ctx->our_ip, g_packet_buffer, ZIG_PACKET_BUFFER_SIZE, &garp_size)) {
             UCHAR* pkt_copy = Malloc(garp_size);
             memcpy(pkt_copy, g_packet_buffer, garp_size);
             *data = pkt_copy;
@@ -545,7 +588,7 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
         ctx->need_gratuitous_arp_configured = false;  // Send only once
         
         size_t garp_size = 0;
-        if (zig_build_gratuitous_arp(ctx->my_mac, ctx->our_ip, g_packet_buffer, MAX_PACKET_SIZE, &garp_size)) {
+        if (zig_build_gratuitous_arp(ctx->my_mac, ctx->our_ip, g_packet_buffer, ZIG_PACKET_BUFFER_SIZE, &garp_size)) {
             UCHAR* pkt_copy = Malloc(garp_size);
             memcpy(pkt_copy, g_packet_buffer, garp_size);
             *data = pkt_copy;
@@ -559,7 +602,7 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
         ctx->need_gateway_arp = false;  // Send only once
         
         size_t arp_size = 0;
-        if (zig_build_arp_request(ctx->my_mac, ctx->our_ip, ctx->offered_gw, g_packet_buffer, MAX_PACKET_SIZE, &arp_size)) {
+        if (zig_build_arp_request(ctx->my_mac, ctx->our_ip, ctx->offered_gw, g_packet_buffer, ZIG_PACKET_BUFFER_SIZE, &arp_size)) {
             printf("[ZigAdapterGetNextPacket] 🔍 Sending ARP Request to resolve gateway MAC %u.%u.%u.%u\n",
                    (ctx->offered_gw >> 24) & 0xFF, (ctx->offered_gw >> 16) & 0xFF,
                    (ctx->offered_gw >> 8) & 0xFF, ctx->offered_gw & 0xFF);
@@ -584,7 +627,7 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
         if ((now - ctx->last_keepalive_time) >= KEEPALIVE_INTERVAL_MS) {
             // Build Gratuitous ARP packet
             size_t arp_size = 0;
-            if (zig_build_gratuitous_arp(ctx->my_mac, ctx->our_ip, g_packet_buffer, MAX_PACKET_SIZE, &arp_size)) {
+            if (zig_build_gratuitous_arp(ctx->my_mac, ctx->our_ip, g_packet_buffer, ZIG_PACKET_BUFFER_SIZE, &arp_size)) {
                 UCHAR* pkt_copy = Malloc(arp_size);
                 memcpy(pkt_copy, g_packet_buffer, arp_size);
                 *data = pkt_copy;

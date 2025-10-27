@@ -375,10 +375,14 @@ pub const ZigPacketAdapter = struct {
     pub fn putPacket(self: *ZigPacketAdapter, data: []const u8) bool {
         // iOS: Use iOS adapter's outgoing queue (SoftEther → iOS)
         if (is_ios) {
+            IOS_LOG("[PUT_PACKET] Server→iOS: {d} bytes", .{data.len});
             const ios_adp = self.ios_adapter;
             const success = ios_adp.outgoing_queue.enqueue(data);
             if (!success) {
+                IOS_LOG("[PUT_PACKET] ERROR: Queue full, dropping packet", .{});
                 _ = ios_adp.queue_drops_out.fetchAdd(1, .release);
+            } else {
+                IOS_LOG("[PUT_PACKET] Queued successfully to outgoing_queue", .{});
             }
             return success;
         }

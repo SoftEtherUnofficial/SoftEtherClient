@@ -2147,11 +2147,17 @@ SESSION *NewClientSessionEx(CEDAR *cedar, CLIENT_OPTION *option, CLIENT_AUTH *au
 
 	if (s->VirtualHost)
 	{
-		VH *v = (VH *)s->PacketAdapter->Param;
+		// Skip VH (Virtual Host) setup for iOS - iOS uses PacketTunnelProvider instead
+		// Desktop clients create a VH structure for virtual network interface
+		#ifndef UNIX_IOS
+			VH *v = (VH *)s->PacketAdapter->Param;
 
-		// Add the session object to VH
-		v->Session = s;
-		AddRef(s->ref);
+			// Add the session object to VH
+			v->Session = s;
+			AddRef(s->ref);
+		#else
+			LOG_INFO("SESSION", "📱 iOS VirtualHost mode: Using PacketTunnelProvider (no VH structure)");
+		#endif
 	}
 
 	LOG_INFO("SESSION", "📝 Setting account reference: account=%p", account);

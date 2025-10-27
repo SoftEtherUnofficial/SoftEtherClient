@@ -845,7 +845,58 @@ static UINT IosAdapterGetNextPacket(SESSION *s, void **data) {
     // Got a packet!
     static uint64_t get_count = 0;
     get_count++;
-    LOG_INFO("IOS_ADAPTER", "GetNextPacket: 📤 PACKET #%llu FROM iOS: %d bytes (L3 IP)", get_count, length);
+    
+    // ===================================================================
+    // CRITICAL: Detect packet type (L2 Ethernet vs L3 IP)
+    // - VirtualTap ARP replies are FULL ETHERNET FRAMES (60 bytes, starts with MAC address)
+    // - iOS tunnel packets are IP PACKETS (starts with 0x4X for IPv4)
+    // ===================================================================
+    bool is_ethernet_frame = false;
+    bool is_ip_packet = false;
+    
+    if (length >= 14) {
+        // Check if it looks like an Ethernet frame:
+        // - Length >= 60 (minimum Ethernet frame size)
+        // - Starts with MAC address (first byte can be anything)
+        // - Byte 12-13 contain EtherType (0x0800=IP, 0x0806=ARP)
+        uint16_t ethertype = (buffer[12] << 8) | buffer[13];
+        if (length >= 60 && (ethertype == 0x0800 || ethertype == 0x0806 || ethertype == 0x86dd)) {
+            is_ethernet_frame = true;
+            LOG_INFO("IOS_ADAPTER", "GetNextPacket: 📤 ETHERNET FRAME #%llu: %d bytes, EtherType=0x%04X (%s)",
+                     get_count, length, ethertype,
+                     (ethertype == 0x0800 ? "IPv4" : (ethertype == 0x0806 ? "ARP" : "IPv6")));
+        }
+    }
+    
+    if (!is_ethernet_frame && length >= 20) {
+        // Check if it's an IPv4 packet (version field = 4)
+        uint8_t version = buffer[0] >> 4;
+        if (version == 4) {
+            is_ip_packet = true;
+            LOG_INFO("IOS_ADAPTER", "GetNextPacket: 📤 IP PACKET #%llu: %d bytes (needs L3→L2 translation)",
+                     get_count, length);
+        }
+    }
+    
+    if (!is_ethernet_frame && !is_ip_packet) {
+        LOG_ERROR("IOS_ADAPTER", "GetNextPacket: ❌ UNKNOWN packet type (len=%d, first_byte=0x%02X)",
+                 length, buffer[0]);
+        return INFINITE;
+    }
+    
+    // === Handle Ethernet frames (ARP replies from VirtualTap) ===
+    if (is_ethernet_frame) {
+        // Packet is already a complete Ethernet frame - send as-is!
+        void* packet = Malloc(length);
+        if (!packet) {
+            LOG_ERROR("IOS_ADAPTER", "GetNextPacket: MALLOC FAILED for %d bytes", length);
+            return INFINITE;
+        }
+        memcpy(packet, buffer, length);
+        *data = packet;
+        LOG_INFO("IOS_ADAPTER", "GetNextPacket: ✅ Ethernet frame forwarded to SessionMain (%d bytes)", length);
+        return length;
+    }
     
     // Log first 20 bytes of IP packet for debugging (first 3 packets only)
     if (get_count <= 3 && length >= 20) {

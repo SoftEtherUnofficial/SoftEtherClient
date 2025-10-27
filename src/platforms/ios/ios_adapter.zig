@@ -9,7 +9,7 @@
 //! This module is ONLY compiled for iOS targets (comptime check in adapter.zig)
 
 const std = @import("std");
-const taptun = @import("taptun");
+const VirtualTap = @import("virtual_tap").VirtualTap;
 const protocol = @import("protocol");
 
 // iOS NSLog bridge (appears in Console.app)
@@ -27,6 +27,10 @@ const MAX_PACKET_SIZE = 2048;
 
 /// Maximum queue capacity
 const MAX_QUEUE_SIZE = 512;
+
+// Global iOS adapter pointer - set during initialization, used by C code to access incoming queue
+// Must use 'export' to make it visible to C linker
+export var global_ios_adapter: ?*IosAdapter = null;
 
 /// Packet with owned buffer
 pub const QueuedPacket = struct {
@@ -148,8 +152,8 @@ pub const IosAdapter = struct {
     incoming_queue: PacketQueue, // iOS → SoftEther
     outgoing_queue: PacketQueue, // SoftEther → iOS
 
-    // TapTun translator for L2↔L3 conversion
-    translator: taptun.L2L3Translator,
+    // VirtualTap for Layer 2 virtualization (handles ARP internally)
+    vtap: *VirtualTap,
 
     // DHCP state
     dhcp_state: DhcpState,
@@ -166,6 +170,7 @@ pub const IosAdapter = struct {
     l2_to_l3_translated: std.atomic.Value(u64),
     l3_to_l2_translated: std.atomic.Value(u64),
     arp_packets_handled: std.atomic.Value(u64),
+    arp_replies_sent: std.atomic.Value(u64),
 
     // Debug: Last error code (for C bridge debugging)
     // -100: dequeue failed, -200: translation error, -300: buffer too small, -400: ARP packet, 0: success
@@ -189,12 +194,15 @@ pub const IosAdapter = struct {
         our_mac[4] = random.int(u8);
         our_mac[5] = random.int(u8);
 
-        // Create TapTun translator (no device - just L2↔L3 conversion)
-        const translator = try taptun.L2L3Translator.init(allocator, .{
+        // Create VirtualTap for Layer 2 virtualization (handles ARP internally)
+        const vtap = try VirtualTap.init(allocator, .{
             .our_mac = our_mac,
-            .learn_ip = true, // Auto-learn from DHCP
-            .learn_gateway_mac = true, // Learn from ARP
+            .our_ip = null, // Will be set after DHCP
+            .gateway_ip = null, // Will be set after DHCP
+            .gateway_mac = null, // Will learn from traffic
             .handle_arp = true, // Handle ARP internally
+            .learn_ip = true, // Auto-learn from packets
+            .learn_gateway_mac = true, // Learn from traffic
             .verbose = true,
         });
 
@@ -202,7 +210,7 @@ pub const IosAdapter = struct {
             .allocator = allocator,
             .incoming_queue = try PacketQueue.init(allocator, MAX_QUEUE_SIZE),
             .outgoing_queue = try PacketQueue.init(allocator, MAX_QUEUE_SIZE),
-            .translator = translator,
+            .vtap = vtap,
             .dhcp_state = .{},
             .dhcp_mutex = .{},
             .need_gateway_arp = false,
@@ -215,16 +223,24 @@ pub const IosAdapter = struct {
             .l2_to_l3_translated = std.atomic.Value(u64).init(0),
             .l3_to_l2_translated = std.atomic.Value(u64).init(0),
             .arp_packets_handled = std.atomic.Value(u64).init(0),
+            .arp_replies_sent = std.atomic.Value(u64).init(0),
             .last_error_code = std.atomic.Value(i32).init(0),
         };
+
+        // Set global pointer for C code access (used by zig_packet_adapter.c)
+        global_ios_adapter = self;
 
         return self;
     }
 
     pub fn deinit(self: *IosAdapter) void {
+        // Clear global pointer
+        if (global_ios_adapter == self) {
+            global_ios_adapter = null;
+        }
         self.incoming_queue.deinit();
         self.outgoing_queue.deinit();
-        self.translator.deinit();
+        self.vtap.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -233,8 +249,8 @@ pub const IosAdapter = struct {
     pub fn injectPacket(self: *IosAdapter, ip_packet: []const u8) !bool {
         if (ip_packet.len == 0) return false;
 
-        // Translate L3 (IP) → L2 (Ethernet) using TapTun
-        const eth_frame = try self.translator.ipToEthernet(ip_packet);
+        // Translate L3 (IP) → L2 (Ethernet) using VirtualTap
+        const eth_frame = try self.vtap.ipToEthernet(ip_packet);
         defer self.allocator.free(eth_frame); // CRITICAL: Free allocated Ethernet frame!
 
         if (eth_frame.len == 0) {
@@ -258,16 +274,21 @@ pub const IosAdapter = struct {
     /// Get outgoing packet for iOS (L3 IP packet for NEPacketTunnelFlow)
     /// Returns packet length or null if no packet available
     pub fn getOutgoingPacket(self: *IosAdapter, buffer: []u8) ?usize {
-        // DEBUG: Log queue state
+        // DEBUG: Log queue state - READ FROM OUTGOING_QUEUE (server→iOS packets)
         const count = self.outgoing_queue.count.load(.acquire);
         if (count > 0) {
+            IOS_LOG("[GET_PACKET] Queue has {} packets", .{count});
             std.log.info("🔍 Zig getOutgoingPacket: Queue has {d} packets", .{count});
+        } else {
+            // Also log when queue is empty (to see if function is being called)
+            IOS_LOG("[GET_PACKET] Queue EMPTY (count=0)", .{});
         }
 
-        // Dequeue Ethernet frame from SoftEther
+        // Dequeue Ethernet frame from OUTGOING queue (server→iOS packets)
         const eth_packet = self.outgoing_queue.dequeue(0) orelse {
             // DEBUG: Dequeue failed
             if (count > 0) {
+                IOS_LOG("[GET_PACKET] ERROR: dequeue failed but count={}", .{count});
                 std.log.err("⚠️  Zig getOutgoingPacket: dequeue returned null but count={d}!", .{count});
             }
             // ERROR_CODE: -100 means dequeue failed
@@ -275,23 +296,49 @@ pub const IosAdapter = struct {
             return null;
         };
 
+        IOS_LOG("[GET_PACKET] Dequeued packet: length={}", .{eth_packet.length});
         std.log.info("✅ Dequeued Ethernet packet: length={d}", .{eth_packet.length});
+
+        // Log Ethernet type (bytes 12-13 are EtherType)
+        if (eth_packet.length >= 14) {
+            const ethertype = (@as(u16, eth_packet.data[12]) << 8) | eth_packet.data[13];
+            IOS_LOG("[GET_PACKET] EtherType: 0x{x:0>4} (0x0800=IPv4, 0x0806=ARP, 0x86dd=IPv6)", .{ethertype});
+        }
 
         // Check if this is a DHCP packet - parse and store state
         self.parseDhcpIfNeeded(eth_packet.data[0..eth_packet.length]);
 
-        // Translate L2 (Ethernet) → L3 (IP) using TapTun
+        // Translate L2 (Ethernet) → L3 (IP) using VirtualTap
+        IOS_LOG("[L2->L3] Calling ethernetToIp for {d}-byte Ethernet frame", .{eth_packet.length});
         std.log.info("🔄 Calling ethernetToIp for translation...", .{});
-        const maybe_ip = self.translator.ethernetToIp(
+        const maybe_ip = self.vtap.ethernetToIp(
             eth_packet.data[0..eth_packet.length],
         ) catch |err| {
+            IOS_LOG("[L2->L3] ERROR: Translation failed: {}", .{err});
             std.log.err("⚠️  ethernetToIp failed with error: {}", .{err});
             // ERROR_CODE: -200 means translation error
             self.last_error_code.store(-200, .release);
             return null;
         };
 
+        // Check if VirtualTap generated any ARP replies that need to be sent back to server
+        while (self.vtap.hasPendingArpReply()) {
+            if (self.vtap.popArpReply()) |arp_reply| {
+                defer self.allocator.free(arp_reply); // Free after use
+                // ARP replies go to incoming_queue (iOS → SoftEther → Server)
+                IOS_LOG("[VirtualTap] 🔄 Got ARP reply from VirtualTap: {d} bytes", .{arp_reply.len});
+                const queued = self.incoming_queue.enqueue(arp_reply);
+                if (queued) {
+                    IOS_LOG("[VirtualTap] ✅ ARP reply queued to INCOMING queue ({d} bytes) - will be sent to server", .{arp_reply.len});
+                    _ = self.arp_replies_sent.fetchAdd(1, .release);
+                } else {
+                    IOS_LOG("[VirtualTap] ❌ CRITICAL: Failed to queue ARP reply (incoming queue full!)", .{});
+                }
+            }
+        }
+
         if (maybe_ip) |ip_packet| {
+            IOS_LOG("[L2->L3] ✅ Success: {d} bytes Ethernet -> {d} bytes IP", .{ eth_packet.length, ip_packet.len });
             std.log.info("✅ Translation successful: IP packet length={d}", .{ip_packet.len});
             // Got an IP packet - copy to output buffer
             defer self.allocator.free(ip_packet); // CRITICAL: Free translated packet!
@@ -311,7 +358,8 @@ pub const IosAdapter = struct {
             self.last_error_code.store(0, .release);
             return ip_packet.len;
         } else {
-            // ARP packet handled internally by TapTun
+            // ARP packet handled internally by VirtualTap
+            IOS_LOG("[L2->L3] NULL returned - ARP or other L2 packet handled internally by VirtualTap", .{});
             std.log.info("ℹ️  ethernetToIp returned null (ARP packet - handled internally)", .{});
             _ = self.arp_packets_handled.fetchAdd(1, .release);
             // ERROR_CODE: -400 means ARP packet (not an error, just informational)
@@ -425,8 +473,8 @@ pub const IosAdapter = struct {
             self.dhcp_state.valid = true;
 
             // Configure translator with our IP and gateway
-            self.translator.setOurIp(your_ip);
-            self.translator.setGateway(self.dhcp_state.gateway);
+            self.vtap.setOurIp(your_ip);
+            self.vtap.setGatewayIp(self.dhcp_state.gateway);
         }
     }
 
@@ -447,7 +495,7 @@ pub const IosAdapter = struct {
 
         const our_ip = self.dhcp_state.client_ip;
         const gateway_ip = self.dhcp_state.gateway;
-        const our_mac = self.translator.options.our_mac;
+        const our_mac = self.vtap.config.our_mac;
 
         IOS_LOG("[IOS_ADAPTER] Building ARP: src_ip={}.{}.{}.{} target_ip={}.{}.{}.{}", .{ (our_ip >> 24) & 0xFF, (our_ip >> 16) & 0xFF, (our_ip >> 8) & 0xFF, our_ip & 0xFF, (gateway_ip >> 24) & 0xFF, (gateway_ip >> 16) & 0xFF, (gateway_ip >> 8) & 0xFF, gateway_ip & 0xFF });
 
@@ -504,13 +552,34 @@ pub const IosAdapter = struct {
         IOS_LOG("[IOS_ADAPTER] setDhcpInfo: need_gateway_arp={}", .{self.need_gateway_arp});
         log.info("[setDhcpInfo] ✅ DHCP state updated successfully", .{});
 
-        // Also update translator with our IP and gateway
-        self.translator.setOurIp(client_ip);
-        self.translator.setGateway(gateway);
+        // Configure VirtualTap with DHCP-assigned addresses
+        self.vtap.setOurIp(client_ip);
+        self.vtap.setGatewayIp(gateway);
 
-        // Send ARP Request to learn gateway MAC (like CLI does)
-        // This is CRITICAL for SoftEther server's MAC/IP table population
-        if (self.need_gateway_arp) {
+        // Gateway MAC will be learned automatically from incoming traffic
+        IOS_LOG("[IOS_ADAPTER] ✅ VirtualTap configured: IP={}.{}.{}.{} GW={}.{}.{}.{}", .{
+            (client_ip >> 24) & 0xFF, (client_ip >> 16) & 0xFF,
+            (client_ip >> 8) & 0xFF,  client_ip & 0xFF,
+            (gateway >> 24) & 0xFF,   (gateway >> 16) & 0xFF,
+            (gateway >> 8) & 0xFF,    gateway & 0xFF,
+        });
+
+        // iOS LIMITATION: PacketTunnelProvider is IP-only (Layer 3)
+        // Cannot send/receive raw ARP packets (Layer 2)
+        //
+        // SOLUTION: VirtualTap handles ARP internally!
+        // - Maintains virtual ARP table (IP ↔ MAC mappings)
+        // - Uses broadcast MAC (ff:ff:ff:ff:ff:ff) when gateway MAC unknown
+        // - Learns gateway MAC automatically from incoming Ethernet frames
+        // - Responds to ARP requests locally without platform support
+        //
+        // This allows the server to see our MAC from the Ethernet frames we send,
+        // and we learn the gateway MAC from incoming traffic.
+
+        IOS_LOG("[IOS_ADAPTER] setDhcpInfo: VirtualTap will handle ARP internally (no manual ARP needed)", .{});
+
+        // ARP is handled internally by TapTun - no manual ARP needed
+        if (false and self.need_gateway_arp) {
             IOS_LOG("[IOS_ADAPTER] setDhcpInfo: Calling sendGatewayArpRequest...", .{});
             self.need_gateway_arp = false; // Mark as sent (don't send again)
             log.info("[setDhcpInfo] 🔍 Sending gateway ARP request...", .{});
@@ -565,6 +634,21 @@ pub const IosAdapter = struct {
         };
     }
 
+    /// Get packet from incoming queue (iOS → Server) - used by C adapter's GetNextPacket
+    /// Returns packet length, or 0 if queue is empty
+    pub fn getPacketFromIncoming(self: *IosAdapter, buffer: []u8) usize {
+        // Try to dequeue from incoming queue (non-blocking)
+        const packet = self.incoming_queue.dequeue(0) orelse return 0;
+
+        const pkt_len = packet.length;
+        if (pkt_len > buffer.len) {
+            IOS_LOG("[getPacketFromIncoming] ⚠️ Packet too large: {d} > {d}", .{ pkt_len, buffer.len });
+            return 0;
+        }
+
+        @memcpy(buffer[0..pkt_len], packet.data[0..pkt_len]);
+        return pkt_len;
+    }
     pub const Stats = struct {
         packets_received: u64,
         packets_sent: u64,
@@ -577,3 +661,14 @@ pub const IosAdapter = struct {
         arp_packets_handled: u64,
     };
 };
+
+// ============================================================================
+// C FFI Exports - Called by zig_packet_adapter.c
+// ============================================================================
+
+/// C FFI: Get packet from incoming queue (iOS → Server)
+/// Used by ZigAdapterGetNextPacket to retrieve ARP replies from VirtualTap
+export fn ios_adapter_get_packet_from_incoming(adapter: *IosAdapter, buffer: [*]u8, buffer_len: usize) usize {
+    const buf_slice = buffer[0..buffer_len];
+    return adapter.getPacketFromIncoming(buf_slice);
+}

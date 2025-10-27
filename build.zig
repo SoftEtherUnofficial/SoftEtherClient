@@ -219,6 +219,13 @@ pub fn build(b: *std.Build) void {
     // Get the taptun module
     const taptun_module = taptun.module("taptun");
 
+    // Add VirtualTap module (Layer 2 virtualization for L3-only platforms)
+    const virtual_tap_module = b.addModule("virtual_tap", .{
+        .root_source_file = b.path("VirtualTap/src/virtual_tap.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const lib_module = b.addModule("softether", .{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -473,6 +480,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         ios_adapter_module.addImport("taptun", taptun_module);
+        ios_adapter_module.addImport("virtual_tap", virtual_tap_module);
         ios_adapter_module.addImport("protocol", protocol_module_mobile);
 
         // Create main adapter module with ios_adapter import
