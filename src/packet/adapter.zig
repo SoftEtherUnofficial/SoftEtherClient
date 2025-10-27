@@ -10,9 +10,6 @@
 // - macOS/Linux: TUN device I/O (this file)
 // - iOS: PacketFlow queue bridge (ios_adapter.zig)
 
-// C printf for debugging (Zig logs don't appear in iOS Console)
-extern fn printf(format: [*:0]const u8, ...) c_int;
-
 const std = @import("std");
 const builtin = @import("builtin");
 const RingBuffer = @import("ring_buffer.zig").RingBuffer;
@@ -34,6 +31,9 @@ const is_ios = builtin.os.tag == .ios;
 
 // C printf for debugging (Zig std.log may not appear in iOS console)
 extern "c" fn printf([*:0]const u8, ...) c_int;
+
+// iOS NSLog for debugging (printf doesn't appear in iOS Console)
+extern "c" fn NSLog([*:0]const u8, ...) void;
 
 // C FFI for logging (macOS only - iOS uses std.log)
 const c = if (!is_ios) @cImport({
@@ -1178,30 +1178,31 @@ export fn ios_adapter_set_dhcp_info(
     dns_server2: u32,
     dhcp_server: u32,
 ) void {
-    std.log.info("[FFI] ios_adapter_set_dhcp_info CALLED: IP={}.{}.{}.{} GW={}.{}.{}.{}", .{
-        (client_ip >> 24) & 0xFF,
-        (client_ip >> 16) & 0xFF,
-        (client_ip >> 8) & 0xFF,
-        client_ip & 0xFF,
-        (gateway >> 24) & 0xFF,
-        (gateway >> 16) & 0xFF,
-        (gateway >> 8) & 0xFF,
-        gateway & 0xFF,
-    });
+    // Extract IP octets to variables (avoid complex expressions in NSLog varargs)
+    const ip_a: u8 = @truncate((client_ip >> 24) & 0xFF);
+    const ip_b: u8 = @truncate((client_ip >> 16) & 0xFF);
+    const ip_c: u8 = @truncate((client_ip >> 8) & 0xFF);
+    const ip_d: u8 = @truncate(client_ip & 0xFF);
+    const gw_a: u8 = @truncate((gateway >> 24) & 0xFF);
+    const gw_b: u8 = @truncate((gateway >> 16) & 0xFF);
+    const gw_c: u8 = @truncate((gateway >> 8) & 0xFF);
+    const gw_d: u8 = @truncate(gateway & 0xFF);
+
+    NSLog("[FFI] ios_adapter_set_dhcp_info CALLED: IP=%u.%u.%u.%u GW=%u.%u.%u.%u", @as(c_uint, ip_a), @as(c_uint, ip_b), @as(c_uint, ip_c), @as(c_uint, ip_d), @as(c_uint, gw_a), @as(c_uint, gw_b), @as(c_uint, gw_c), @as(c_uint, gw_d));
 
     if (!is_ios) {
-        std.log.err("[FFI] ERROR: is_ios=false, cannot set DHCP info!", .{});
+        NSLog("[FFI] ERROR: is_ios=false!");
         return;
     }
 
     const adapter = global_ios_adapter orelse {
-        std.log.err("[FFI] ERROR: global_ios_adapter is null!", .{});
+        NSLog("[FFI] ERROR: global_ios_adapter is null!");
         return;
     };
 
-    std.log.info("[FFI] Calling adapter.ios_adapter.setDhcpInfo...", .{});
+    NSLog("[FFI] Calling adapter.ios_adapter.setDhcpInfo...");
     adapter.ios_adapter.*.setDhcpInfo(client_ip, subnet_mask, gateway, dns_server1, dns_server2, dhcp_server);
-    std.log.info("[FFI] setDhcpInfo returned successfully", .{});
+    NSLog("[FFI] setDhcpInfo returned successfully");
 }
 
 /// Get DHCP configuration from iOS adapter
