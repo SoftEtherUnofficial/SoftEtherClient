@@ -9,6 +9,9 @@ pub fn build(b: *std.Build) void {
     // Build option to select packet adapter (Zig adapter is default for better performance)
     const use_zig_adapter = b.option(bool, "use-zig-adapter", "Use Zig packet adapter instead of C (default: true)") orelse true;
 
+    // OpenSSL include path for iOS (optional - provided by build script)
+    const openssl_include_path = b.option([]const u8, "openssl-include", "Path to OpenSSL headers for iOS builds");
+
     // Detect target OS
     const target_os = target.result.os.tag;
     const is_ios = target_os == .ios;
@@ -31,6 +34,7 @@ pub fn build(b: *std.Build) void {
         "-Wno-incompatible-pointer-types-discards-qualifiers",
         "-Wno-implicit-function-declaration",
         "-Wno-strict-prototypes",
+        "-Wno-nullability-completeness", // Suppress iOS SDK header nullability warnings
         "-fno-strict-aliasing",
         "-fsigned-char",
         "-fno-sanitize=shift",
@@ -417,6 +421,11 @@ pub fn build(b: *std.Build) void {
         mobile_ffi_lib.addIncludePath(b.path("src/bridge/ios_include"));
         mobile_ffi_lib.addIncludePath(b.path("src/platforms/ios"));
 
+        // Add OpenSSL headers if path provided (from CocoaPods in CI/Xcode builds)
+        if (openssl_include_path) |ssl_path| {
+            mobile_ffi_lib.addIncludePath(.{ .cwd_relative = ssl_path });
+        }
+
         // Link Foundation framework for NSLog support
         // Need to pass framework path explicitly via linker flags
         const ios_sdk = if (target.result.abi == .simulator)
@@ -509,8 +518,12 @@ pub fn build(b: *std.Build) void {
     }
 
     mobile_ffi_lib.linkLibC();
-    mobile_ffi_lib.linkSystemLibrary("ssl");
-    mobile_ffi_lib.linkSystemLibrary("crypto");
+
+    // Skip OpenSSL linking for iOS - Xcode will link the CocoaPods framework
+    if (!is_ios) {
+        mobile_ffi_lib.linkSystemLibrary("ssl");
+        mobile_ffi_lib.linkSystemLibrary("crypto");
+    }
 
     b.installArtifact(mobile_ffi_lib);
     b.installFile("include/ffi.h", "include/ffi.h");
