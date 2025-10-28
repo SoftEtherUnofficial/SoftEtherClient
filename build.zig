@@ -473,6 +473,11 @@ pub fn build(b: *std.Build) void {
         });
         mobile_ffi_lib.addObject(protocol_obj_mobile);
 
+        // Create logging module (cross-platform unified logging)
+        const logging_module = b.addModule("logging", .{
+            .root_source_file = b.path("src/logging.zig"),
+        });
+
         // Create ios_adapter module (provides ios_adapter_* FFI exports)
         const ios_adapter_module = b.createModule(.{
             .root_source_file = b.path("src/platforms/ios/ios_adapter.zig"),
@@ -482,6 +487,7 @@ pub fn build(b: *std.Build) void {
         ios_adapter_module.addImport("taptun", taptun_module);
         ios_adapter_module.addImport("virtual_tap", virtual_tap_module);
         ios_adapter_module.addImport("protocol", protocol_module_mobile);
+        ios_adapter_module.addImport("logging", logging_module);
 
         // Create main adapter module with ios_adapter import
         const mobile_adapter_module = b.createModule(.{

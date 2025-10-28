@@ -32,15 +32,17 @@ const is_ios = builtin.os.tag == .ios;
 // C printf for debugging
 extern "c" fn printf([*:0]const u8, ...) c_int;
 
-// iOS NSLog bridge (appears in Console.app)
-extern "c" fn ios_log_message([*:0]const u8) void;
+// iOS NSLog bridge (appears in Console.app) - only on iOS
+const ios_log_message_impl = if (is_ios) struct {
+    extern "c" fn ios_log_message([*:0]const u8) void;
+}.ios_log_message else undefined;
 
 // iOS logging macro - uses NSLog via Objective-C bridge
 fn IOS_LOG(comptime fmt: []const u8, args: anytype) void {
     if (is_ios) {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrintZ(&buf, fmt, args) catch return;
-        ios_log_message(msg.ptr);
+        ios_log_message_impl(msg.ptr);
     }
 }
 
@@ -1192,7 +1194,7 @@ export fn ios_adapter_set_dhcp_info(
     dhcp_server: u32,
 ) void {
     // FIRST: Try direct NSLog with fixed string
-    ios_log_message("=== [ZIG-FFI] ios_adapter_set_dhcp_info ENTRY ===");
+    if (is_ios) ios_log_message_impl("=== [ZIG-FFI] ios_adapter_set_dhcp_info ENTRY ===");
 
     // ALWAYS log entry - use printf directly to bypass all checks
     _ = printf("[FFI-ENTRY] ios_adapter_set_dhcp_info CALLED\n");
@@ -1200,23 +1202,24 @@ export fn ios_adapter_set_dhcp_info(
     IOS_LOG("[FFI] ios_adapter_set_dhcp_info CALLED: IP={}.{}.{}.{} GW={}.{}.{}.{}", .{ (client_ip >> 24) & 0xFF, (client_ip >> 16) & 0xFF, (client_ip >> 8) & 0xFF, client_ip & 0xFF, (gateway >> 24) & 0xFF, (gateway >> 16) & 0xFF, (gateway >> 8) & 0xFF, gateway & 0xFF });
 
     if (!is_ios) {
-        _ = printf("[FFI-ERROR] is_ios=false! builtin.os.tag=%d\n", @intFromEnum(builtin.os.tag));
+        const os_tag_int: i32 = @intCast(@intFromEnum(builtin.os.tag));
+        _ = printf("[FFI-ERROR] is_ios=false! builtin.os.tag=%d\n", os_tag_int);
         IOS_LOG("[FFI] ERROR: is_ios=false!", .{});
         return;
     }
 
     const adapter = global_ios_adapter orelse {
-        ios_log_message("=== [ZIG-FFI] ERROR: global_ios_adapter is null ===");
+        if (is_ios) ios_log_message_impl("=== [ZIG-FFI] ERROR: global_ios_adapter is null ===");
         _ = printf("[FFI-ERROR] global_ios_adapter is null!\n");
         IOS_LOG("[FFI] ERROR: global_ios_adapter is null!", .{});
         return;
     };
 
-    ios_log_message("=== [ZIG-FFI] Calling setDhcpInfo ===");
+    if (is_ios) ios_log_message_impl("=== [ZIG-FFI] Calling setDhcpInfo ===");
     _ = printf("[FFI] Calling adapter.ios_adapter.setDhcpInfo...\n");
     IOS_LOG("[FFI] Calling adapter.ios_adapter.setDhcpInfo...", .{});
     adapter.ios_adapter.*.setDhcpInfo(client_ip, subnet_mask, gateway, dns_server1, dns_server2, dhcp_server);
-    ios_log_message("=== [ZIG-FFI] setDhcpInfo returned ===");
+    if (is_ios) ios_log_message_impl("=== [ZIG-FFI] setDhcpInfo returned ===");
     _ = printf("[FFI] setDhcpInfo returned successfully\n");
     IOS_LOG("[FFI] setDhcpInfo returned successfully", .{});
 }
@@ -1276,4 +1279,5 @@ export fn ios_adapter_get_stats(
 }
 
 // Global adapter for iOS (set by zig_adapter_create on iOS)
-var global_ios_adapter: ?*ZigPacketAdapter = null;
+// Note: The actual export is in ios_adapter.zig to avoid collision
+pub var global_ios_adapter: ?*ZigPacketAdapter = null;

@@ -11,11 +11,12 @@
 const std = @import("std");
 const VirtualTap = @import("virtual_tap").VirtualTap;
 const protocol = @import("protocol");
+const log = @import("logging");
 
-// iOS NSLog bridge (appears in Console.app)
+// iOS NSLog bridge (appears in Console.app) - kept for backward compatibility
 extern fn ios_log_message([*:0]const u8) void;
 
-// iOS logging macro
+// Legacy iOS logging macro - deprecated, use log.* instead
 fn IOS_LOG(comptime fmt: []const u8, args: anytype) void {
     var buf: [512]u8 = undefined;
     const msg = std.fmt.bufPrintZ(&buf, fmt, args) catch return;
@@ -507,14 +508,12 @@ pub const IosAdapter = struct {
     /// This populates SoftEther server's MAC/IP table and enables bidirectional routing
     /// Called once after DHCP completes (similar to CLI behavior)
     fn sendGatewayArpRequest(self: *IosAdapter) !void {
-        const log = std.log.scoped(.ios_adapter);
-
         // Use IOS_LOG for visibility (stderr is captured by Console.app)
         IOS_LOG("[IOS_ADAPTER] sendGatewayArpRequest CALLED!", .{});
 
         if (!self.dhcp_state.valid) {
             IOS_LOG("[IOS_ADAPTER] ERROR: DHCP not valid", .{});
-            log.warn("[sendGatewayArpRequest] ⚠️  DHCP not valid, cannot send ARP", .{});
+            log.warn(.IOS, "sendGatewayArpRequest: DHCP not valid, cannot send ARP", .{});
             return;
         }
 
@@ -551,8 +550,7 @@ pub const IosAdapter = struct {
         dns_server2: u32,
         dhcp_server: u32,
     ) void {
-        const log = std.log.scoped(.ios_adapter);
-        log.info("[setDhcpInfo] 🔧 Setting DHCP info: IP={}.{}.{}.{} GW={}.{}.{}.{} valid=true", .{
+        log.info(.IOS, "🔧 setDhcpInfo: IP={}.{}.{}.{} GW={}.{}.{}.{} valid=true", .{
             (client_ip >> 24) & 0xFF,
             (client_ip >> 16) & 0xFF,
             (client_ip >> 8) & 0xFF,
@@ -575,7 +573,7 @@ pub const IosAdapter = struct {
         self.dhcp_state.valid = true;
 
         IOS_LOG("[IOS_ADAPTER] setDhcpInfo: need_gateway_arp={}", .{self.need_gateway_arp});
-        log.info("[setDhcpInfo] ✅ DHCP state updated successfully", .{});
+        log.info(.IOS, "[setDhcpInfo] ✅ DHCP state updated successfully", .{});
 
         // Configure VirtualTap with DHCP-assigned addresses
         self.vtap.setOurIp(client_ip);
@@ -620,17 +618,16 @@ pub const IosAdapter = struct {
 
     /// Get DHCP configuration (for Swift to apply network settings)
     pub fn getDhcpInfo(self: *IosAdapter) ?DhcpState {
-        const log = std.log.scoped(.ios_adapter);
         self.dhcp_mutex.lock();
         defer self.dhcp_mutex.unlock();
 
-        log.info("[getDhcpInfo] 🔍 Called: valid={}", .{self.dhcp_state.valid});
+        log.info(.IOS, "getDhcpInfo: valid={}", .{self.dhcp_state.valid});
         if (!self.dhcp_state.valid) {
-            log.warn("[getDhcpInfo] ⚠️  DHCP state is NOT valid, returning null", .{});
+            log.warn(.IOS, "getDhcpInfo: DHCP state is NOT valid, returning null", .{});
             return null;
         }
 
-        log.info("[getDhcpInfo] ✅ Returning DHCP info: IP={}.{}.{}.{} GW={}.{}.{}.{}", .{
+        log.info(.IOS, "getDhcpInfo: Returning DHCP info IP={}.{}.{}.{} GW={}.{}.{}.{}", .{
             (self.dhcp_state.client_ip >> 24) & 0xFF,
             (self.dhcp_state.client_ip >> 16) & 0xFF,
             (self.dhcp_state.client_ip >> 8) & 0xFF,

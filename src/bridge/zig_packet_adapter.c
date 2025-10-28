@@ -345,7 +345,9 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
     // VirtualTap generates ARP replies when server sends ARP requests
     // These MUST be sent back to server ASAP for bidirectional traffic
     // ===================================================================
+#if defined(__APPLE__) && defined(TARGET_OS_IOS) && TARGET_OS_IOS
     extern IosAdapter* global_ios_adapter;  // From ios_adapter.zig
+    extern size_t ios_adapter_get_packet_from_incoming(IosAdapter*, uint8_t*, size_t);
     if (global_ios_adapter) {
         // Try to get ARP reply from incoming queue (iOS → Server direction)
         uint8_t arp_buffer[2048];
@@ -378,6 +380,7 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
             }
         }
     }
+#endif // TARGET_OS_IOS
     
     // DHCP state machine: Send Gratuitous ARP first (IMMEDIATELY on iOS - no delay)
     UINT64 now = Tick64();
