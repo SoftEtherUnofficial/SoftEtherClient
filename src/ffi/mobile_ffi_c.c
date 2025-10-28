@@ -361,6 +361,10 @@ int mobile_vpn_get_network_info(MobileVpnHandle handle, MobileNetworkInfo* info)
     uint32_t dns1 = bridge_dhcp.dns_server1;
     uint32_t dns2 = bridge_dhcp.dns_server2;
     
+    LOG_INFO("MOBILE_FFI", "mobile_vpn_get_network_info: DNS1=%u.%u.%u.%u DNS2=%u.%u.%u.%u",
+           (dns1 >> 24) & 0xFF, (dns1 >> 16) & 0xFF, (dns1 >> 8) & 0xFF, dns1 & 0xFF,
+           (dns2 >> 24) & 0xFF, (dns2 >> 16) & 0xFF, (dns2 >> 8) & 0xFF, dns2 & 0xFF);
+    
     // IP address (network byte order)
     info->ip_address[0] = (client_ip >> 24) & 0xFF;
     info->ip_address[1] = (client_ip >> 16) & 0xFF;

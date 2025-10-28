@@ -249,6 +249,18 @@ pub const IosAdapter = struct {
     pub fn injectPacket(self: *IosAdapter, ip_packet: []const u8) !bool {
         if (ip_packet.len == 0) return false;
 
+        // Log IP packet details for debugging
+        if (ip_packet.len >= 20) {
+            const src_ip = ip_packet[12..16];
+            const dst_ip = ip_packet[16..20];
+            const ip_protocol = ip_packet[9];
+            IOS_LOG("[iOS→Server] IP: {d}.{d}.{d}.{d} → {d}.{d}.{d}.{d} proto={d} len={d}", .{
+                src_ip[0],   src_ip[1],     src_ip[2], src_ip[3],
+                dst_ip[0],   dst_ip[1],     dst_ip[2], dst_ip[3],
+                ip_protocol, ip_packet.len,
+            });
+        }
+
         // Translate L3 (IP) → L2 (Ethernet) using VirtualTap
         const eth_frame = try self.vtap.ipToEthernet(ip_packet);
         defer self.allocator.free(eth_frame); // CRITICAL: Free allocated Ethernet frame!
@@ -340,6 +352,19 @@ pub const IosAdapter = struct {
         if (maybe_ip) |ip_packet| {
             IOS_LOG("[L2->L3] ✅ Success: {d} bytes Ethernet -> {d} bytes IP", .{ eth_packet.length, ip_packet.len });
             std.log.info("✅ Translation successful: IP packet length={d}", .{ip_packet.len});
+
+            // Log IP packet details for debugging
+            if (ip_packet.len >= 20) {
+                const src_ip = ip_packet[12..16];
+                const dst_ip = ip_packet[16..20];
+                const ip_protocol = ip_packet[9];
+                IOS_LOG("[Server→iOS] IP: {d}.{d}.{d}.{d} → {d}.{d}.{d}.{d} proto={d} len={d}", .{
+                    src_ip[0],   src_ip[1],     src_ip[2], src_ip[3],
+                    dst_ip[0],   dst_ip[1],     dst_ip[2], dst_ip[3],
+                    ip_protocol, ip_packet.len,
+                });
+            }
+
             // Got an IP packet - copy to output buffer
             defer self.allocator.free(ip_packet); // CRITICAL: Free translated packet!
 
