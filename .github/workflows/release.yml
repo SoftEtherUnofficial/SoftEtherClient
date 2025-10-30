@@ -55,10 +55,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/Library/Caches/Homebrew
-          key: brew-${{ runner.os }}-openssl3
+          key: brew-${{ runner.os }}-openssl3-${{ matrix.arch }}
 
       - name: Install dependencies
-        run: brew install openssl@3
+        run: |
+          brew list openssl@3 &>/dev/null || brew install openssl@3
+          brew link openssl@3 --force || true
 
       - name: Build TapTun library
         run: |
