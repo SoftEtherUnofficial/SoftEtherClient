@@ -48,8 +48,10 @@ jobs:
 
       - name: Package artifacts
         run: |
+          mkdir -p release/macos-arm64/bin
           mkdir -p release/macos-arm64/lib
           mkdir -p release/macos-arm64/include
+          cp zig-out/bin/vpnclient release/macos-arm64/bin/ || true
           cp -r zig-out/lib/* release/macos-arm64/lib/ || true
           cp -r zig-out/include/* release/macos-arm64/include/ || true
           cp include/*.h release/macos-arm64/include/ || true
