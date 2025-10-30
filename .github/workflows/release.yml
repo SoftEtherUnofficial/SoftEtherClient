@@ -12,8 +12,8 @@ on:
         default: 'v0.1.0'
 
 jobs:
-  build-macos:
-    name: Build for macOS
+  build-macos-arm64:
+    name: Build for macOS ARM64
     runs-on: macos-14
     steps:
       - name: Checkout
@@ -46,27 +46,101 @@ jobs:
           zig build
           ls -lh zig-out/lib/
 
-      - name: Package artifacts
+      - name: Package vpnclient binary
         run: |
-          mkdir -p release/macos-arm64/bin
-          mkdir -p release/macos-arm64/lib
-          mkdir -p release/macos-arm64/include
-          cp zig-out/bin/vpnclient release/macos-arm64/bin/ || true
-          cp -r zig-out/lib/* release/macos-arm64/lib/ || true
-          cp -r zig-out/include/* release/macos-arm64/include/ || true
-          cp include/*.h release/macos-arm64/include/ || true
+          mkdir -p release/bin
+          cp zig-out/bin/vpnclient release/bin/
           cd release
-          tar -czf softether-client-macos-arm64.tar.gz macos-arm64
+          tar -czf vpnclient-macos-arm64.tar.gz bin/vpnclient
 
-      - name: Upload artifacts
+      - name: Package libraries
+        run: |
+          mkdir -p release/lib-macos-arm64/lib
+          mkdir -p release/lib-macos-arm64/include
+          cp -r zig-out/lib/* release/lib-macos-arm64/lib/ || true
+          cp -r zig-out/include/* release/lib-macos-arm64/include/ || true
+          cp include/*.h release/lib-macos-arm64/include/ || true
+          cd release
+          tar -czf libsoftether-macos-arm64.tar.gz lib-macos-arm64
+
+      - name: Upload vpnclient binary
         uses: actions/upload-artifact@v4
         with:
-          name: macos-arm64
-          path: release/softether-client-macos-arm64.tar.gz
+          name: vpnclient-macos-arm64
+          path: release/vpnclient-macos-arm64.tar.gz
+
+      - name: Upload libraries
+        uses: actions/upload-artifact@v4
+        with:
+          name: libsoftether-macos-arm64
+          path: release/libsoftether-macos-arm64.tar.gz
+
+  build-macos-x86_64:
+    name: Build for macOS x86_64
+    runs-on: macos-13
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Setup Zig
+        run: |
+          cd /tmp
+          curl -LO https://ziglang.org/download/0.15.2/zig-x86_64-macos-0.15.2.tar.xz
+          tar -xf zig-x86_64-macos-0.15.2.tar.xz
+          sudo mv zig-x86_64-macos-0.15.2 /usr/local/zig
+          echo "/usr/local/zig" >> $GITHUB_PATH
+
+      - name: Show Zig version
+        run: zig version
+
+      - name: Install dependencies
+        run: brew install openssl@3
+
+      - name: Build TapTun library
+        run: |
+          cd TapTun
+          zig build
+          ls -lh zig-out/lib/
+
+      - name: Build SoftEtherClient
+        run: |
+          zig build
+          ls -lh zig-out/lib/
+
+      - name: Package vpnclient binary
+        run: |
+          mkdir -p release/bin
+          cp zig-out/bin/vpnclient release/bin/
+          cd release
+          tar -czf vpnclient-macos-x86_64.tar.gz bin/vpnclient
+
+      - name: Package libraries
+        run: |
+          mkdir -p release/lib-macos-x86_64/lib
+          mkdir -p release/lib-macos-x86_64/include
+          cp -r zig-out/lib/* release/lib-macos-x86_64/lib/ || true
+          cp -r zig-out/include/* release/lib-macos-x86_64/include/ || true
+          cp include/*.h release/lib-macos-x86_64/include/ || true
+          cd release
+          tar -czf libsoftether-macos-x86_64.tar.gz lib-macos-x86_64
+
+      - name: Upload vpnclient binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpnclient-macos-x86_64
+          path: release/vpnclient-macos-x86_64.tar.gz
+
+      - name: Upload libraries
+        uses: actions/upload-artifact@v4
+        with:
+          name: libsoftether-macos-x86_64
+          path: release/libsoftether-macos-x86_64.tar.gz
 
   create-release:
     name: Create GitHub Release
-    needs: [build-macos]
+    needs: [build-macos-arm64, build-macos-x86_64]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -100,7 +174,10 @@ jobs:
           prerelease: false
           generate_release_notes: true
           files: |
-            artifacts/macos-arm64/softether-client-macos-arm64.tar.gz
+            artifacts/vpnclient-macos-arm64/vpnclient-macos-arm64.tar.gz
+            artifacts/libsoftether-macos-arm64/libsoftether-macos-arm64.tar.gz
+            artifacts/vpnclient-macos-x86_64/vpnclient-macos-x86_64.tar.gz
+            artifacts/libsoftether-macos-x86_64/libsoftether-macos-x86_64.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

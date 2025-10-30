@@ -7,8 +7,8 @@ on:
     branches: [ '**' ]
 
 jobs:
-  build-macos:
-    name: Build SoftEtherClient (macOS)
+  build-macos-arm64:
+    name: Build & Test (macOS ARM64)
     runs-on: macos-14
     steps:
       - name: Checkout
@@ -40,6 +40,45 @@ jobs:
         run: |
           zig build
           ls -lh zig-out/lib/
+          ls -lh zig-out/bin/
+
+      - name: Run tests
+        run: zig build test
+
+  build-macos-x86_64:
+    name: Build & Test (macOS x86_64)
+    runs-on: macos-13
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Setup Zig
+        run: |
+          cd /tmp
+          curl -LO https://ziglang.org/download/0.15.2/zig-x86_64-macos-0.15.2.tar.xz
+          tar -xf zig-x86_64-macos-0.15.2.tar.xz
+          sudo mv zig-x86_64-macos-0.15.2 /usr/local/zig
+          echo "/usr/local/zig" >> $GITHUB_PATH
+
+      - name: Show Zig version
+        run: zig version
+
+      - name: Install dependencies
+        run: brew install openssl@3
+
+      - name: Build TapTun library
+        run: |
+          cd TapTun
+          zig build
+          ls -lh zig-out/lib/
+
+      - name: Build SoftEtherClient
+        run: |
+          zig build
+          ls -lh zig-out/lib/
+          ls -lh zig-out/bin/
 
       - name: Run tests
         run: zig build test
