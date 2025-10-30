@@ -12,135 +12,149 @@ on:
         default: 'v0.1.0'
 
 jobs:
-  build-macos-arm64:
-    name: Build for macOS ARM64
+  build-macos:
+    name: Build for macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+            zig-arch: aarch64
+          - arch: x86_64
+            runner: macos-13
+            zig-arch: x86_64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Cache Zig
+        id: cache-zig
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/zig
+          key: zig-0.15.2-${{ matrix.zig-arch }}-macos
+
+      - name: Setup Zig
+        if: steps.cache-zig.outputs.cache-hit != 'true'
+        run: |
+          cd /tmp
+          curl -LO https://ziglang.org/download/0.15.2/zig-${{ matrix.zig-arch }}-macos-0.15.2.tar.xz
+          tar -xf zig-${{ matrix.zig-arch }}-macos-0.15.2.tar.xz
+          sudo mv zig-${{ matrix.zig-arch }}-macos-0.15.2 /usr/local/zig
+
+      - name: Add Zig to PATH
+        run: echo "/usr/local/zig" >> $GITHUB_PATH
+
+      - name: Show Zig version
+        run: zig version
+
+      - name: Cache Homebrew
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-${{ runner.os }}-openssl3
+
+      - name: Install dependencies
+        run: brew install openssl@3
+
+      - name: Build TapTun library
+        run: |
+          cd TapTun
+          zig build
+          ls -lh zig-out/lib/
+
+      - name: Build SoftEtherClient
+        run: |
+          zig build
+          ls -lh zig-out/lib/
+
+      - name: Package vpnclient binary
+        run: |
+          mkdir -p release/bin
+          cp zig-out/bin/vpnclient release/bin/
+          cd release
+          tar -czf vpnclient-macos-${{ matrix.arch }}.tar.gz bin/vpnclient
+          sha256sum vpnclient-macos-${{ matrix.arch }}.tar.gz > vpnclient-macos-${{ matrix.arch }}.tar.gz.sha256
+
+      - name: Package libraries
+        run: |
+          mkdir -p release/lib-macos-${{ matrix.arch }}/lib
+          mkdir -p release/lib-macos-${{ matrix.arch }}/include
+          cp -r zig-out/lib/* release/lib-macos-${{ matrix.arch }}/lib/ || true
+          cp -r zig-out/include/* release/lib-macos-${{ matrix.arch }}/include/ || true
+          cp include/*.h release/lib-macos-${{ matrix.arch }}/include/ || true
+          cd release
+          tar -czf libsoftether-macos-${{ matrix.arch }}.tar.gz lib-macos-${{ matrix.arch }}
+          sha256sum libsoftether-macos-${{ matrix.arch }}.tar.gz > libsoftether-macos-${{ matrix.arch }}.tar.gz.sha256
+
+      - name: Upload vpnclient binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpnclient-macos-${{ matrix.arch }}
+          path: |
+            release/vpnclient-macos-${{ matrix.arch }}.tar.gz
+            release/vpnclient-macos-${{ matrix.arch }}.tar.gz.sha256
+
+      - name: Upload libraries
+        uses: actions/upload-artifact@v4
+        with:
+          name: libsoftether-macos-${{ matrix.arch }}
+          path: |
+            release/libsoftether-macos-${{ matrix.arch }}.tar.gz
+            release/libsoftether-macos-${{ matrix.arch }}.tar.gz.sha256
+
+  create-universal-binary:
+    name: Create Universal Binary
+    needs: [build-macos]
     runs-on: macos-14
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: 'recursive'
-
-      - name: Setup Zig
-        run: |
-          cd /tmp
-          curl -LO https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz
-          tar -xf zig-aarch64-macos-0.15.2.tar.xz
-          sudo mv zig-aarch64-macos-0.15.2 /usr/local/zig
-          echo "/usr/local/zig" >> $GITHUB_PATH
-
-      - name: Show Zig version
-        run: zig version
-
-      - name: Install dependencies
-        run: brew install openssl@3
-
-      - name: Build TapTun library
-        run: |
-          cd TapTun
-          zig build
-          ls -lh zig-out/lib/
-
-      - name: Build SoftEtherClient
-        run: |
-          zig build
-          ls -lh zig-out/lib/
-
-      - name: Package vpnclient binary
-        run: |
-          mkdir -p release/bin
-          cp zig-out/bin/vpnclient release/bin/
-          cd release
-          tar -czf vpnclient-macos-arm64.tar.gz bin/vpnclient
-
-      - name: Package libraries
-        run: |
-          mkdir -p release/lib-macos-arm64/lib
-          mkdir -p release/lib-macos-arm64/include
-          cp -r zig-out/lib/* release/lib-macos-arm64/lib/ || true
-          cp -r zig-out/include/* release/lib-macos-arm64/include/ || true
-          cp include/*.h release/lib-macos-arm64/include/ || true
-          cd release
-          tar -czf libsoftether-macos-arm64.tar.gz lib-macos-arm64
-
-      - name: Upload vpnclient binary
-        uses: actions/upload-artifact@v4
+      - name: Download ARM64 artifacts
+        uses: actions/download-artifact@v4
         with:
           name: vpnclient-macos-arm64
-          path: release/vpnclient-macos-arm64.tar.gz
+          path: arm64
 
-      - name: Upload libraries
-        uses: actions/upload-artifact@v4
-        with:
-          name: libsoftether-macos-arm64
-          path: release/libsoftether-macos-arm64.tar.gz
-
-  build-macos-x86_64:
-    name: Build for macOS x86_64
-    runs-on: macos-13
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: 'recursive'
-
-      - name: Setup Zig
-        run: |
-          cd /tmp
-          curl -LO https://ziglang.org/download/0.15.2/zig-x86_64-macos-0.15.2.tar.xz
-          tar -xf zig-x86_64-macos-0.15.2.tar.xz
-          sudo mv zig-x86_64-macos-0.15.2 /usr/local/zig
-          echo "/usr/local/zig" >> $GITHUB_PATH
-
-      - name: Show Zig version
-        run: zig version
-
-      - name: Install dependencies
-        run: brew install openssl@3
-
-      - name: Build TapTun library
-        run: |
-          cd TapTun
-          zig build
-          ls -lh zig-out/lib/
-
-      - name: Build SoftEtherClient
-        run: |
-          zig build
-          ls -lh zig-out/lib/
-
-      - name: Package vpnclient binary
-        run: |
-          mkdir -p release/bin
-          cp zig-out/bin/vpnclient release/bin/
-          cd release
-          tar -czf vpnclient-macos-x86_64.tar.gz bin/vpnclient
-
-      - name: Package libraries
-        run: |
-          mkdir -p release/lib-macos-x86_64/lib
-          mkdir -p release/lib-macos-x86_64/include
-          cp -r zig-out/lib/* release/lib-macos-x86_64/lib/ || true
-          cp -r zig-out/include/* release/lib-macos-x86_64/include/ || true
-          cp include/*.h release/lib-macos-x86_64/include/ || true
-          cd release
-          tar -czf libsoftether-macos-x86_64.tar.gz lib-macos-x86_64
-
-      - name: Upload vpnclient binary
-        uses: actions/upload-artifact@v4
+      - name: Download x86_64 artifacts
+        uses: actions/download-artifact@v4
         with:
           name: vpnclient-macos-x86_64
-          path: release/vpnclient-macos-x86_64.tar.gz
+          path: x86_64
 
-      - name: Upload libraries
+      - name: Extract binaries
+        run: |
+          cd arm64
+          tar -xzf vpnclient-macos-arm64.tar.gz
+          cd ../x86_64
+          tar -xzf vpnclient-macos-x86_64.tar.gz
+
+      - name: Create universal binary
+        run: |
+          mkdir -p universal/bin
+          lipo -create arm64/bin/vpnclient x86_64/bin/vpnclient -output universal/bin/vpnclient
+          chmod +x universal/bin/vpnclient
+          file universal/bin/vpnclient
+          lipo -info universal/bin/vpnclient
+
+      - name: Package universal binary
+        run: |
+          cd universal
+          tar -czf vpnclient-macos-universal.tar.gz bin/vpnclient
+          shasum -a 256 vpnclient-macos-universal.tar.gz > vpnclient-macos-universal.tar.gz.sha256
+
+      - name: Upload universal binary
         uses: actions/upload-artifact@v4
         with:
-          name: libsoftether-macos-x86_64
-          path: release/libsoftether-macos-x86_64.tar.gz
+          name: vpnclient-macos-universal
+          path: |
+            universal/vpnclient-macos-universal.tar.gz
+            universal/vpnclient-macos-universal.tar.gz.sha256
 
   create-release:
     name: Create GitHub Release
-    needs: [build-macos-arm64, build-macos-x86_64]
+    needs: [build-macos, create-universal-binary]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -165,115 +179,67 @@ jobs:
             echo "tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          cat > release_notes.md << 'EOF'
+          ## 📦 Downloads
+
+          ### Universal Binary (Recommended)
+          - **vpnclient-macos-universal.tar.gz** - Works on both Apple Silicon (M1/M2/M3) and Intel Macs
+
+          ### Architecture-Specific Binaries
+          - **vpnclient-macos-arm64.tar.gz** - Apple Silicon (M1/M2/M3) only
+          - **vpnclient-macos-x86_64.tar.gz** - Intel Macs only
+
+          ### Development Libraries
+          - **libsoftether-macos-arm64.tar.gz** - Libraries + headers for ARM64
+          - **libsoftether-macos-x86_64.tar.gz** - Libraries + headers for x86_64
+
+          ## 🔐 Checksums
+
+          SHA256 checksums are provided for all downloads (`.sha256` files).
+
+          ## 📝 Installation
+
+          ```bash
+          # Download and extract
+          tar -xzf vpnclient-macos-universal.tar.gz
+          
+          # Move to PATH
+          sudo mv bin/vpnclient /usr/local/bin/
+          
+          # Verify
+          vpnclient --help
+          ```
+
+          ## ⚠️ macOS Security Note
+
+          First run may require: **System Settings → Privacy & Security → Allow**
+          EOF
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          cat release_notes.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.get_tag.outputs.tag_name }}
           name: Release ${{ steps.get_tag.outputs.tag_name }}
+          body: ${{ steps.release_notes.outputs.notes }}
           draft: false
           prerelease: false
           generate_release_notes: true
           files: |
+            artifacts/vpnclient-macos-universal/vpnclient-macos-universal.tar.gz
+            artifacts/vpnclient-macos-universal/vpnclient-macos-universal.tar.gz.sha256
             artifacts/vpnclient-macos-arm64/vpnclient-macos-arm64.tar.gz
+            artifacts/vpnclient-macos-arm64/vpnclient-macos-arm64.tar.gz.sha256
             artifacts/libsoftether-macos-arm64/libsoftether-macos-arm64.tar.gz
+            artifacts/libsoftether-macos-arm64/libsoftether-macos-arm64.tar.gz.sha256
             artifacts/vpnclient-macos-x86_64/vpnclient-macos-x86_64.tar.gz
+            artifacts/vpnclient-macos-x86_64/vpnclient-macos-x86_64.tar.gz.sha256
             artifacts/libsoftether-macos-x86_64/libsoftether-macos-x86_64.tar.gz
+            artifacts/libsoftether-macos-x86_64/libsoftether-macos-x86_64.tar.gz.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-#   build-linux:
-#     name: Build for Linux
-#     runs-on: ubuntu-latest
-#     steps:
-#       - name: Checkout
-#         uses: actions/checkout@v4
-#         with:
-#           submodules: 'recursive'
-#
-#       - name: Setup Zig
-#         run: |
-#           cd /tmp
-#           wget https://ziglang.org/download/0.15.2/zig-linux-x86_64-0.15.2.tar.xz
-#           tar -xf zig-linux-x86_64-0.15.2.tar.xz
-#           sudo mv zig-linux-x86_64-0.15.2 /usr/local/zig
-#           echo "/usr/local/zig" >> $GITHUB_PATH
-#
-#       - name: Show Zig version
-#         run: zig version
-#
-#       - name: Install dependencies
-#         run: |
-#           sudo apt-get update
-#           sudo apt-get install -y libssl-dev
-#
-#       - name: Build TapTun library
-#         run: |
-#           cd TapTun
-#           zig build
-#           ls -lh zig-out/lib/
-#
-#       - name: Build SoftEtherClient
-#         run: |
-#           zig build
-#           ls -lh zig-out/lib/
-#
-#       - name: Package artifacts
-#         run: |
-#           mkdir -p release/linux-x86_64/lib
-#           mkdir -p release/linux-x86_64/include
-#           cp -r zig-out/lib/* release/linux-x86_64/lib/ || true
-#           cp -r zig-out/include/* release/linux-x86_64/include/ || true
-#           cp include/*.h release/linux-x86_64/include/ || true
-#           cd release
-#           tar -czf softether-client-linux-x86_64.tar.gz linux-x86_64
-#
-#       - name: Upload artifacts
-#         uses: actions/upload-artifact@v4
-#         with:
-#           name: linux-x86_64
-#           path: release/softether-client-linux-x86_64.tar.gz
-#
-#   build-windows:
-#     name: Build for Windows
-#     runs-on: windows-latest
-#     steps:
-#       - name: Checkout
-#         uses: actions/checkout@v4
-#         with:
-#           submodules: 'recursive'
-#
-#       - name: Setup Zig
-#         run: |
-#           curl -LO https://ziglang.org/download/0.15.2/zig-windows-x86_64-0.15.2.zip
-#           Expand-Archive zig-windows-x86_64-0.15.2.zip -DestinationPath C:\
-#           echo "C:\zig-windows-x86_64-0.15.2" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-#
-#       - name: Show Zig version
-#         run: zig version
-#
-#       - name: Build TapTun library
-#         run: |
-#           cd TapTun
-#           zig build
-#           ls zig-out/lib/
-#
-#       - name: Build SoftEtherClient
-#         run: |
-#           zig build
-#           ls zig-out/lib/
-#
-#       - name: Package artifacts
-#         run: |
-#           New-Item -ItemType Directory -Force -Path release/windows-x86_64/lib
-#           New-Item -ItemType Directory -Force -Path release/windows-x86_64/include
-#           Copy-Item -Path zig-out/lib/* -Destination release/windows-x86_64/lib/ -Recurse -ErrorAction SilentlyContinue
-#           Copy-Item -Path zig-out/include/* -Destination release/windows-x86_64/include/ -Recurse -ErrorAction SilentlyContinue
-#           Copy-Item -Path include/*.h -Destination release/windows-x86_64/include/ -ErrorAction SilentlyContinue
-#           Compress-Archive -Path release/windows-x86_64 -DestinationPath release/softether-client-windows-x86_64.zip
-#
-#       - name: Upload artifacts
-#         uses: actions/upload-artifact@v4
-#         with:
-#           name: windows-x86_64
-#           path: release/softether-client-windows-x86_64.zip
-
