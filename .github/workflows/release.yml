@@ -38,12 +38,12 @@ jobs:
       - name: Build TapTun library
         run: |
           cd TapTun
-          zig build -Drelease=true
+          zig build
           ls -lh zig-out/lib/
 
       - name: Build SoftEtherClient
         run: |
-          zig build -Drelease=true
+          zig build
           ls -lh zig-out/lib/
 
       - name: Package artifacts
