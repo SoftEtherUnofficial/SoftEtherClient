@@ -352,10 +352,9 @@ export fn mobile_vpn_disconnect(handle: ?*MobileVpnContext) c_int {
 }
 
 /// Get current VPN status
-export fn mobile_vpn_get_status(handle: ?*MobileVpnContext) MobileVpnStatus {
-    const ctx = handle orelse return .error_state;
-    return ctx.status;
-}
+// NOTE: mobile_vpn_get_status is implemented in mobile_ffi_c.c
+// It handles status change detection and automatic callback firing
+// Do NOT export a Zig version - let C handle all status queries
 
 /// Get VPN statistics
 /// Returns 0 on success, negative error code on failure

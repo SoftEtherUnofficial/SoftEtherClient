@@ -18,6 +18,7 @@ typedef struct {
     void* bridge_client;  // VpnBridgeClient handle
     VpnBridgeDhcpInfo dhcp_info;
     int is_connected;
+    MobileVpnStatus last_reported_status;  // Track last status to fire callbacks on change
     MobileStatusCallback status_callback;
     void* status_callback_context;
     MobileStatsCallback stats_callback;
@@ -95,6 +96,7 @@ MobileVpnHandle mobile_vpn_create(const MobileVpnConfig* config) {
     vpn_bridge_enable_reconnect(ctx->bridge_client, 0, 5, 300); // Infinite retries, 5s-300s backoff
     
     ctx->is_connected = 0;
+    ctx->last_reported_status = MOBILE_VPN_DISCONNECTED;
     memset(&ctx->dhcp_info, 0, sizeof(VpnBridgeDhcpInfo));
     
     return (MobileVpnHandle)ctx;
@@ -232,21 +234,40 @@ MobileVpnStatus mobile_vpn_get_status(MobileVpnHandle handle) {
     LOG_INFO("MOBILE_FFI", "mobile_vpn_get_status: bridge returned status=%u", bridge_status);
     
     // Map bridge status to mobile status
+    MobileVpnStatus mobile_status;
     switch (bridge_status) {
         case VPN_STATUS_DISCONNECTED:
             ctx->is_connected = 0;
-            return MOBILE_VPN_DISCONNECTED;
+            mobile_status = MOBILE_VPN_DISCONNECTED;
+            break;
         case VPN_STATUS_CONNECTING:
-            return MOBILE_VPN_CONNECTING;
+            mobile_status = MOBILE_VPN_CONNECTING;
+            break;
         case VPN_STATUS_CONNECTED:
             ctx->is_connected = 1;
-            return MOBILE_VPN_CONNECTED;
+            mobile_status = MOBILE_VPN_CONNECTED;
+            break;
         case VPN_STATUS_ERROR:
             ctx->is_connected = 0;
-            return MOBILE_VPN_ERROR;
+            mobile_status = MOBILE_VPN_ERROR;
+            break;
         default:
-            return MOBILE_VPN_ERROR;
+            mobile_status = MOBILE_VPN_ERROR;
+            break;
     }
+    
+    // 🔥 FIRE CALLBACK if status changed! (eliminates polling)
+    if (mobile_status != ctx->last_reported_status) {
+        LOG_INFO("MOBILE_FFI", "🔔 Status changed: %u -> %u, firing callback", 
+                 ctx->last_reported_status, mobile_status);
+        ctx->last_reported_status = mobile_status;
+        
+        if (ctx->status_callback) {
+            ctx->status_callback(mobile_status, ctx->status_callback_context);
+        }
+    }
+    
+    return mobile_status;
 }
 
 // Get VPN connection statistics
