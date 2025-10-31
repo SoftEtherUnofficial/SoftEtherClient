@@ -224,8 +224,9 @@ pub fn build(b: *std.Build) void {
     const taptun_module = taptun.module("taptun");
 
     // Add VirtualTap module (Layer 2 virtualization for L3-only platforms)
+    // Using integrated API with ARP table, DHCP utils, and complete L2 protocol handling
     const virtual_tap_module = b.addModule("virtual_tap", .{
-        .root_source_file = b.path("VirtualTap/src/virtual_tap.zig"),
+        .root_source_file = b.path("VirtualTap/src/virtual_tap_integrated.zig"),
         .target = target,
         .optimize = optimize,
     });

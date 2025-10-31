@@ -158,6 +158,57 @@ int mobile_vpn_read_packet(MobileVpnHandle handle, uint8_t* buffer, uint64_t buf
  */
 int mobile_vpn_write_packet(MobileVpnHandle handle, const uint8_t* data, uint64_t data_len);
 
+// ============================================================================
+// Batch Packet Operations (High Performance)
+// ============================================================================
+
+/// Packet buffer for batch operations (zero-copy friendly)
+typedef struct {
+    uint8_t* data;      // Pointer to packet data
+    uint32_t length;    // Packet length in bytes
+    uint8_t protocol;   // 4=IPv4, 6=IPv6
+    uint8_t _padding[3];
+} MobilePacketBuffer;
+
+/**
+ * Read multiple packets from VPN in one FFI call (OPTIMIZED)
+ * This reduces FFI overhead by 32-128x compared to per-packet calls
+ * 
+ * @param handle VPN handle
+ * @param packets Array of packet buffers (pre-allocated by caller)
+ * @param max_packets Maximum number of packets to read (array size)
+ * @param timeout_ms Timeout in milliseconds (0 = non-blocking)
+ * @return Number of packets read (0 to max_packets), negative on error
+ * 
+ * Example usage:
+ *   MobilePacketBuffer packets[128];
+ *   // Pre-allocate data buffers for each packet
+ *   for (int i = 0; i < 128; i++) {
+ *       packets[i].data = malloc(2048);
+ *   }
+ *   int count = mobile_vpn_read_packets_batch(handle, packets, 128, 10);
+ *   for (int i = 0; i < count; i++) {
+ *       // Process packets[i]
+ *   }
+ */
+int mobile_vpn_read_packets_batch(MobileVpnHandle handle, MobilePacketBuffer* packets, uint32_t max_packets, uint32_t timeout_ms);
+
+/**
+ * Write multiple packets to VPN in one FFI call (OPTIMIZED)
+ * This reduces FFI overhead by 32-128x compared to per-packet calls
+ * 
+ * @param handle VPN handle
+ * @param packets Array of packet buffers to write
+ * @param num_packets Number of packets in array
+ * @return 0 on success, negative error code on failure
+ * 
+ * Example usage:
+ *   MobilePacketBuffer packets[32];
+ *   // Fill packet buffers
+ *   int result = mobile_vpn_write_packets_batch(handle, packets, 32);
+ */
+int mobile_vpn_write_packets_batch(MobileVpnHandle handle, const MobilePacketBuffer* packets, uint32_t num_packets);
+
 /**
  * Get network configuration (after DHCP completes)
  * @param handle VPN handle

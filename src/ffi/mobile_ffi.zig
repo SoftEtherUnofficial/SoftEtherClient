@@ -13,6 +13,6 @@ comptime {
 }
 
 // Export nothing from Zig side - all exports come from:
-//   - mobile_ffi_c.c (connection management)
+//   - mobile_ffi_c.c (connection management + batch operations)
 //   - adapter.zig (packet I/O)
 // Both are linked automatically through build.zig

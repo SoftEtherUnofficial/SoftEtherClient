@@ -241,7 +241,7 @@ pub const IosAdapter = struct {
         }
         self.incoming_queue.deinit();
         self.outgoing_queue.deinit();
-        self.vtap.deinit(self.allocator);
+        self.vtap.deinit();
         self.allocator.destroy(self);
     }
 
