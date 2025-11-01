@@ -102,6 +102,23 @@
 // Connection.c
 // Connection Manager
 
+// ZIGSE-PERF: iOS QueueBudget override
+// iOS processes packets immediately (ReceivedBlocks 0-2), causing budget
+// exhaustion at high speeds. Increase budget 8× to prevent throttling.
+#ifdef UNIX_IOS
+#undef QUEUE_BUDGET
+#define QUEUE_BUDGET 2048
+
+// ZIGSE-PERF: iOS Send Queue Size override
+// iOS hit send buffer quota and drops packets. Increase 10× for 100mbps throughput.
+// MAX: 25.6MB (was 2.56MB) - allows ~17500 1460-byte packets buffered
+// MIN: 3.2MB (was 320KB) - ensures minimum buffer for burst traffic
+#undef MAX_SEND_SOCKET_QUEUE_SIZE
+#define MAX_SEND_SOCKET_QUEUE_SIZE (1600 * 1600 * 10)
+#undef MIN_SEND_SOCKET_QUEUE_SIZE  
+#define MIN_SEND_SOCKET_QUEUE_SIZE (1600 * 200 * 10)
+#endif
+
 #include "CedarPch.h"
 
 // iOS/Mobile logging support
@@ -1205,6 +1222,8 @@ void ConnectionSend(CONNECTION *c, UINT64 now)
 					{
 						// The size of the socket send queue is exceeded
 						// Unable to send
+						LOG_ERROR("SendQuota", "⛔ SEND QUOTA HIT! Dropping %u packets (SendFifo=%u >= quota=%u)", 
+							q->num_item, tss->SendFifo->size, size_quota);
 						while (b = GetNext(q))
 						{
 							if (b != NULL)
@@ -2901,6 +2920,12 @@ TCPSOCK *NewTcpSock(SOCK *s)
 	ts->RecvFifo = NewFifo();
 	ts->SendFifo = NewFifo();
 	ts->EstablishedTick = ts->LastRecvTime = ts->LastCommTime = Tick64();
+
+	// iOS: Configure TCP socket buffers for high-latency links
+#ifdef UNIX_IOS
+	extern void InitTcpSocketBufferSize_iOS(SOCKET s);
+	InitTcpSocketBufferSize_iOS(s->socket);
+#endif
 
 	// Unset the time-out value
 	SetTimeout(s, TIMEOUT_INFINITE);

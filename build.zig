@@ -128,6 +128,7 @@ pub fn build(b: *std.Build) void {
         // "src/bridge/zig_bridge.c", // REMOVED: Old C bridge (use zig_packet_adapter.c instead)
         "src/bridge/Mayaqua/Mayaqua.c", // PATCHED: Skips InitTick64() (line 587)
         "src/bridge/Mayaqua/Memory.c", // PATCHED: Bypasses memory guard corruption (removed src/bridge override)
+        "src/bridge/Mayaqua/Network_iOS.c", // NEW: iOS TCP socket buffer tuning for high-latency links
         "SoftEtherVPN/src/Mayaqua/Str.c",
         "src/bridge/Mayaqua/Object.c", // PATCHED: Adds pointer validation
         "SoftEtherVPN/src/Mayaqua/OS.c",
