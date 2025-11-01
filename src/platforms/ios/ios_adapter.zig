@@ -287,15 +287,13 @@ pub const IosAdapter = struct {
     /// Get outgoing packet for iOS (L3 IP packet for NEPacketTunnelFlow)
     /// Returns packet length or null if no packet available
     pub fn getOutgoingPacket(self: *IosAdapter, buffer: []u8) ?usize {
-        // DEBUG: Log queue state - READ FROM OUTGOING_QUEUE (server→iOS packets)
+        // Only log when queue has packets (reduce log spam)
         const count = self.outgoing_queue.count.load(.acquire);
         if (count > 0) {
             IOS_LOG("[GET_PACKET] Queue has {} packets", .{count});
             std.log.info("🔍 Zig getOutgoingPacket: Queue has {d} packets", .{count});
-        } else {
-            // Also log when queue is empty (to see if function is being called)
-            IOS_LOG("[GET_PACKET] Queue EMPTY (count=0)", .{});
         }
+        // Don't log empty queue - called 1000x/sec by Swift, creates massive spam
 
         // Dequeue Ethernet frame from OUTGOING queue (server→iOS packets)
         const eth_packet = self.outgoing_queue.dequeue(0) orelse {

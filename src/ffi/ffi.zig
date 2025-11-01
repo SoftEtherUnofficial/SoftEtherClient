@@ -558,7 +558,11 @@ export fn mobile_vpn_read_packets_batch(
         const packet_idx = packets_read;
         const packet = &packets[packet_idx];
 
-        // Use shorter timeout for subsequent packets to avoid blocking
+        // OPTIMAL FIX: Use timeout for FIRST packet only, 0 for rest
+        // - First packet: Wait up to timeout_ms for data (responsive)
+        // - Subsequent: Poll immediately with timeout=0 (drain queue fast)
+        // - Break on FIRST empty: Prevents busy-loop even with timeout=0
+        // This gives us BOTH responsiveness AND batching efficiency
         const this_timeout = if (packets_read == 0) timeout_ms else 0;
 
         // Read packet from SoftEther client
