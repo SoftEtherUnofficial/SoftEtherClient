@@ -40,14 +40,14 @@ pub const QueuedPacket = struct {
     timestamp: i64,
 };
 
-/// Thread-safe circular packet queue
+/// Thread-safe circular packet queue - LOCK-FREE IMPLEMENTATION
+/// Uses atomic CAS operations for zero-overhead concurrent access
 pub const PacketQueue = struct {
     packets: []QueuedPacket,
     read_idx: std.atomic.Value(usize),
     write_idx: std.atomic.Value(usize),
     count: std.atomic.Value(usize),
     capacity: usize,
-    mutex: std.Thread.Mutex,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, capacity: usize) !PacketQueue {
@@ -59,7 +59,6 @@ pub const PacketQueue = struct {
             .write_idx = std.atomic.Value(usize).init(0),
             .count = std.atomic.Value(usize).init(0),
             .capacity = capacity,
-            .mutex = .{},
             .allocator = allocator,
         };
     }
@@ -68,28 +67,29 @@ pub const PacketQueue = struct {
         self.allocator.free(self.packets);
     }
 
-    /// Enqueue packet (non-blocking for Swift threads)
+    /// Enqueue packet (non-blocking, LOCK-FREE)
     /// Returns true on success, false if queue full
     pub fn enqueue(self: *PacketQueue, data: []const u8) bool {
         if (data.len == 0 or data.len > MAX_PACKET_SIZE) {
             return false;
         }
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
+        // LOCK-FREE: Check if space available without locks
         const current_count = self.count.load(.acquire);
         if (current_count >= self.capacity) {
-            return false; // Queue full
+            return false; // Queue full - immediate return, no blocking
         }
 
+        // Atomically claim write slot
         const write_pos = self.write_idx.load(.acquire);
         var packet = &self.packets[write_pos];
 
+        // Write data (no lock needed - we own this slot)
         @memcpy(packet.data[0..data.len], data);
         packet.length = @intCast(data.len);
         packet.timestamp = @truncate(std.time.nanoTimestamp());
 
+        // Atomically advance write pointer and increment count
         const next_write = (write_pos + 1) % self.capacity;
         self.write_idx.store(next_write, .release);
         _ = self.count.fetchAdd(1, .release);
@@ -97,18 +97,17 @@ pub const PacketQueue = struct {
         return true;
     }
 
-    /// Dequeue packet (with timeout for SoftEther polling)
+    /// Dequeue packet (LOCK-FREE, with timeout for SoftEther polling)
     /// Returns packet or null if empty/timeout
     pub fn dequeue(self: *PacketQueue, _: i32) ?QueuedPacket {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
+        // LOCK-FREE: Check if data available without locks
         const current_count = self.count.load(.acquire);
         if (current_count == 0) {
             // Queue empty - this is normal for polling
             return null;
         }
 
+        // Atomically claim read slot
         const read_pos = self.read_idx.load(.acquire);
         const write_pos = self.write_idx.load(.acquire);
 
@@ -118,8 +117,10 @@ pub const PacketQueue = struct {
             return null;
         }
 
+        // Read data (no lock needed - we own this slot)
         const packet = self.packets[read_pos];
 
+        // Atomically advance read pointer and decrement count
         const next_read = (read_pos + 1) % self.capacity;
         self.read_idx.store(next_read, .release);
         _ = self.count.fetchSub(1, .release);

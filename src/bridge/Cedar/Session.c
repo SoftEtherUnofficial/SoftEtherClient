@@ -489,7 +489,9 @@ void SessionMain(SESSION *s)
 
 		// Add the packet to be transmitted to SendBlocks by acquiring from PacketAdapter
 		{
-			UINT i, max_num = MAX_SEND_SOCKET_QUEUE_NUM;
+			UINT i, max_num = 10000;  // CRITICAL FIX: Increased from 128 to 10000 for iOS throughput
+			// iOS needs to drain ALL available packets in one iteration for 100mbps+
+			// CLI client with TUN device doesn't have this limit because kernel interrupts wake it
 			
 			if (loop_count <= 5 || loop_count % 100 == 0) {
 				LOG_INFO("SESSION", "🔄 Loop #%llu: GetNextPacket...", loop_count);

@@ -417,6 +417,7 @@ pub fn build(b: *std.Build) void {
     mobile_ffi_lib.addIncludePath(b.path("include"));
     mobile_ffi_lib.addIncludePath(b.path("src"));
     mobile_ffi_lib.addIncludePath(b.path("src/bridge/include"));
+    mobile_ffi_lib.addIncludePath(b.path("VirtualTap/include")); // VirtualTap C FFI headers
 
     if (is_ios) {
         mobile_ffi_lib.addIncludePath(b.path("src/bridge/ios_include"));
@@ -456,6 +457,17 @@ pub fn build(b: *std.Build) void {
         });
         taptun_ffi_obj.root_module.addImport("taptun", taptun_module);
         mobile_ffi_lib.addObject(taptun_ffi_obj);
+
+        // Add VirtualTap C FFI exports (provides virtual_tap_* functions)
+        const virtual_tap_ffi_obj = b.addObject(.{
+            .name = "virtual_tap_compat",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("VirtualTap/src/c_ffi.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        mobile_ffi_lib.addObject(virtual_tap_ffi_obj);
 
         // Add DHCP parser module (provides zig_dhcp_parse function)
         const dhcp_module_mobile = b.createModule(.{
@@ -515,7 +527,7 @@ pub fn build(b: *std.Build) void {
         mobile_adapter_obj.addIncludePath(b.path("src/bridge"));
         mobile_ffi_lib.addObject(mobile_adapter_obj);
 
-        std.debug.print("Added TapTun C FFI exports, DHCP parser, protocol builders, and iOS adapter module\n", .{});
+        std.debug.print("Added TapTun C FFI, VirtualTap C FFI, DHCP parser, protocol builders, and iOS adapter module\n", .{});
     }
 
     mobile_ffi_lib.linkLibC();

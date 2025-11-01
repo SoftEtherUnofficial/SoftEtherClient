@@ -1836,16 +1836,25 @@ void ConnectionReceive(CONNECTION *c, CANCEL *c1, CANCEL *c2)
 				}
 				else
 				{
-					if (CedarGetQueueBudgetBalance(c->Cedar) == 0)
+					UINT budget_balance = CedarGetQueueBudgetBalance(c->Cedar);
+					if (budget_balance == 0)
 					{
+						LOG_ERROR("QueueBudget", "⛔ DROPPING PACKET! Budget=0 (size=%u)", b->Size);
 						FreeBlock(b);
 					}
 					else
 					{
 						// Add the data block to queue
+						if ((current_packet_index % 100) == 0)
+						{
+							LOG_INFO("QueueBudget", "✓ Budget OK: balance=%u queue=%u", 
+								budget_balance, c->ReceivedBlocks->num_item);
+						}
 						InsertReveicedBlockToQueue(c, b, true);
 
-						if ((current_packet_index % 32) == 0)
+						// ZIGSE-PERF: Update budget every packet (was every 32)
+						// iOS processes packets immediately (ReceivedBlocks 0-2), so
+						// 32-packet batching caused budget lag and throttling at 5mbps
 						{
 							UINT current_recv_block_num = c->ReceivedBlocks->num_item;
 							int diff = (int)current_recv_block_num - (int)c->LastRecvBlocksNum;
@@ -1924,23 +1933,23 @@ void ConnectionReceive(CONNECTION *c, CANCEL *c1, CANCEL *c2)
 								block = NewBlock(Clone(d->Data, d->DataSize), d->DataSize, 0);
 							}
 
-							if (block->Size > MAX_PACKET_SIZE)
+						if (block->Size > MAX_PACKET_SIZE)
+						{
+							// Packet size exceeded
+							FreeBlock(block);
+						}
+						else
+						{
+							UINT budget_balance = CedarGetQueueBudgetBalance(c->Cedar);
+							if (budget_balance == 0)
 							{
-								// Packet size exceeded
+								LOG_ERROR("QueueBudget", "⛔ RUDP: DROPPING! Budget=0 size=%u", block->Size);
 								FreeBlock(block);
 							}
 							else
 							{
-								if (CedarGetQueueBudgetBalance(c->Cedar) == 0)
-								{
-									FreeBlock(block);
-								}
-								else
-								{
-									// Add the data block to queue
-									InsertReveicedBlockToQueue(c, block, true);
-
-									if ((current_packet_index % 32) == 0)
+								// Add the data block to queue
+								InsertReveicedBlockToQueue(c, block, true);									// ZIGSE-PERF: Update budget every packet (was every 32)
 									{
 										UINT current_recv_block_num = c->ReceivedBlocks->num_item;
 										int diff = (int)current_recv_block_num - (int)c->LastRecvBlocksNum;
@@ -1996,8 +2005,10 @@ void ConnectionReceive(CONNECTION *c, CANCEL *c1, CANCEL *c2)
 					}
 					else
 					{
-						if (CedarGetQueueBudgetBalance(c->Cedar) == 0)
+						UINT budget_balance = CedarGetQueueBudgetBalance(c->Cedar);
+						if (budget_balance == 0)
 						{
+							LOG_ERROR("QueueBudget", "⛔ InProc: DROPPING! Budget=0 size=%u", block->Size);
 							FreeBlock(block);
 						}
 						else
@@ -2005,7 +2016,7 @@ void ConnectionReceive(CONNECTION *c, CANCEL *c1, CANCEL *c2)
 							// Add the data block to queue
 							InsertReveicedBlockToQueue(c, block, true);
 
-							if ((current_packet_index % 32) == 0)
+							// ZIGSE-PERF: Update budget every packet (was every 32)
 							{
 								UINT current_recv_block_num = c->ReceivedBlocks->num_item;
 								int diff = (int)current_recv_block_num - (int)c->LastRecvBlocksNum;
@@ -2225,18 +2236,20 @@ DISCONNECT_THIS_TCP:
 						}
 						else
 						{
-							if (CedarGetQueueBudgetBalance(c->Cedar) == 0)
+							UINT budget_balance = CedarGetQueueBudgetBalance(c->Cedar);
+							if (budget_balance == 0)
 							{
+								LOG_ERROR("QueueBudget", "⛔ TCP: DROPPING! Budget=0 size=%u", block->Size);
 								FreeBlock(block);
 							}
 							else
 							{
 								// Add the data block to queue
-								LOG_INFO("ConnRecv", "📦 TCP Block size=%u added to ReceivedBlocks (queue size=%u)", 
-									block->Size, c->ReceivedBlocks->num_item);
+								LOG_INFO("ConnRecv", "📦 TCP Block size=%u added (queue=%u budget=%u)", 
+									block->Size, c->ReceivedBlocks->num_item, budget_balance);
 								InsertReveicedBlockToQueue(c, block, true);
 
-								if ((current_packet_index % 32) == 0)
+								// ZIGSE-PERF: Update budget every packet (was every 32)
 								{
 									UINT current_recv_block_num = c->ReceivedBlocks->num_item;
 									int diff = (int)current_recv_block_num - (int)c->LastRecvBlocksNum;
