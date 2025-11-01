@@ -622,6 +622,8 @@ int vpn_bridge_connect(VpnBridgeClient* client) {
     opt->AdditionalConnectionInterval = 1;
     opt->NoUdpAcceleration = true;       // CRITICAL: No UDP acceleration
     opt->DisableQoS = true;              // Disable QoS features
+    opt->ConnectionDisconnectSpan = 0;   // Don't disconnect idle connections
+    opt->NoRoutingTracking = true;       // Don't track routing changes
     
     // ⚠️ CRITICAL FIX FOR DHCP: Request bridge/routing mode
     // Without this, server FORCES policy->NoBridge = true and policy->NoRouting = true

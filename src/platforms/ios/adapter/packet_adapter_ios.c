@@ -821,9 +821,10 @@ static UINT IosAdapterGetNextPacket(SESSION *s, void **data) {
     // ===================================================================
     // PRIORITY 2: Check incoming queue (packets from iOS device)
     // ===================================================================
-    // Try to dequeue packet (with SHORT timeout to avoid blocking SessionMain loop)
-    // Using 10ms timeout - SessionMain expects frequent polling
-    length = packet_queue_dequeue(ctx->incoming_queue, buffer, IOS_MAX_PACKET_SIZE, 10);
+    // CRITICAL PERFORMANCE FIX: Use timeout=0 (non-blocking) instead of 10ms
+    // 10ms timeout was adding 10ms delay PER empty queue check, killing throughput!
+    // SessionMain loop runs continuously, so non-blocking poll is correct approach
+    length = packet_queue_dequeue(ctx->incoming_queue, buffer, IOS_MAX_PACKET_SIZE, 0);
     
     if (length < 0) {
         // Actual error from dequeue function
