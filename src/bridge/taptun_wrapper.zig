@@ -1,8 +1,9 @@
-// C-compatible wrapper for TapTun library
-// Allows packet_adapter_macos.c to use Zig L2↔L3 translation
+// C-compatible wrapper for Protocol Layer (L2/L3 translation)
+// Allows C code to use Zig L2↔L3 translation without TapTun dependency
+// This wraps the pure protocol layer, not TapTun's device abstractions
 
 const std = @import("std");
-const taptun = @import("taptun");
+const protocol = @import("protocol");
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
@@ -21,9 +22,9 @@ pub const CTranslatorOptions = extern struct {
 
 /// Create a new L2↔L3 translator
 export fn taptun_translator_create(options: *const CTranslatorOptions) callconv(.c) TranslatorHandle {
-    const translator = allocator.create(taptun.L2L3Translator) catch return null;
+    const translator = allocator.create(protocol.L2L3Translator) catch return null;
 
-    translator.* = taptun.L2L3Translator.init(allocator, .{
+    translator.* = protocol.L2L3Translator.init(allocator, .{
         .our_mac = options.our_mac,
         .learn_ip = options.learn_ip,
         .learn_gateway_mac = options.learn_gateway_mac,
@@ -40,7 +41,7 @@ export fn taptun_translator_create(options: *const CTranslatorOptions) callconv(
 /// Destroy translator
 export fn taptun_translator_destroy(handle: TranslatorHandle) callconv(.c) void {
     if (handle) |h| {
-        const translator: *taptun.L2L3Translator = @ptrCast(@alignCast(h));
+        const translator: *protocol.L2L3Translator = @ptrCast(@alignCast(h));
         translator.deinit();
         allocator.destroy(translator);
     }
@@ -60,7 +61,7 @@ export fn taptun_ip_to_ethernet(
     if (ip_packet == null or out_buffer == null) return 0;
     if (out_buffer_size < ip_size + 14) return 0; // Not enough space
 
-    const translator: *taptun.L2L3Translator = @ptrCast(@alignCast(handle.?));
+    const translator: *protocol.L2L3Translator = @ptrCast(@alignCast(handle.?));
 
     const ip_slice = ip_packet[0..ip_size];
     const eth_frame = translator.ipToEthernet(ip_slice) catch return 0;
@@ -86,7 +87,7 @@ export fn taptun_ethernet_to_ip(
     if (handle == null) return -1;
     if (eth_frame == null or out_buffer == null) return -1;
 
-    const translator: *taptun.L2L3Translator = @ptrCast(@alignCast(handle.?));
+    const translator: *protocol.L2L3Translator = @ptrCast(@alignCast(handle.?));
 
     const eth_slice = eth_frame[0..eth_size];
     const maybe_ip = translator.ethernetToIp(eth_slice) catch return -1;
@@ -110,13 +111,13 @@ export fn taptun_get_our_ip(handle: TranslatorHandle) callconv(.c) u32 {
 
     // Check pointer alignment before casting
     const addr = @intFromPtr(handle.?);
-    const required_alignment = @alignOf(taptun.L2L3Translator);
+    const required_alignment = @alignOf(protocol.L2L3Translator);
     if (addr % required_alignment != 0) {
-        std.debug.print("[taptun] ERROR: Pointer not aligned! addr=0x{x}, required_align={d}\n", .{ addr, required_alignment });
+        std.debug.print("[taptun_wrapper] ERROR: Pointer not aligned! addr=0x{x}, required_align={d}\n", .{ addr, required_alignment });
         return 0;
     }
 
-    const translator: *taptun.L2L3Translator = @ptrCast(@alignCast(handle.?));
+    const translator: *protocol.L2L3Translator = @ptrCast(@alignCast(handle.?));
     return translator.our_ip orelse 0;
 }
 
@@ -128,7 +129,7 @@ export fn taptun_get_learned_ip(handle: TranslatorHandle) callconv(.c) u32 {
 /// Get learned gateway MAC address (returns false if not learned yet)
 export fn taptun_get_gateway_mac(handle: TranslatorHandle, out_mac: [*c]u8) callconv(.c) bool {
     if (handle == null or out_mac == null) return false;
-    const translator: *taptun.L2L3Translator = @ptrCast(@alignCast(handle.?));
+    const translator: *protocol.L2L3Translator = @ptrCast(@alignCast(handle.?));
 
     if (translator.gateway_mac) |mac| {
         @memcpy(out_mac[0..6], &mac);
@@ -140,7 +141,7 @@ export fn taptun_get_gateway_mac(handle: TranslatorHandle, out_mac: [*c]u8) call
 /// Check if translator has a pending ARP reply
 export fn taptun_has_pending_arp(handle: TranslatorHandle) callconv(.c) bool {
     if (handle == null) return false;
-    const translator: *taptun.L2L3Translator = @ptrCast(@alignCast(handle.?));
+    const translator: *protocol.L2L3Translator = @ptrCast(@alignCast(handle.?));
     return translator.hasPendingArpReply();
 }
 
@@ -152,7 +153,7 @@ export fn taptun_get_pending_arp(
     out_buffer_size: usize,
 ) callconv(.c) isize {
     if (handle == null or out_buffer == null) return 0;
-    const translator: *taptun.L2L3Translator = @ptrCast(@alignCast(handle.?));
+    const translator: *protocol.L2L3Translator = @ptrCast(@alignCast(handle.?));
 
     const maybe_reply = translator.popArpReply();
     if (maybe_reply) |reply| {
@@ -177,7 +178,7 @@ pub const CTranslatorStats = extern struct {
 
 export fn taptun_get_stats(handle: TranslatorHandle, stats: *CTranslatorStats) callconv(.c) void {
     if (handle == null) return;
-    const translator: *taptun.L2L3Translator = @ptrCast(@alignCast(handle.?));
+    const translator: *protocol.L2L3Translator = @ptrCast(@alignCast(handle.?));
 
     stats.packets_l2_to_l3 = translator.packets_translated_l2_to_l3;
     stats.packets_l3_to_l2 = translator.packets_translated_l3_to_l2;

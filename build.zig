@@ -224,10 +224,40 @@ pub fn build(b: *std.Build) void {
     // Get the taptun module
     const taptun_module = taptun.module("taptun");
 
+    // Add Protocol module (L2/L3 translation, ARP, DHCP - moved from TapTun)
+    // This is pure protocol logic with no platform dependencies
+    const protocol_translator_mod = b.addModule("protocol_translator", .{
+        .root_source_file = b.path("src/protocol/translator.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    _ = protocol_translator_mod; // Used by submodules
+
+    const protocol_arp_mod = b.addModule("protocol_arp", .{
+        .root_source_file = b.path("src/protocol/arp.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    _ = protocol_arp_mod; // Used by submodules
+
+    const protocol_dhcp_mod = b.addModule("protocol_dhcp", .{
+        .root_source_file = b.path("src/protocol/dhcp_client.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    _ = protocol_dhcp_mod; // Used by submodules
+
+    // Protocol module aggregator
+    const protocol_module = b.addModule("protocol", .{
+        .root_source_file = b.path("src/protocol/translator.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Add VirtualTap module (Layer 2 virtualization for L3-only platforms)
     // Using integrated API with ARP table, DHCP utils, and complete L2 protocol handling
     const virtual_tap_module = b.addModule("virtual_tap", .{
-        .root_source_file = b.path("VirtualTap/src/virtual_tap_integrated.zig"),
+        .root_source_file = b.path("VirtualTap/src/virtual_tap.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -238,6 +268,8 @@ pub fn build(b: *std.Build) void {
     });
     lib_module.addIncludePath(b.path("src"));
     lib_module.addImport("taptun", taptun_module);
+    lib_module.addImport("protocol", protocol_module);
+    lib_module.addImport("virtual_tap", virtual_tap_module);
     lib_module.link_libc = true;
 
     // ============================================
@@ -291,8 +323,20 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Add taptun dependency for L2/L3 translation
+    // Add platform wrapper module (TunAdapter - combines device + protocol)
+    const platform_wrapper_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/tun_adapter.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    platform_wrapper_mod.addImport("taptun", taptun_module);
+    platform_wrapper_mod.addImport("protocol", protocol_module);
+
+    // Add dependencies to packet adapter
     packet_adapter_module.addImport("taptun", taptun_module);
+    packet_adapter_module.addImport("protocol", protocol_module);
+    packet_adapter_module.addImport("virtual_tap", virtual_tap_module);
+    packet_adapter_module.addImport("platform_wrapper", platform_wrapper_mod);
 
     const packet_adapter_obj = b.addObject(.{
         .name = "zig_packet_adapter",
@@ -301,21 +345,23 @@ pub fn build(b: *std.Build) void {
     packet_adapter_obj.addIncludePath(b.path("src/bridge"));
     cli.addObject(packet_adapter_obj);
 
-    // Add TapTun compatibility layer (legacy API → TapTun C FFI)
-    const taptun_compat_module = b.createModule(.{
-        .root_source_file = b.path("src/bridge/taptun_compat.zig"),
+    // Add TapTun compatibility layer (wraps protocol layer for C FFI)
+    const taptun_wrapper_module = b.createModule(.{
+        .root_source_file = b.path("src/bridge/taptun_wrapper.zig"),
         .target = target,
         .optimize = optimize,
     });
-    taptun_compat_module.addImport("taptun", taptun_module);
-    const taptun_compat_obj = b.addObject(.{
-        .name = "taptun_compat",
-        .root_module = taptun_compat_module,
+    taptun_wrapper_module.addImport("taptun", taptun_module);
+    taptun_wrapper_module.addImport("protocol", protocol_module);
+    const taptun_wrapper_obj = b.addObject(.{
+        .name = "taptun_wrapper",
+        .root_module = taptun_wrapper_module,
     });
-    cli.addObject(taptun_compat_obj);
+    cli.addObject(taptun_wrapper_obj);
 
     // Phase 2.1: Add DHCP parser module (30-40% faster parsing)
-    const dhcp_module = b.createModule(.{
+    // NOTE: This is separate from the protocol DHCP client - this is just parsing
+    const dhcp_parser_module = b.createModule(.{
         .root_source_file = b.path("src/packet/dhcp.zig"),
         .target = target,
         .optimize = optimize,
@@ -323,22 +369,22 @@ pub fn build(b: *std.Build) void {
 
     const dhcp_obj = b.addObject(.{
         .name = "zig_dhcp",
-        .root_module = dhcp_module,
+        .root_module = dhcp_parser_module,
     });
     cli.addObject(dhcp_obj);
 
     // Phase 2.2: Add protocol builders (DHCP/ARP packet generation, 10-15% gain)
-    const protocol_module = b.createModule(.{
+    const protocol_builders_module = b.createModule(.{
         .root_source_file = b.path("src/packet/protocol.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    const protocol_obj = b.addObject(.{
+    const protocol_builders_obj = b.addObject(.{
         .name = "zig_protocol",
-        .root_module = protocol_module,
+        .root_module = protocol_builders_module,
     });
-    cli.addObject(protocol_obj);
+    cli.addObject(protocol_builders_obj);
 
     // Link C library
     cli.linkLibC();
@@ -447,28 +493,31 @@ pub fn build(b: *std.Build) void {
 
     // Add Zig packet adapter module and TapTun for iOS
     if (is_ios or use_zig_adapter) {
-        // Add TapTun C FFI exports (provides taptun_translator_* functions)
-        const taptun_ffi_obj = b.addObject(.{
-            .name = "taptun_compat",
+        // Add TapTun wrapper C FFI exports (provides taptun_translator_* functions from protocol layer)
+        const taptun_wrapper_ffi_obj = b.addObject(.{
+            .name = "taptun_wrapper_ffi",
             .root_module = b.createModule(.{
-                .root_source_file = b.path("TapTun/src/c_ffi.zig"),
+                .root_source_file = b.path("src/bridge/taptun_wrapper.zig"),
                 .target = target,
                 .optimize = optimize,
             }),
         });
-        taptun_ffi_obj.root_module.addImport("taptun", taptun_module);
-        mobile_ffi_lib.addObject(taptun_ffi_obj);
+        taptun_wrapper_ffi_obj.root_module.addImport("taptun", taptun_module);
+        taptun_wrapper_ffi_obj.root_module.addImport("protocol", protocol_module);
+        mobile_ffi_lib.addObject(taptun_wrapper_ffi_obj);
 
         // Add VirtualTap C FFI exports (provides virtual_tap_* functions)
-        const virtual_tap_ffi_obj = b.addObject(.{
+        const virtual_tap_compat_obj = b.addObject(.{
             .name = "virtual_tap_compat",
             .root_module = b.createModule(.{
-                .root_source_file = b.path("VirtualTap/src/c_ffi.zig"),
+                .root_source_file = b.path("VirtualTap/src/ffi/c_ffi.zig"),
                 .target = target,
                 .optimize = optimize,
             }),
         });
-        mobile_ffi_lib.addObject(virtual_tap_ffi_obj);
+        // Add VirtualTap module as import so c_ffi.zig can access it
+        virtual_tap_compat_obj.root_module.addImport("virtual_tap", virtual_tap_module);
+        mobile_ffi_lib.addObject(virtual_tap_compat_obj);
 
         // Add DHCP parser module (provides zig_dhcp_parse function)
         const dhcp_module_mobile = b.createModule(.{
@@ -520,6 +569,9 @@ pub fn build(b: *std.Build) void {
         });
         mobile_adapter_module.addImport("taptun", taptun_module);
         mobile_adapter_module.addImport("ios_adapter", ios_adapter_module);
+        mobile_adapter_module.addImport("protocol", protocol_module_mobile);
+        mobile_adapter_module.addImport("virtual_tap", virtual_tap_module);
+        mobile_adapter_module.addImport("platform_wrapper", platform_wrapper_mod);
 
         const mobile_adapter_obj = b.addObject(.{
             .name = "zig_ios_adapter",

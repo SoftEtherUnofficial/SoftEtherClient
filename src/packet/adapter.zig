@@ -1,5 +1,5 @@
 // High-performance Zig packet adapter for SoftEther VPN
-// Uses TapTun for TUN device + L2↔L3 translation
+// Uses TapTun for TUN device + Protocol layer for L2↔L3 translation
 // Adds SoftEther-specific performance optimizations:
 // - Lock-free ring buffers (recv=256, send=256)
 // - Packet pooling (zero-copy where possible)
@@ -17,7 +17,9 @@ const Packet = @import("packet.zig").Packet;
 const PacketPool = @import("packet.zig").PacketPool;
 const MAX_PACKET_SIZE = @import("packet.zig").MAX_PACKET_SIZE;
 const checksum = @import("checksum.zig");
-const taptun = @import("taptun");
+const taptun = @import("taptun"); // Platform device abstraction only
+const protocol = @import("protocol"); // Protocol translation (L2/L3, ARP, DHCP)
+const TunAdapter = @import("platform_wrapper").TunAdapter; // High-level wrapper combining device + protocol
 
 // iOS adapter module (compile-time conditional)
 // For iOS builds, this imports the iOS-specific adapter
@@ -126,9 +128,9 @@ pub const ZigPacketAdapter = struct {
     config: Config,
 
     // Platform-specific adapter
-    // macOS/Linux: TapTun high-level adapter (handles device + translation)
+    // macOS/Linux: TunAdapter (high-level wrapper that combines device + translation)
     // iOS: IosAdapter (queue bridge only, no device)
-    tun_adapter: if (!is_ios) *taptun.TunAdapter else void,
+    tun_adapter: if (!is_ios) *TunAdapter else void,
     ios_adapter: if (is_ios) *IosAdapterModule.IosAdapter else void,
 
     // SoftEther-specific performance layer
@@ -250,9 +252,9 @@ pub const ZigPacketAdapter = struct {
         send_queue.* = try RingBuffer(PacketBuffer).init(allocator, config.send_queue_size);
         errdefer send_queue.deinit();
 
-        // Open TUN device with L2/L3 translator (TapTun handles everything!)
-        logDebug("Opening TUN device via TapTun", .{});
-        const tun_adapter = try taptun.TunAdapter.open(allocator, .{
+        // Open TUN device with L2/L3 translator (TunAdapter handles everything!)
+        logDebug("Opening TUN device via TunAdapter (device from taptun + translation from protocol)", .{});
+        const tun_adapter = try TunAdapter.open(allocator, .{
             .device = .{
                 .unit = null, // Auto-assign
                 .mtu = 1500,
