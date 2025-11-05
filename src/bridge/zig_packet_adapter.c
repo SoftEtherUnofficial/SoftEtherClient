@@ -44,6 +44,8 @@ typedef struct {
     uint32_t subnet_mask;
     uint8_t msg_type;
     uint32_t server_ip;
+    uint32_t dns_server1;
+    uint32_t dns_server2;
     uint8_t _padding[3];
 } ZigDhcpInfo;
 
@@ -51,7 +53,8 @@ extern bool zig_dhcp_parse(const uint8_t* data, size_t len, ZigDhcpInfo* out_inf
 
 // Helper function to parse DHCP packet using Zig parser
 // PHASE 2.1: Replaced C implementation with Zig for 30-40% faster parsing
-static bool ParseDhcpPacket(const UCHAR* data, UINT size, UINT32* out_offered_ip, UINT32* out_gw, UINT32* out_mask, UCHAR* out_msg_type, UINT32* out_server_ip) {
+static bool ParseDhcpPacket(const UCHAR* data, UINT size, UINT32* out_offered_ip, UINT32* out_gw, UINT32* out_mask, 
+                           UCHAR* out_msg_type, UINT32* out_server_ip, UINT32* out_dns1, UINT32* out_dns2) {
     ZigDhcpInfo info;
     
     if (!zig_dhcp_parse((const uint8_t*)data, (size_t)size, &info)) {
@@ -64,6 +67,8 @@ static bool ParseDhcpPacket(const UCHAR* data, UINT size, UINT32* out_offered_ip
     *out_mask = info.subnet_mask;
     *out_msg_type = info.msg_type;
     *out_server_ip = info.server_ip;
+    *out_dns1 = info.dns_server1;
+    *out_dns2 = info.dns_server2;
     
     return true;
 }
@@ -738,9 +743,9 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                     if (dest_port == 68) {
                         // This is a DHCP response! Parse it
                         LOG_INFO("ZigPutPacket", "🔍 DHCP packet detected! Calling ParseDhcpPacket (size=%u)...", size);
-                        UINT32 offered_ip = 0, gw = 0, mask = 0, server_ip = 0;
+                        UINT32 offered_ip = 0, gw = 0, mask = 0, server_ip = 0, dns1 = 0, dns2 = 0;
                         UCHAR msg_type = 0;
-                        if (ParseDhcpPacket(pkt, size, &offered_ip, &gw, &mask, &msg_type, &server_ip)) {
+                        if (ParseDhcpPacket(pkt, size, &offered_ip, &gw, &mask, &msg_type, &server_ip, &dns1, &dns2)) {
                             LOG_INFO("ZigPutPacket", "✅ ParseDhcpPacket SUCCESS! msg_type=%u IP=%u.%u.%u.%u",
                                      msg_type, (offered_ip >> 24) & 0xFF, (offered_ip >> 16) & 0xFF,
                                      (offered_ip >> 8) & 0xFF, offered_ip & 0xFF);
@@ -796,9 +801,9 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                 if (dest_port == 68) {
                     // Parse DHCP packet and check message type
                     LOG_INFO("ZigPutPacket", "🔍 DHCP packet detected (UDP port 68), size=%u [waiting for ACK]", size);
-                    UINT32 acked_ip = 0, gw = 0, mask = 0, server_ip = 0;
+                    UINT32 acked_ip = 0, gw = 0, mask = 0, server_ip = 0, dns1 = 0, dns2 = 0;
                     UCHAR msg_type = 0;
-                    if (ParseDhcpPacket(pkt, size, &acked_ip, &gw, &mask, &msg_type, &server_ip)) {
+                    if (ParseDhcpPacket(pkt, size, &acked_ip, &gw, &mask, &msg_type, &server_ip, &dns1, &dns2)) {
                         LOG_INFO("ZigPutPacket", "🔍 Parsed: IP=%u.%u.%u.%u, msg_type=%u (5=ACK expected)",
                                (acked_ip >> 24) & 0xFF, (acked_ip >> 16) & 0xFF,
                                (acked_ip >> 8) & 0xFF, acked_ip & 0xFF, msg_type);
@@ -821,17 +826,19 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                             ios_adapter_set_need_gateway_arp(true);
                             LOG_INFO("ZigPutPacket", "✅ ios_adapter_set_need_gateway_arp returned");
                             
-                            LOG_INFO("ZigPutPacket", "🔍 About to call ios_adapter_set_dhcp_info(IP=%u.%u.%u.%u GW=%u.%u.%u.%u)",
+                            LOG_INFO("ZigPutPacket", "🔍 About to call ios_adapter_set_dhcp_info(IP=%u.%u.%u.%u GW=%u.%u.%u.%u DNS1=%u.%u.%u.%u DNS2=%u.%u.%u.%u)",
                                 (ctx->our_ip >> 24) & 0xFF, (ctx->our_ip >> 16) & 0xFF, 
                                 (ctx->our_ip >> 8) & 0xFF, ctx->our_ip & 0xFF,
                                 (ctx->offered_gw >> 24) & 0xFF, (ctx->offered_gw >> 16) & 0xFF,
-                                (ctx->offered_gw >> 8) & 0xFF, ctx->offered_gw & 0xFF);
+                                (ctx->offered_gw >> 8) & 0xFF, ctx->offered_gw & 0xFF,
+                                (dns1 >> 24) & 0xFF, (dns1 >> 16) & 0xFF, (dns1 >> 8) & 0xFF, dns1 & 0xFF,
+                                (dns2 >> 24) & 0xFF, (dns2 >> 16) & 0xFF, (dns2 >> 8) & 0xFF, dns2 & 0xFF);
                             ios_adapter_set_dhcp_info(
                                 ctx->our_ip,
                                 ctx->offered_mask,
                                 ctx->offered_gw,
-                                0x08080808,  // Google DNS 8.8.8.8
-                                0x08080404,  // Google DNS 8.8.4.4
+                                dns1 ? dns1 : 0x08080808,  // Use server DNS or fallback to Google DNS 8.8.8.8
+                                dns2 ? dns2 : 0x08080404,  // Use server DNS or fallback to Google DNS 8.8.4.4
                                 server_ip
                             );
                             LOG_INFO("ZigPutPacket", "✅ ios_adapter_set_dhcp_info returned");

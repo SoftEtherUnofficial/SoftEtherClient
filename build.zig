@@ -118,6 +118,7 @@ pub fn build(b: *std.Build) void {
     const common_sources = [_][]const u8{
         "src/bridge/softether_bridge.c",
         "src/bridge/unix_bridge.c",
+        "src/bridge/direct_api.c", // NEW: Direct C API for zero FFI overhead
         tick64_file,
         // packet_adapter_file conditionally added in c_sources below
         "src/bridge/zig_packet_adapter.c", // Zig adapter wrapper (NEW: 5x faster than C bridge)

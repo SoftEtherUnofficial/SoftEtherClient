@@ -23,6 +23,8 @@ pub const DhcpInfo = extern struct {
     subnet_mask: u32, // Subnet mask (option 1)
     msg_type: u8, // DHCP message type (option 53)
     server_ip: u32, // Server identifier (option 54)
+    dns_server1: u32, // Primary DNS server (option 6)
+    dns_server2: u32, // Secondary DNS server (option 6)
     _padding: [3]u8 = [_]u8{0} ** 3, // Align to 4 bytes for C compatibility
 };
 
@@ -75,6 +77,8 @@ pub fn parse(data: []const u8) !DhcpInfo {
         .subnet_mask = 0,
         .msg_type = 0,
         .server_ip = 0,
+        .dns_server1 = 0,
+        .dns_server2 = 0,
     };
 
     // Single-pass option parsing (starts after magic cookie)
@@ -116,6 +120,11 @@ pub fn parse(data: []const u8) !DhcpInfo {
             },
             @intFromEnum(DhcpOption.subnet_mask) => {
                 if (opt_len == 4) result.subnet_mask = std.mem.readInt(u32, opt_data[0..4], .big);
+            },
+            @intFromEnum(DhcpOption.dns_server) => {
+                // DNS servers can be multiple IPs (4 bytes each)
+                if (opt_len >= 4) result.dns_server1 = std.mem.readInt(u32, opt_data[0..4], .big);
+                if (opt_len >= 8) result.dns_server2 = std.mem.readInt(u32, opt_data[4..8], .big);
             },
             else => {}, // Ignore unknown options
         }
