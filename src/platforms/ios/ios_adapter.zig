@@ -16,6 +16,9 @@ const log = @import("logging");
 // iOS NSLog bridge (appears in Console.app) - kept for backward compatibility
 extern fn ios_log_message([*:0]const u8) void;
 
+// C callback to notify Swift when DHCP completes
+extern fn ios_adapter_notify_dhcp_complete(dhcp_state: *const DhcpState) void;
+
 // Legacy iOS logging macro - deprecated, use log.* instead
 fn IOS_LOG(comptime fmt: []const u8, args: anytype) void {
     var buf: [512]u8 = undefined;
@@ -500,6 +503,9 @@ pub const IosAdapter = struct {
             // Configure translator with our IP and gateway
             self.vtap.setOurIp(your_ip);
             self.vtap.setGatewayIp(self.dhcp_state.gateway);
+
+            // Notify Swift that DHCP is complete (CRITICAL FIX: Was missing!)
+            ios_adapter_notify_dhcp_complete(&self.dhcp_state);
         }
     }
 
@@ -687,9 +693,24 @@ pub const IosAdapter = struct {
 // C FFI Exports - Called by zig_packet_adapter.c
 // ============================================================================
 
+/// C FFI: Get the global iOS adapter instance
+export fn ios_adapter_get_global_instance() ?*IosAdapter {
+    return global_ios_adapter;
+}
+
+/// C FFI: Parse DHCP packet from C code (called by direct_api.c on PutPacket)
+export fn ios_adapter_parse_dhcp_from_c(adapter: *IosAdapter, eth_frame: [*]const u8, length: usize) void {
+    const frame_slice = eth_frame[0..length];
+    adapter.parseDhcpIfNeeded(frame_slice);
+}
+
 /// C FFI: Get packet from incoming queue (iOS → Server)
 /// Used by ZigAdapterGetNextPacket to retrieve ARP replies from VirtualTap
 export fn ios_adapter_get_packet_from_incoming(adapter: *IosAdapter, buffer: [*]u8, buffer_len: usize) usize {
     const buf_slice = buffer[0..buffer_len];
     return adapter.getPacketFromIncoming(buf_slice);
 }
+
+// TODO: Auto-inject DHCP DISCOVER to kick-start DHCP negotiation
+// This requires building a proper DHCP DISCOVER packet with Ethernet/IP/UDP headers
+// For now, rely on timeout fallback in Swift layer

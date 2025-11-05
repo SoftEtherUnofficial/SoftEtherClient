@@ -118,6 +118,7 @@ pub fn build(b: *std.Build) void {
     const common_sources = [_][]const u8{
         "src/bridge/softether_bridge.c",
         "src/bridge/unix_bridge.c",
+        "src/bridge/direct_api.c", // NEW: Direct C API (zero FFI overhead)
         tick64_file,
         // packet_adapter_file conditionally added in c_sources below
         "src/bridge/zig_packet_adapter.c", // Zig adapter wrapper (NEW: 5x faster than C bridge)
@@ -191,8 +192,8 @@ pub fn build(b: *std.Build) void {
     const c_sources = if (use_zig_adapter) blk: {
         if (is_ios) {
             // iOS: Pure Zig ios_adapter (no TUN device, queue-based)
-            // No C packet adapter needed - ios_adapter.zig handles everything
-            // Include packet_utils.c for DHCP/ARP builders (packet_adapter_ios.c doesn't have them)
+            // No C packet adapter needed - ios_adapter.zig handles everything including dequeue
+            // Include packet_utils.c for DHCP/ARP builders
             break :blk &common_sources ++ &[_][]const u8{"src/bridge/packet_utils.c"};
         } else {
             // macOS: Still need packet_adapter_macos.c for DHCP utilities (BuildDhcpDiscover, etc.)

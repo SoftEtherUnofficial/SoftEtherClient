@@ -73,6 +73,57 @@ static bool ParseDhcpPacket(const UCHAR* data, UINT size, UINT32* out_offered_ip
 #define ZIG_PACKET_BUFFER_SIZE 2048
 static uint8_t g_packet_buffer[ZIG_PACKET_BUFFER_SIZE];
 
+// ============================================================================
+// Global Network Callback (FFI Integration)
+// ============================================================================
+
+// Network callback structure (matches MobileNetworkInfo)
+typedef struct {
+    uint8_t ip_address[4];
+    uint8_t gateway[4];
+    uint8_t netmask[4];
+    uint8_t dns_servers[4][4];
+    uint16_t mtu;
+} NetworkInfo;
+
+typedef void (*NetworkConfiguredCallback)(const NetworkInfo* info, void* user_data);
+
+// ============================================================================
+// NATIVE CALLBACK PATH: Direct ObjC bridge (zero FFI overhead)
+// ============================================================================
+
+// DEPRECATED: FFI callback path (goes through mobile_ffi_c.c wrapper)
+// Left commented for reference, but no longer used - native path is preferred
+// static NetworkConfiguredCallback g_zig_network_callback = NULL;
+// static void* g_zig_network_callback_user_data = NULL;
+
+// Native ObjC callback path (direct, bypasses FFI layer entirely)
+static NetworkConfiguredCallback g_zig_native_callback = NULL;
+static void* g_zig_native_callback_user_data = NULL;
+
+/**
+ * DEPRECATED: Register network configuration callback for Zig adapter (called by FFI layer)
+ * This callback will be invoked when DHCP completes
+ * 
+ * NOTE: This FFI path is no longer used. Use zig_adapter_set_native_network_callback() instead
+ * for zero-overhead direct ObjC callbacks.
+ */
+// void zig_adapter_set_network_callback(NetworkConfiguredCallback callback, void* user_data) {
+//     g_zig_network_callback = callback;
+//     g_zig_network_callback_user_data = user_data;
+//     LOG_INFO("ZIG_ADAPTER", "🔔 FFI network callback registered: %p (user_data=%p)", callback, user_data);
+// }
+
+/**
+ * Register NATIVE network configuration callback (DIRECT ObjC path - bypasses FFI!)
+ * Called directly from VPNClientBridge.m, eliminates all FFI overhead
+ */
+void zig_adapter_set_native_network_callback(NetworkConfiguredCallback callback, void* user_data) {
+    g_zig_native_callback = callback;
+    g_zig_native_callback_user_data = user_data;
+    LOG_INFO("ZIG_ADAPTER", "🚀 NATIVE network callback registered: %p (user_data=%p) - ZERO FFI!", callback, user_data);
+}
+
 // Temporary: C packet builder for testing
 extern UCHAR *BuildDhcpDiscover(UCHAR *my_mac, UINT32 xid, UINT *out_size);
 
@@ -340,48 +391,6 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
         LOG_ERROR("ZigAdapter", "[ZigAdapterGetNextPacket] ✅ All checks passed, dhcp_state=%d", ctx->dhcp_state);
     }
     
-    // ===================================================================
-    // PRIORITY 1: Check for ARP replies from VirtualTap (in incoming_queue)
-    // VirtualTap generates ARP replies when server sends ARP requests
-    // These MUST be sent back to server ASAP for bidirectional traffic
-    // ===================================================================
-#if defined(__APPLE__) && defined(TARGET_OS_IOS) && TARGET_OS_IOS
-    extern IosAdapter* global_ios_adapter;  // From ios_adapter.zig
-    extern size_t ios_adapter_get_packet_from_incoming(IosAdapter*, uint8_t*, size_t);
-    if (global_ios_adapter) {
-        // Try to get ARP reply from incoming queue (iOS → Server direction)
-        uint8_t arp_buffer[2048];
-        size_t arp_len = ios_adapter_get_packet_from_incoming(global_ios_adapter, arp_buffer, sizeof(arp_buffer));
-        
-        if (arp_len > 0) {
-            // Check if it's an ARP packet (EtherType 0x0806 at bytes 12-13)
-            if (arp_len >= 14) {
-                uint16_t ethertype = (arp_buffer[12] << 8) | arp_buffer[13];
-                if (ethertype == 0x0806) {
-                    LOG_ERROR("ZigAdapter", "🎯 CRITICAL: ARP REPLY from VirtualTap! %zu bytes - SENDING TO SERVER", arp_len);
-                    
-                    // Allocate and copy ARP reply
-                    void* packet = Malloc(arp_len);
-                    if (packet) {
-                        memcpy(packet, arp_buffer, arp_len);
-                        *data = packet;
-                        return (UINT)arp_len;
-                    }
-                } else {
-                    // Not ARP - it's an IP packet from iOS, also forward it
-                    LOG_ERROR("ZigAdapter", "📤 IP packet from iOS: %zu bytes (EtherType=0x%04x)", arp_len, ethertype);
-                    void* packet = Malloc(arp_len);
-                    if (packet) {
-                        memcpy(packet, arp_buffer, arp_len);
-                        *data = packet;
-                        return (UINT)arp_len;
-                    }
-                }
-            }
-        }
-    }
-#endif // TARGET_OS_IOS
-    
     // DHCP state machine: Send Gratuitous ARP first (IMMEDIATELY on iOS - no delay)
     UINT64 now = Tick64();
     
@@ -641,18 +650,15 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
         }
     }
     
-    // **SYNCHRONOUS TUN READ** (like C adapter)
+    // **SYNCHRONOUS TUN READ** (macOS/Linux only - iOS uses queue above)
     // Read directly from TUN device when session polls - no async threads!
     // This ensures packets flow through SoftEther's session management properly.
     
+#ifndef UNIX_IOS
+    // **macOS/Linux path**: Read from TUN device
     uint8_t temp_buf[2048];
     ssize_t bytes_read = -1;
     
-#ifdef UNIX_IOS
-    // iOS: No TUN device - return 0 (packets go through ios_adapter_get_outgoing_packet in vpn_bridge_read_packet)
-    return 0;
-#else
-    // **macOS/Linux path**: Read from TUN device
     if (ctx->zig_adapter) {
         bytes_read = zig_adapter_read_sync(ctx->zig_adapter, temp_buf, sizeof(temp_buf));
         
@@ -660,38 +666,41 @@ static UINT ZigAdapterGetNextPacket(SESSION* s, void** data) {
             // No packet available from TUN (this is normal - polled frequently)
             return 0;
         }
+        
+        // Process packet
+        uint64_t packet_len = (uint64_t)bytes_read;
+        uint8_t* packet_data = temp_buf;
+        
+        // Log milestone packets only (every 20K)
+        static uint64_t macos_packet_count = 0;
+        macos_packet_count++;
+        if (macos_packet_count % 20000 == 0) {
+            printf("[ZigAdapterGetNextPacket] macOS Packet #%llu, len=%llu\n", macos_packet_count, packet_len);
+        }
+        
+        if (packet_len == 0 || packet_len > 2048) {
+            printf("[ZigAdapterGetNextPacket] Invalid packet length %llu, dropping\n", packet_len);
+            return 0;
+        }
+        
+        // Allocate buffer for packet
+        void* packet_copy = Malloc((UINT)packet_len);
+        if (!packet_copy) {
+            return 0;
+        }
+        
+        // Copy packet data
+        Copy(packet_copy, packet_data, (UINT)packet_len);
+        
+        *data = packet_copy;
+        return (UINT)packet_len;
     } else {
         return 0;  // No adapter available
     }
+#else
+    // iOS: Packets already handled above via ios_adapter_dequeue_incoming_packet()
+    return 0;  // No more packets this iteration
 #endif
-    
-    uint64_t packet_len = (uint64_t)bytes_read;
-    uint8_t* packet_data = temp_buf;
-    
-    get_count++;
-    
-    // PHASE 1.3: Log milestone packets only (every 20K instead of 10K)
-    if (get_count % 20000 == 0) {
-        printf("[ZigAdapterGetNextPacket] Packet #%llu, len=%llu\n", get_count, packet_len);
-    }
-    
-    if (packet_len == 0 || packet_len > 2048) {
-        printf("[ZigAdapterGetNextPacket] Invalid packet length %llu, dropping\n", packet_len);
-        return 0;
-    }
-    
-    // Allocate buffer for packet
-    void* packet_copy = Malloc((UINT)packet_len);
-    if (!packet_copy) {
-        return 0;
-    }
-    
-    // Copy packet data
-    Copy(packet_copy, packet_data, (UINT)packet_len);
-    
-    *data = packet_copy;
-    
-    return (UINT)packet_len;
 }
 
 // Put packet for transmission
@@ -720,94 +729,60 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
     packet_count++;
     LOG_INFO("ZigPutPacket", "📦 PutPacket #%llu: size=%u, dhcp_state=%d", packet_count, size, ctx->dhcp_state);
     
-    // Check for DHCP OFFER packet (only when expecting one)
-    if (ctx->dhcp_state == DHCP_STATE_DISCOVER_SENT && size >= 282) { // Min DHCP packet size
-        LOG_INFO("ZigPutPacket", "✅ State check passed! Checking packet headers for DHCP OFFER (state=DISCOVER_SENT, size=%u)", size);
-        // Check if this is a DHCP packet: UDP port 68 (BOOTP client)
-        if (size >= 42 && data != NULL) {
-            const UCHAR* pkt = (const UCHAR*)data;
-            LOG_INFO("ZigPutPacket", "   EtherType: 0x%02X%02X (expect 0x0800=IPv4)", pkt[12], pkt[13]);
-            // Check Ethernet type (0x0800 = IPv4) at offset 12-13
-            if (pkt[12] == 0x08 && pkt[13] == 0x00) {
-                LOG_INFO("ZigPutPacket", "   IP Protocol: 0x%02X (expect 0x11=UDP)", pkt[23]);
-                // Check IP protocol (17 = UDP) at offset 23
-                if (pkt[23] == 17) {
-                    // Check UDP dest port (68 = BOOTP client) at offset 36-37
-                    UINT dest_port = ((UINT)pkt[36] << 8) | pkt[37];
-                    LOG_INFO("ZigPutPacket", "   UDP dest port: %u (expect 68=BOOTP client)", dest_port);
-                    if (dest_port == 68) {
-                        // This is a DHCP response! Parse it
-                        LOG_INFO("ZigPutPacket", "🔍 DHCP packet detected! Calling ParseDhcpPacket (size=%u)...", size);
-                        UINT32 offered_ip = 0, gw = 0, mask = 0, server_ip = 0;
-                        UCHAR msg_type = 0;
-                        if (ParseDhcpPacket(pkt, size, &offered_ip, &gw, &mask, &msg_type, &server_ip)) {
-                            LOG_INFO("ZigPutPacket", "✅ ParseDhcpPacket SUCCESS! msg_type=%u IP=%u.%u.%u.%u",
-                                     msg_type, (offered_ip >> 24) & 0xFF, (offered_ip >> 16) & 0xFF,
-                                     (offered_ip >> 8) & 0xFF, offered_ip & 0xFF);
-                            LOG_INFO("ZigPutPacket", "✅ ParseDhcpPacket SUCCESS! msg_type=%u IP=%u.%u.%u.%u",
-                                     msg_type, (offered_ip >> 24) & 0xFF, (offered_ip >> 16) & 0xFF,
-                                     (offered_ip >> 8) & 0xFF, offered_ip & 0xFF);
-                            // Only process OFFER (type=2), not ACK (type=5)
-                            if (msg_type == 2) {
-                                LOG_INFO("ZigPutPacket", "🎉 Processing DHCP OFFER! Updating state...");
-                                ctx->offered_ip = offered_ip;
-                                ctx->offered_gw = gw;
-                                ctx->offered_mask = mask;
-                                ctx->dhcp_server_ip = server_ip;
-                                ctx->dhcp_state = DHCP_STATE_OFFER_RECEIVED;
-                                ctx->last_dhcp_send_time = Tick64();
-                                LOG_INFO("ZigPutPacket", "✅ DHCP OFFER processed! IP=%u.%u.%u.%u GW=%u.%u.%u.%u state=%d",
-                                       (offered_ip >> 24) & 0xFF, (offered_ip >> 16) & 0xFF,
-                                       (offered_ip >> 8) & 0xFF, offered_ip & 0xFF,
-                                       (gw >> 24) & 0xFF, (gw >> 16) & 0xFF,
-                                       (gw >> 8) & 0xFF, gw & 0xFF, ctx->dhcp_state);
-                                // Tell Zig translator the gateway IP so it can learn MAC from ARP replies
-                                // Pass the IP as-is (host byte order) - Zig will read ARP packets with same byte order
-                                if (ctx->zig_adapter) {
-                                    zig_adapter_set_gateway(ctx->zig_adapter, gw);
-                                    LOG_INFO("ZigPutPacket", "📍 Set gateway in translator: %u.%u.%u.%u",
-                                           (gw >> 24) & 0xFF, (gw >> 16) & 0xFF, (gw >> 8) & 0xFF, gw & 0xFF);
-                                }
-                            } else {
-                                LOG_INFO("ZigPutPacket", "⚠️  Ignoring DHCP msg_type=%u (not OFFER)", msg_type);
-                            }
-                        } else {
-                            LOG_ERROR("ZigPutPacket", "❌ ParseDhcpPacket FAILED for size=%u", size);
+    // 🔥 CRITICAL FIX: Check for DHCP OFFER/ACK packets REGARDLESS of state
+    // This ensures we don't miss DHCP responses if state gets corrupted/premature
+    // iOS sometimes caches state from previous connections, causing state to jump to 5
+    if (size >= 282 && size <= 600 && data != NULL) { // DHCP packet size range
+        const UCHAR* pkt = (const UCHAR*)data;
+        // Quick header checks: IPv4 (0x0800) + UDP (17) + DHCP port (68)
+        if (size >= 42 && pkt[12] == 0x08 && pkt[13] == 0x00 && pkt[23] == 17) {
+            UINT dest_port = ((UINT)pkt[36] << 8) | pkt[37];
+            if (dest_port == 68) {
+                // This is DEFINITELY a DHCP packet! Parse it regardless of current state
+                LOG_INFO("ZigPutPacket", "🔍 [DHCP DETECT] Packet to UDP:68 detected! size=%u dhcp_state=%d", size, ctx->dhcp_state);
+                UINT32 dhcp_ip = 0, gw = 0, mask = 0, server_ip = 0;
+                UCHAR msg_type = 0;
+                if (ParseDhcpPacket(pkt, size, &dhcp_ip, &gw, &mask, &msg_type, &server_ip)) {
+                    LOG_INFO("ZigPutPacket", "✅ [DHCP DETECT] Parsed: msg_type=%u IP=%u.%u.%u.%u",
+                             msg_type, (dhcp_ip >> 24) & 0xFF, (dhcp_ip >> 16) & 0xFF,
+                             (dhcp_ip >> 8) & 0xFF, dhcp_ip & 0xFF);
+                    
+                    // Process OFFER (type=2) if we're waiting for it
+                    if (msg_type == 2 && ctx->dhcp_state == DHCP_STATE_DISCOVER_SENT) {
+                        LOG_INFO("ZigPutPacket", "🎉 Processing DHCP OFFER! Updating state...");
+                        ctx->offered_ip = dhcp_ip;
+                        ctx->offered_gw = gw;
+                        ctx->offered_mask = mask;
+                        ctx->dhcp_server_ip = server_ip;
+                        ctx->dhcp_state = DHCP_STATE_OFFER_RECEIVED;
+                        ctx->last_dhcp_send_time = Tick64();
+                        LOG_INFO("ZigPutPacket", "✅ DHCP OFFER processed! IP=%u.%u.%u.%u GW=%u.%u.%u.%u state=%d",
+                               (dhcp_ip >> 24) & 0xFF, (dhcp_ip >> 16) & 0xFF,
+                               (dhcp_ip >> 8) & 0xFF, dhcp_ip & 0xFF,
+                               (gw >> 24) & 0xFF, (gw >> 16) & 0xFF,
+                               (gw >> 8) & 0xFF, gw & 0xFF, ctx->dhcp_state);
+                        if (ctx->zig_adapter) {
+                            zig_adapter_set_gateway(ctx->zig_adapter, gw);
                         }
                     }
-                }
-            }
-        }
-    } else if (size >= 282) {
-        LOG_INFO("ZigPutPacket", "⏭️  Skipping OFFER check: dhcp_state=%d (need %d=DISCOVER_SENT), size=%u", 
-                 ctx->dhcp_state, DHCP_STATE_DISCOVER_SENT, size);
-    }
-    
-    // Check for DHCP ACK packet
-    if (ctx->dhcp_state == DHCP_STATE_REQUEST_SENT && size >= 282) {
-        LOG_INFO("ZigPutPacket", "✅ State check passed! Checking packet headers for DHCP ACK (state=REQUEST_SENT, size=%u)", size);
-        if (size >= 42 && data != NULL) {
-            const UCHAR* pkt = (const UCHAR*)data;
-            LOG_INFO("ZigPutPacket", "🔍 ACK check: pkt[12]=0x%02x pkt[13]=0x%02x pkt[23]=0x%02x (expect: 0x08 0x00 0x11)", 
-                     pkt[12], pkt[13], pkt[23]);
-            if (pkt[12] == 0x08 && pkt[13] == 0x00 && pkt[23] == 17) {
-                UINT dest_port = ((UINT)pkt[36] << 8) | pkt[37];
-                LOG_INFO("ZigPutPacket", "🔍 UDP dest_port=%u (expect 68)", dest_port);
-                if (dest_port == 68) {
-                    // Parse DHCP packet and check message type
-                    LOG_INFO("ZigPutPacket", "🔍 DHCP packet detected (UDP port 68), size=%u [waiting for ACK]", size);
-                    UINT32 acked_ip = 0, gw = 0, mask = 0, server_ip = 0;
-                    UCHAR msg_type = 0;
-                    if (ParseDhcpPacket(pkt, size, &acked_ip, &gw, &mask, &msg_type, &server_ip)) {
-                        LOG_INFO("ZigPutPacket", "🔍 Parsed: IP=%u.%u.%u.%u, msg_type=%u (5=ACK expected)",
-                               (acked_ip >> 24) & 0xFF, (acked_ip >> 16) & 0xFF,
-                               (acked_ip >> 8) & 0xFF, acked_ip & 0xFF, msg_type);
-                        if (msg_type == 5) {
-                            // DHCP ACK (type=5) received! Configure interface
-                            ctx->our_ip = acked_ip;
-                            ctx->offered_gw = gw;  // Update gateway from ACK
-                            ctx->dhcp_state = DHCP_STATE_CONFIGURED;
-                            LOG_INFO("ZigPutPacket", "✅ DHCP ACK received! Configuring interface...");
+                    // Process ACK (type=5) - THE CRITICAL MISSING PIECE!
+                    else if (msg_type == 5) {
+                        // DHCP ACK received! This finalizes the configuration
+                        LOG_INFO("ZigPutPacket", "🎉🎉🎉 DHCP ACK DETECTED! IP=%u.%u.%u.%u GW=%u.%u.%u.%u",
+                               (dhcp_ip >> 24) & 0xFF, (dhcp_ip >> 16) & 0xFF,
+                               (dhcp_ip >> 8) & 0xFF, dhcp_ip & 0xFF,
+                               (gw >> 24) & 0xFF, (gw >> 16) & 0xFF,
+                               (gw >> 8) & 0xFF, gw & 0xFF);
+                        
+                        ctx->our_ip = dhcp_ip;
+                        ctx->offered_gw = gw;
+                        ctx->offered_mask = mask;
+                        ctx->dhcp_server_ip = server_ip;
+                        ctx->dhcp_state = DHCP_STATE_CONFIGURED;
+                        
+                        if (ctx->zig_adapter) {
+                            zig_adapter_set_gateway(ctx->zig_adapter, gw);
+                        }
                             
 #ifdef UNIX_IOS
                             // iOS: Update Zig iOS adapter's DHCP state so mobile FFI can retrieve it
@@ -856,6 +831,60 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                             // The need_gateway_arp flag was set via ios_adapter_set_need_gateway_arp()
                             
                             LOG_INFO("ZigPutPacket", "✅ DHCP configuration complete for iOS");
+                            
+                            // 🚀 FIRE NETWORK CALLBACKS - DHCP is complete!
+                            // Prepare NetworkInfo structure (shared for both paths)
+                            NetworkInfo info;
+                            
+                            // Convert network byte order to byte array
+                            info.ip_address[0] = (ctx->our_ip >> 24) & 0xFF;
+                            info.ip_address[1] = (ctx->our_ip >> 16) & 0xFF;
+                            info.ip_address[2] = (ctx->our_ip >> 8) & 0xFF;
+                            info.ip_address[3] = ctx->our_ip & 0xFF;
+                            
+                            info.gateway[0] = (ctx->offered_gw >> 24) & 0xFF;
+                            info.gateway[1] = (ctx->offered_gw >> 16) & 0xFF;
+                            info.gateway[2] = (ctx->offered_gw >> 8) & 0xFF;
+                            info.gateway[3] = ctx->offered_gw & 0xFF;
+                            
+                            info.netmask[0] = (ctx->offered_mask >> 24) & 0xFF;
+                            info.netmask[1] = (ctx->offered_mask >> 16) & 0xFF;
+                            info.netmask[2] = (ctx->offered_mask >> 8) & 0xFF;
+                            info.netmask[3] = ctx->offered_mask & 0xFF;
+                            
+                            // Default DNS servers (8.8.8.8 and 8.8.4.4)
+                            info.dns_servers[0][0] = 8; info.dns_servers[0][1] = 8;
+                            info.dns_servers[0][2] = 8; info.dns_servers[0][3] = 8;
+                            info.dns_servers[1][0] = 8; info.dns_servers[1][1] = 8;
+                            info.dns_servers[1][2] = 4; info.dns_servers[1][3] = 4;
+                            memset(&info.dns_servers[2], 0, sizeof(info.dns_servers[2]) * 2);
+                            
+                            info.mtu = 1500;
+                            
+                            LOG_INFO("ZIG_ADAPTER", "🔔🔔🔔 FIRING CALLBACKS - DHCP ACK received!");
+                            LOG_INFO("ZIG_ADAPTER", "    IP=%u.%u.%u.%u GW=%u.%u.%u.%u Mask=%u.%u.%u.%u",
+                                   info.ip_address[0], info.ip_address[1], info.ip_address[2], info.ip_address[3],
+                                   info.gateway[0], info.gateway[1], info.gateway[2], info.gateway[3],
+                                   info.netmask[0], info.netmask[1], info.netmask[2], info.netmask[3]);
+                            
+                            // 🚀 Fire NATIVE callback (direct ObjC, zero FFI overhead!)
+                            // FFI fallback path removed - native callback is required
+                            if (g_zig_native_callback) {
+                                LOG_INFO("ZIG_ADAPTER", "🚀 [NATIVE] Firing direct ObjC callback: %p (user_data=%p)", 
+                                       g_zig_native_callback, g_zig_native_callback_user_data);
+                                g_zig_native_callback(&info, g_zig_native_callback_user_data);
+                                LOG_INFO("ZIG_ADAPTER", "✅ [NATIVE] Callback completed - ZERO FFI!");
+                            } else {
+                                LOG_ERROR("ZIG_ADAPTER", "❌ DHCP ACK received but NO native callback registered!");
+                            }
+                            
+                            // DEPRECATED FFI fallback (commented out - use native callback only):
+                            // } else if (g_zig_network_callback) {
+                            //     LOG_INFO("ZIG_ADAPTER", "📦 [FFI PATH] Firing FFI callback: %p (user_data=%p)", 
+                            //            g_zig_network_callback, g_zig_network_callback_user_data);
+                            //     g_zig_network_callback(&info, g_zig_network_callback_user_data);
+                            //     LOG_INFO("ZIG_ADAPTER", "✅ [FFI PATH] FFI callback completed");
+                            // }
 #else
                             // Get device name
                             uint8_t dev_name_buf[64];
@@ -902,15 +931,15 @@ static bool ZigAdapterPutPacket(SESSION* s, void* data, UINT size) {
                                 LOG_ERROR("ZigPutPacket", "❌ Failed to get device name (len=%llu)", dev_name_len);
                             }
 #endif
-                        } else {
-                            LOG_INFO("ZigPutPacket", "⚠️  Ignoring DHCP packet with msg_type=%u (not ACK)", msg_type);
-                        }
-                    } else {
-                        LOG_ERROR("ZigPutPacket", "⚠️  Failed to parse DHCP packet for ACK");
+                    }  // Close DHCP ACK (msg_type==5) block
+                    else {
+                        LOG_INFO("ZigPutPacket", "⚠️  Ignoring DHCP packet with msg_type=%u (not ACK)", msg_type);
                     }
                 } else {
-                    LOG_INFO("ZigPutPacket", "❌ UDP dest_port=%u, not DHCP client port 68", dest_port);
+                    LOG_ERROR("ZigPutPacket", "⚠️  Failed to parse DHCP packet for ACK");
                 }
+            } else {
+                LOG_INFO("ZigPutPacket", "❌ UDP dest_port=%u, not DHCP client port 68", dest_port);
             }
         }
     }

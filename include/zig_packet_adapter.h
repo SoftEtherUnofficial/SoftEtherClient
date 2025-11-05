@@ -64,6 +64,31 @@ void zig_adapter_set_gateway_mac(ZigPacketAdapter *adapter, const uint8_t mac[6]
 // VPN routing configuration (ZIGSE-80: replaces C bridge routing hack)
 bool zig_adapter_configure_routing(ZigPacketAdapter *adapter, uint32_t vpn_gateway, uint32_t vpn_server);
 
+// ============================================================================
+// DHCP Network Configuration Callback (Direct Native Bridge - Zero FFI!)
+// ============================================================================
+
+// Network info structure (matches MobileNetworkInfo from ffi.h)
+typedef struct {
+    uint8_t ip_address[4];
+    uint8_t gateway[4];
+    uint8_t netmask[4];
+    uint8_t dns_servers[4][4];
+    uint16_t mtu;
+} ZigNetworkInfo;
+
+// Network callback function pointer
+typedef void (*ZigNetworkCallback)(const ZigNetworkInfo* info, void* user_data);
+
+/**
+ * Register NATIVE network callback (Direct ObjC → C, bypasses FFI layer!)
+ * Call this from VPNClientBridge.m to receive DHCP notifications with ZERO FFI overhead
+ * 
+ * @param callback Function to call when DHCP completes (NULL to unregister)
+ * @param user_data Opaque pointer passed back to callback (typically 'self')
+ */
+void zig_adapter_set_native_network_callback(ZigNetworkCallback callback, void* user_data);
+
 // Synchronous I/O (for non-async operation)
 ssize_t zig_adapter_read_sync(ZigPacketAdapter *adapter, uint8_t *buffer, size_t buffer_len);
 ssize_t zig_adapter_write_sync(ZigPacketAdapter *adapter);

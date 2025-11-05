@@ -197,7 +197,7 @@ typedef struct {
 
 typedef struct {
     PacketBuffer buffers[MAX_PACKET_QUEUE_SIZE];
-    pthread_spinlock_t lock;
+    pthread_mutex_t lock;  // iOS doesn't support pthread_spinlock_t
     uint32_t total_buffers;
     uint32_t buffers_in_use;
     uint64_t acquire_count;
@@ -209,7 +209,7 @@ static PacketPool* packet_pool_create(void) {
     PacketPool* pool = (PacketPool*)calloc(1, sizeof(PacketPool));
     if (!pool) return NULL;
     
-    pthread_spin_init(&pool->lock, PTHREAD_PROCESS_PRIVATE);
+    pthread_mutex_init(&pool->lock, NULL);
     pool->total_buffers = MAX_PACKET_QUEUE_SIZE;
     
     // All buffers start as available (in_use = false)
@@ -222,7 +222,7 @@ static PacketPool* packet_pool_create(void) {
 
 static void packet_pool_destroy(PacketPool* pool) {
     if (!pool) return;
-    pthread_spin_destroy(&pool->lock);
+    pthread_mutex_destroy(&pool->lock);
     free(pool);
 }
 
@@ -230,7 +230,7 @@ static void packet_pool_destroy(PacketPool* pool) {
 static PacketBuffer* packet_pool_acquire(PacketPool* pool) {
     if (!pool) return NULL;
     
-    pthread_spin_lock(&pool->lock);
+    pthread_mutex_lock(&pool->lock);
     
     // Find first available buffer
     for (uint32_t i = 0; i < pool->total_buffers; i++) {
@@ -238,14 +238,14 @@ static PacketBuffer* packet_pool_acquire(PacketPool* pool) {
             pool->buffers[i].in_use = true;
             pool->buffers_in_use++;
             pool->acquire_count++;
-            pthread_spin_unlock(&pool->lock);
+            pthread_mutex_unlock(&pool->lock);
             return &pool->buffers[i];
         }
     }
     
     // No buffers available
     pool->acquire_failed++;
-    pthread_spin_unlock(&pool->lock);
+    pthread_mutex_unlock(&pool->lock);
     return NULL;
 }
 
@@ -253,7 +253,7 @@ static PacketBuffer* packet_pool_acquire(PacketPool* pool) {
 static void packet_pool_release(PacketPool* pool, PacketBuffer* buf) {
     if (!pool || !buf) return;
     
-    pthread_spin_lock(&pool->lock);
+    pthread_mutex_lock(&pool->lock);
     
     // Validate buffer is from this pool
     if (buf >= &pool->buffers[0] && buf < &pool->buffers[pool->total_buffers]) {
@@ -262,7 +262,7 @@ static void packet_pool_release(PacketPool* pool, PacketBuffer* buf) {
         pool->release_count++;
     }
     
-    pthread_spin_unlock(&pool->lock);
+    pthread_mutex_unlock(&pool->lock);
 }
 
 // ============================================================================
@@ -336,6 +336,34 @@ typedef struct {
 } IOS_ADAPTER_CONTEXT;
 
 static IOS_ADAPTER_CONTEXT* global_ios_adapter_ctx = NULL;
+
+// ============================================================================
+// Global Network Callback (FFI Integration)
+// ============================================================================
+
+// Global callback for network configuration (set by FFI layer)
+typedef struct {
+    uint8_t ip_address[4];
+    uint8_t gateway[4];
+    uint8_t netmask[4];
+    uint8_t dns_servers[4][4];
+    uint16_t mtu;
+} NetworkInfo;
+
+typedef void (*NetworkConfiguredCallback)(const NetworkInfo* info, void* user_data);
+
+static NetworkConfiguredCallback global_network_callback = NULL;
+static void* global_network_callback_user_data = NULL;
+
+/**
+ * Register network configuration callback (called by FFI layer)
+ * This callback will be invoked when DHCP completes
+ */
+void ios_adapter_set_network_callback(NetworkConfiguredCallback callback, void* user_data) {
+    global_network_callback = callback;
+    global_network_callback_user_data = user_data;
+    LOG_INFO("IOS_ADAPTER", "🔔 Network callback registered: %p (user_data=%p)", callback, user_data);
+}
 
 // ============================================================================
 // DHCP Packet Parsing
@@ -474,6 +502,56 @@ static bool parse_dhcp_packet(const uint8_t* data, uint32_t length, DHCPState* d
             dhcp->valid = false;  // Not valid until we get ACK
         } else if (msg_type == DHCP_ACK) {
             dhcp->valid = true;  // ACK confirms configuration
+            
+            // 🚀 FIRE NETWORK CALLBACK - DHCP is complete!
+            if (global_network_callback) {
+                NetworkInfo info;
+                
+                // Convert network byte order (big-endian uint32_t) to byte array
+                info.ip_address[0] = (your_ip >> 24) & 0xFF;
+                info.ip_address[1] = (your_ip >> 16) & 0xFF;
+                info.ip_address[2] = (your_ip >> 8) & 0xFF;
+                info.ip_address[3] = your_ip & 0xFF;
+                
+                info.gateway[0] = (gateway >> 24) & 0xFF;
+                info.gateway[1] = (gateway >> 16) & 0xFF;
+                info.gateway[2] = (gateway >> 8) & 0xFF;
+                info.gateway[3] = gateway & 0xFF;
+                
+                info.netmask[0] = (subnet_mask >> 24) & 0xFF;
+                info.netmask[1] = (subnet_mask >> 16) & 0xFF;
+                info.netmask[2] = (subnet_mask >> 8) & 0xFF;
+                info.netmask[3] = subnet_mask & 0xFF;
+                
+                // DNS servers
+                info.dns_servers[0][0] = (dns1 >> 24) & 0xFF;
+                info.dns_servers[0][1] = (dns1 >> 16) & 0xFF;
+                info.dns_servers[0][2] = (dns1 >> 8) & 0xFF;
+                info.dns_servers[0][3] = dns1 & 0xFF;
+                
+                info.dns_servers[1][0] = (dns2 >> 24) & 0xFF;
+                info.dns_servers[1][1] = (dns2 >> 16) & 0xFF;
+                info.dns_servers[1][2] = (dns2 >> 8) & 0xFF;
+                info.dns_servers[1][3] = dns2 & 0xFF;
+                
+                // Clear other DNS slots
+                memset(&info.dns_servers[2], 0, sizeof(info.dns_servers[2]) * 2);
+                
+                info.mtu = 1500;
+                
+                LOG_INFO("IOS_ADAPTER", "🔔🔔🔔 FIRING NETWORK CALLBACK - DHCP ACK received!");
+                LOG_INFO("IOS_ADAPTER", "    Callback: %p, User data: %p", global_network_callback, global_network_callback_user_data);
+                LOG_INFO("IOS_ADAPTER", "    IP=%u.%u.%u.%u GW=%u.%u.%u.%u Mask=%u.%u.%u.%u",
+                       info.ip_address[0], info.ip_address[1], info.ip_address[2], info.ip_address[3],
+                       info.gateway[0], info.gateway[1], info.gateway[2], info.gateway[3],
+                       info.netmask[0], info.netmask[1], info.netmask[2], info.netmask[3]);
+                
+                global_network_callback(&info, global_network_callback_user_data);
+                
+                LOG_INFO("IOS_ADAPTER", "✅ Network callback completed successfully");
+            } else {
+                LOG_ERROR("IOS_ADAPTER", "❌ DHCP ACK received but NO callback registered!");
+            }
         }
         
         LOG_INFO("IOS_ADAPTER", "📡 DHCP %s received: IP=%u.%u.%u.%u, GW=%u.%u.%u.%u, Mask=%u.%u.%u.%u",
@@ -665,6 +743,31 @@ int ios_adapter_inject_packet(const uint8_t* data, uint32_t length) {
 }
 
 /**
+ * Dequeue incoming packet from iOS (iOS → VPN server direction)
+ * Called synchronously by SessionMain's GetNextPacket polling loop
+ * This allows SoftEther's internal flow control to work correctly
+ * Returns: Packet length (>0), 0 if no packet available, -1 on error
+ */
+int ios_adapter_dequeue_incoming_packet(uint8_t* buffer, uint32_t buffer_size) {
+    if (!global_ios_adapter_ctx || !global_ios_adapter_ctx->initialized) {
+        return -1;
+    }
+    
+    if (!buffer || buffer_size < IOS_MAX_PACKET_SIZE) {
+        return -1;
+    }
+    
+    IOS_ADAPTER_CONTEXT* ctx = global_ios_adapter_ctx;
+    
+    // Dequeue packet (non-blocking) - SessionMain will poll repeatedly
+    int length = packet_queue_dequeue(ctx->incoming_queue, buffer, buffer_size, 0);
+    
+    // No stats update here - already counted in inject_packet
+    
+    return length;
+}
+
+/**
  * Retrieve outgoing packet from SoftEther to iOS (VPN server → iOS direction)
  * Called from Swift PacketTunnelProvider in polling loop
  * Returns: Packet length (>0), 0 if no packet available, -1 on error
@@ -821,6 +924,7 @@ static UINT IosAdapterGetNextPacket(SESSION *s, void **data) {
     
     // Allocate buffer for dequeue
     uint8_t buffer[IOS_MAX_PACKET_SIZE];
+    uint32_t length = 0;  // Packet length (set by dequeue operations)
     
     // ===================================================================
     // DHCP STATE MACHINE: Generate DHCP REQUEST when OFFER received
@@ -1011,13 +1115,13 @@ static UINT IosAdapterGetNextPacket(SESSION *s, void **data) {
         }
         return 0;
     }
-    
+
 process_incoming_packet:
     // Got a packet!
+    // C99 requires all declarations before labels
+    {
     static uint64_t get_count = 0;
-    get_count++;
-    
-    // ===================================================================
+    get_count++;    // ===================================================================
     // CRITICAL: Detect packet type (L2 Ethernet vs L3 IP)
     // - VirtualTap ARP replies are FULL ETHERNET FRAMES (60 bytes, starts with MAC address)
     // - iOS tunnel packets are IP PACKETS (starts with 0x4X for IPv4)
@@ -1119,6 +1223,7 @@ process_incoming_packet:
     
     LOG_INFO("IOS_ADAPTER", "GetNextPacket: ✅ Returning Ethernet frame #%llu (size=%d, ptr=%p)", get_count, eth_len, packet);
     return eth_len;
+    } // End of process_incoming_packet block
 }
 
 /**

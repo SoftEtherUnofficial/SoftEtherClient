@@ -418,6 +418,16 @@ int mobile_vpn_get_network_info(MobileVpnHandle handle, MobileNetworkInfo* info)
     // MTU (use standard 1500 or get from DHCP if available)
     info->mtu = 1500;
     
+    // 🚀 NEW: Fire network callback when DHCP config is ready (eliminates polling!)
+    if (ctx->network_callback) {
+        LOG_INFO("MOBILE_FFI", "🔔 Firing network callback - DHCP config ready!");
+        ctx->network_callback(info, ctx->network_callback_context);
+    }
+    
+    // Cache DHCP info for subsequent calls
+    ctx->dhcp_info = bridge_dhcp;
+    
+    LOG_INFO("MOBILE_FFI", "mobile_vpn_get_network_info: SUCCESS");
     return 0;
 }
 
@@ -474,12 +484,40 @@ void mobile_vpn_set_stats_callback(MobileVpnHandle handle, MobileStatsCallback c
     ctx->stats_callback_context = context;
 }
 
-// Set network callback (called when DHCP completes and network config is available)
+// DEPRECATED: FFI callback registration - no longer used
+// Native callback path (zig_adapter_set_native_network_callback) is preferred
+// Left here for reference only
+
+// Forward declare adapter callback registrations
+// extern void zig_adapter_set_network_callback(void (*callback)(const void* info, void* user_data), void* user_data);
+// Note: ios_adapter is Zig-based, doesn't need separate registration (uses zig_adapter callbacks)
+
+// Wrapper callback that converts adapter NetworkInfo to MobileNetworkInfo
+// static void adapter_network_callback_wrapper(const void* adapter_info, void* user_data) {
+//     MobileVpnContextC* ctx = (MobileVpnContextC*)user_data;
+//     
+//     // adapter_info is NetworkInfo from adapter (same structure as MobileNetworkInfo)
+//     // Just pass it directly to the registered callback
+//     if (ctx && ctx->network_callback) {
+//         LOG_INFO("MOBILE_FFI", "🔔 Adapter callback → FFI callback → Swift");
+//         ctx->network_callback((const MobileNetworkInfo*)adapter_info, ctx->network_callback_context);
+//     }
+// }
+
+// DEPRECATED: Set network callback (called when DHCP completes and network config is available)
+// This FFI path is no longer used. Use VPNClientBridge with native callbacks instead.
 void mobile_vpn_set_network_callback(MobileVpnHandle handle, MobileNetworkCallback callback, void* context) {
     if (!handle) return;
-    MobileVpnContextC* ctx = (MobileVpnContextC*)handle;
-    ctx->network_callback = callback;
-    ctx->network_callback_context = context;
+    // MobileVpnContextC* ctx = (MobileVpnContextC*)handle;
+    // ctx->network_callback = callback;
+    // ctx->network_callback_context = context;
+    
+    LOG_INFO("MOBILE_FFI", "⚠️  DEPRECATED: mobile_vpn_set_network_callback called - use native callback path instead");
+    
+    // DEPRECATED: Register with Zig adapter (used on both iOS and desktop)
+    // Note: This goes through FFI layer. For zero-FFI path, use zig_adapter_set_native_network_callback() from ObjC
+    // zig_adapter_set_network_callback(adapter_network_callback_wrapper, ctx);
+    // LOG_INFO("MOBILE_FFI", "✅ Zig adapter callback chain registered (FFI path)");
 }
 
 // Get last error message
