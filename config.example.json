@@ -12,6 +12,7 @@
   "use_encrypt": true,
   "use_compress": true,
   "max_connection": 0,
+  "udp_acceleration": false,
   
   "ip_version": "auto",
   
@@ -40,6 +41,7 @@
     "Set password_hash to null to use password (not recommended)",
     "ip_version can be: auto, ipv4, ipv6, dual",
     "max_connection: 0 = server policy, 1-32 = force specific count",
+    "udp_acceleration: false = TCP-only (stable, default), true = UDP+TCP (experimental)",
     "max_reconnect_attempts: 0 = infinite retries",
     "",
     "MAC Address Options:",

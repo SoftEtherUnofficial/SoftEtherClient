@@ -410,6 +410,17 @@ int vpn_bridge_set_dns_servers(VpnBridgeClient* client, const char** dns_servers
  */
 int vpn_bridge_set_use_zig_adapter(VpnBridgeClient* client, int use_zig_adapter);
 
+/**
+ * Enable/disable UDP acceleration for the VPN connection.
+ * UDP acceleration is disabled by default for stability.
+ * Must be called before vpn_bridge_connect().
+ * 
+ * @param client           VPN client handle
+ * @param enable_udp_accel 1 to enable UDP acceleration, 0 to disable (recommended)
+ * @return VPN_BRIDGE_SUCCESS on success, error code on failure
+ */
+int vpn_bridge_set_udp_acceleration(VpnBridgeClient* client, int enable_udp_accel);
+
 /* ============================================
  * Reconnection Management
  * ============================================ */

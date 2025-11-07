@@ -87,6 +87,7 @@ struct VpnBridgeClient {
     
     // Adapter configuration
     int use_zig_adapter;                // 0=C adapter (legacy), 1=Zig adapter (default, better performance)
+    int udp_acceleration;               // 0=disabled (default, stable), 1=enabled (experimental)
     
     // State
     VpnBridgeStatus status;
@@ -231,6 +232,7 @@ VpnBridgeClient* vpn_bridge_create_client(void) {
     client->port = 443;
     client->max_connection = 1;  // Default to 1 connection
     client->use_zig_adapter = 1;  // Default to Zig adapter (better performance)
+    client->udp_acceleration = 0;  // Default: disabled (stability)
     
     // Initialize IP configuration (defaults)
     client->ip_version = VPN_IP_VERSION_AUTO;
@@ -620,8 +622,12 @@ int vpn_bridge_connect(VpnBridgeClient* client) {
     opt->NumRetry = 10;                  // Retry attempts
     opt->RetryInterval = 5;              // 5 seconds between retries
     opt->AdditionalConnectionInterval = 1;
-    opt->NoUdpAcceleration = true;       // CRITICAL: No UDP acceleration
+    opt->NoUdpAcceleration = !client->udp_acceleration;  // Configurable: NoUdpAcceleration is opposite of udp_acceleration
     opt->DisableQoS = true;              // Disable QoS features
+    
+    LOG_VPN_INFO("🔧 UDP Acceleration Config: client->udp_acceleration=%d, opt->NoUdpAcceleration=%d", 
+                 client->udp_acceleration, opt->NoUdpAcceleration);
+    
     opt->ConnectionDisconnectSpan = 0;   // Don't disconnect idle connections
     opt->NoRoutingTracking = true;       // Don't track routing changes
     
@@ -1484,6 +1490,23 @@ int vpn_bridge_set_use_zig_adapter(VpnBridgeClient* client, int use_zig_adapter)
     client->use_zig_adapter = use_zig_adapter ? 1 : 0;
     LOG_VPN_INFO("Packet adapter set to: %s\n", 
                  client->use_zig_adapter ? "Zig (experimental)" : "C (default)");
+    
+    return VPN_BRIDGE_SUCCESS;
+}
+
+int vpn_bridge_set_udp_acceleration(VpnBridgeClient* client, int enable_udp_accel) {
+    if (!client) {
+        return VPN_BRIDGE_ERROR_INVALID_PARAM;
+    }
+    
+    if (client->status != VPN_STATUS_DISCONNECTED) {
+        LOG_ERROR("VPN", "Cannot change UDP acceleration while connected");
+        return VPN_BRIDGE_ERROR_INVALID_STATE;
+    }
+    
+    client->udp_acceleration = enable_udp_accel ? 1 : 0;
+    LOG_VPN_INFO("UDP acceleration: %s\n", 
+                 client->udp_acceleration ? "ENABLED (UDP+TCP, experimental)" : "DISABLED (TCP-only, stable)");
     
     return VPN_BRIDGE_SUCCESS;
 }

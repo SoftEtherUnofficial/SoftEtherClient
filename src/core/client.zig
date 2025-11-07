@@ -109,6 +109,11 @@ pub const VpnClient = struct {
             _ = c.vpn_bridge_set_use_zig_adapter(client_handle, 1);
         }
 
+        // Configure UDP acceleration (disabled by default for stability)
+        const udp_accel_value: c_int = if (cfg.udp_acceleration) 1 else 0;
+        std.debug.print("[Zig] Setting UDP acceleration: cfg.udp_acceleration={}, passing value={}\n", .{ cfg.udp_acceleration, udp_accel_value });
+        _ = c.vpn_bridge_set_udp_acceleration(client_handle, udp_accel_value);
+
         // Configure static IP if provided
         if (cfg.static_ip) |sip| {
             if (sip.ipv4_address) |ipv4| {

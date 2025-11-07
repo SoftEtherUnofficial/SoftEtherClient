@@ -7180,11 +7180,12 @@ bool ClientUploadAuth(CONNECTION *c)
 	fflush(stdout);
 
 	// UDP acceleration function using flag
+	// FIXED: Respect NoUdpAcceleration setting - don't advertise UDP support if disabled
 	if (o->NoUdpAcceleration == false && c->Session->UdpAccel != NULL)
 	{
 		IP my_ip;
 
-		printf("[ClientUploadAuth] Adding UDP acceleration fields...\n");
+		printf("[ClientUploadAuth] UDP ACCELERATION ENABLED - Adding UDP acceleration fields...\n");
 		fflush(stdout);
 
 		Zero(&my_ip, sizeof(my_ip));
@@ -7215,6 +7216,12 @@ bool ClientUploadAuth(CONNECTION *c)
 		PackAddInt(p, "udp_acceleration_max_version", 2);
 		
 		printf("[ClientUploadAuth] UDP acceleration fields added\n");
+		fflush(stdout);
+	}
+	else
+	{
+		printf("[ClientUploadAuth] ⚠️  UDP ACCELERATION DISABLED (NoUdpAccel=%d or UdpAccel=NULL) - NOT advertising UDP support to server\n", 
+		       o->NoUdpAcceleration);
 		fflush(stdout);
 	}
 

@@ -99,6 +99,7 @@ pub const ConnectionConfig = struct {
     static_ip: ?StaticIpConfig = null,
     routing: RoutingConfig = .{}, // Routing configuration
     use_zig_adapter: bool = true, // Use Zig packet adapter (default, better performance)
+    udp_acceleration: bool = false, // Enable UDP acceleration (default: false for stability)
     performance: PerformanceConfig = .{}, // Performance tuning options
 
     /// Create a configuration builder
@@ -122,6 +123,7 @@ pub const ConfigBuilder = struct {
     ip_version: IpVersion = .auto,
     static_ip: ?StaticIpConfig = null,
     routing: RoutingConfig = .{}, // Routing configuration
+    udp_acceleration: bool = false, // Enable UDP acceleration (default: false for stability)
 
     /// Set VPN server address and port
     pub fn setServer(self: *ConfigBuilder, name: []const u8, port: u16) *ConfigBuilder {
@@ -199,6 +201,7 @@ pub const ConfigBuilder = struct {
             .ip_version = self.ip_version,
             .static_ip = self.static_ip,
             .routing = self.routing,
+            .udp_acceleration = self.udp_acceleration,
         };
     }
 };
@@ -248,6 +251,7 @@ pub const JsonConfig = struct {
     use_encrypt: ?bool = null,
     use_compress: ?bool = null,
     max_connection: ?u32 = null,
+    udp_acceleration: ?bool = null,
     ip_version: ?[]const u8 = null,
     static_ipv4: ?[]const u8 = null,
     static_ipv4_netmask: ?[]const u8 = null,
@@ -404,6 +408,7 @@ pub fn mergeConfigs(
     builder.use_encrypt = pickVal(bool, cli_config.use_encrypt, env_config.use_encrypt, file_config.use_encrypt, true);
     builder.use_compress = pickVal(bool, cli_config.use_compress, env_config.use_compress, file_config.use_compress, true);
     builder.max_connection = pickVal(u32, cli_config.max_connection, env_config.max_connection, file_config.max_connection, 0);
+    builder.udp_acceleration = pickVal(bool, cli_config.udp_acceleration, env_config.udp_acceleration, file_config.udp_acceleration, false);
 
     // IP version
     if (pickOpt([]const u8, cli_config.ip_version, env_config.ip_version, file_config.ip_version, null)) |ip_ver| {

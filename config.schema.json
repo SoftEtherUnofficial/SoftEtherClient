@@ -54,6 +54,11 @@
       "maximum": 32,
       "default": 0
     },
+    "udp_acceleration": {
+      "type": "boolean",
+      "description": "Enable UDP acceleration (R-UDP). When false (default), uses TCP-only mode for better stability. When true, enables UDP+TCP mode which may improve throughput but can be less stable depending on network conditions.",
+      "default": false
+    },
     "ip_version": {
       "type": "string",
       "description": "IP version preference",
