@@ -6,7 +6,7 @@
 	path = TapTun
 	url = https://github.com/SoftEtherUnofficial/TapTun.git
 	branch = master
-[submodule "VirtualTap"]
+[submodule "VirtualTapZig"]
 	path = VirtualTap
-	url = https://github.com/SoftEtherUnofficial/VirtualTap.git
+	url = https://github.com/SoftEtherUnofficial/VirtualTapZig.git
 	branch = master
