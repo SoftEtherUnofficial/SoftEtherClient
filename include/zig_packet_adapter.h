@@ -40,13 +40,13 @@ typedef struct {
 } ZigPacketBuffer;
 
 // Default configuration
-// ZIGSE-25: Optimized for high-throughput bidirectional traffic
+// ZIGSE-25: Optimized for high-throughput bidirectional traffic with burst handling
 static inline ZigAdapterConfig zig_adapter_default_config(void) {
     ZigAdapterConfig config = {
-        .recv_queue_size = 128,  // Balanced for downloads
-        .send_queue_size = 128,  // Balanced for uploads
-        .packet_pool_size = 256, // CRITICAL: Must be >= recv+send
-        .batch_size = 128,       // Match queue size for throughput
+        .recv_queue_size = 256,  // Increased for burst traffic
+        .send_queue_size = 256,  // Increased for burst traffic
+        .packet_pool_size = 512, // CRITICAL: Must be >= recv+send
+        .batch_size = 128,       // Match original batch size
         .device_name = "utun",
         .device_name_len = 4
     };

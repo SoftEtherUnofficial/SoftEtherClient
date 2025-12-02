@@ -41,12 +41,12 @@ fn logError(comptime fmt: []const u8, args: anytype) void {
 /// Packet adapter configuration
 pub const Config = struct {
     /// Buffer sizes (ZIGSE-25: Now configurable at runtime!)
-    /// Default: 128/128 slots (balanced for bidirectional traffic)
-    /// Memory per slot: ~2KB, so 128 slots = 256KB per queue
-    recv_queue_size: usize = 128, // Configurable receive buffer
-    send_queue_size: usize = 128, // Configurable send buffer (increased from 64)
-    packet_pool_size: usize = 256, // CRITICAL: Must be >= recv+send (was 32, causing pool exhaustion!)
-    batch_size: usize = 128, // Match queue size for better throughput (was 32)
+    /// Default: 256/256 slots (increased for better burst handling)
+    /// Memory per slot: ~2KB, so 256 slots = 512KB per queue
+    recv_queue_size: usize = 256, // Increased from 128 for burst traffic
+    send_queue_size: usize = 256, // Increased from 128 for burst traffic
+    packet_pool_size: usize = 512, // CRITICAL: Must be >= recv+send (increased from 256)
+    batch_size: usize = 128, // Match original for consistent behavior
 
     /// TUN device name
     device_name: []const u8 = "utun",
@@ -530,17 +530,19 @@ export fn zig_adapter_read_sync(adapter: *ZigPacketAdapter, buffer: [*]u8, buffe
         return 0; // Unknown IP version, skip packet
     }
 
-    // Dest MAC: Use gateway MAC if learned, otherwise broadcast (FF:FF:FF:FF:FF:FF)
-    // For inbound packets, dest should be our MAC, but we use gateway MAC for routing
-    if (adapter.tun_adapter.translator.gateway_mac) |gw_mac| {
-        @memcpy(buffer[0..6], &gw_mac);
-    } else {
-        // Broadcast MAC if gateway not learned yet
-        @memset(buffer[0..6], 0xFF);
-    }
+    // CRITICAL FIX: For packets FROM TUN (local machine sending):
+    // Dest MAC = Gateway MAC (where we're sending TO)
+    // Src MAC = Our MAC (where packet is FROM)
+    // For packets going TO VPN server, dest should be gateway/VPN server
+    @memcpy(buffer[0..6], &adapter.tun_adapter.translator.options.our_mac); // Dest: Our MAC (VPN client)
 
-    // Src MAC: Our MAC address (from translator options)
-    @memcpy(buffer[6..12], &adapter.tun_adapter.translator.options.our_mac); // EtherType (big-endian)
+    // Src MAC: Use gateway MAC if learned, otherwise our MAC
+    if (adapter.tun_adapter.translator.gateway_mac) |gw_mac| {
+        @memcpy(buffer[6..12], &gw_mac); // Src: Gateway MAC
+    } else {
+        // If gateway not learned, use our MAC as source
+        @memcpy(buffer[6..12], &adapter.tun_adapter.translator.options.our_mac);
+    } // EtherType (big-endian)
     buffer[12] = @intCast((ethertype >> 8) & 0xFF);
     buffer[13] = @intCast(ethertype & 0xFF);
 
@@ -555,7 +557,7 @@ export fn zig_adapter_read_sync(adapter: *ZigPacketAdapter, buffer: [*]u8, buffe
 /// Returns number of packets written
 export fn zig_adapter_write_sync(adapter: *ZigPacketAdapter) isize {
     var packets_written: isize = 0;
-    const max_batch = 128; // ZIGSE-25: Match queue size for better throughput (was 32)
+    const max_batch = 256; // ZIGSE-25: Increased to match queue size for complete draining
 
     var i: usize = 0;
     while (i < max_batch) : (i += 1) {
@@ -590,6 +592,7 @@ export fn zig_adapter_write_sync(adapter: *ZigPacketAdapter) isize {
         if (write_len > write_buf.len) {
             // Packet too large, free buffer and skip
             adapter.packet_pool.free(pkt.data);
+            _ = adapter.stats.write_errors.fetchAdd(1, .monotonic);
             continue;
         }
 
@@ -605,6 +608,7 @@ export fn zig_adapter_write_sync(adapter: *ZigPacketAdapter) isize {
             }
             // Other error, free buffer and continue
             adapter.packet_pool.free(pkt.data);
+            _ = adapter.stats.write_errors.fetchAdd(1, .monotonic);
             continue;
         };
 
@@ -613,6 +617,8 @@ export fn zig_adapter_write_sync(adapter: *ZigPacketAdapter) isize {
 
         if (bytes_written > 0) {
             packets_written += 1;
+            _ = adapter.stats.packets_written.fetchAdd(1, .monotonic);
+            _ = adapter.stats.bytes_written.fetchAdd(pkt.len, .monotonic);
         }
     }
     return packets_written;

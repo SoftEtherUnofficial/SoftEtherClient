@@ -275,8 +275,14 @@ pub fn build(b: *std.Build) void {
     // NOTE: All C source files are in src/bridge/, no dependency on SoftEtherVPN_Stable!
 
     // Link system OpenSSL libraries (all platforms use system SSL)
-    cli.linkSystemLibrary("ssl");
-    cli.linkSystemLibrary("crypto");
+    // On macOS, explicitly control the library path to avoid duplicate RPATH entries
+    if (target_os == .macos) {
+        cli.linkSystemLibrary2("ssl", .{ .use_pkg_config = .force });
+        cli.linkSystemLibrary2("crypto", .{ .use_pkg_config = .force });
+    } else {
+        cli.linkSystemLibrary("ssl");
+        cli.linkSystemLibrary("crypto");
+    }
 
     cli.addCSourceFiles(.{
         .files = c_sources,
@@ -422,8 +428,14 @@ pub fn build(b: *std.Build) void {
     bench.addIncludePath(b.path("src/bridge/Cedar"));
 
     // Link system OpenSSL libraries
-    bench.linkSystemLibrary("ssl");
-    bench.linkSystemLibrary("crypto");
+    // On macOS, explicitly control the library path to avoid duplicate RPATH entries
+    if (target_os == .macos) {
+        bench.linkSystemLibrary2("ssl", .{ .use_pkg_config = .force });
+        bench.linkSystemLibrary2("crypto", .{ .use_pkg_config = .force });
+    } else {
+        bench.linkSystemLibrary("ssl");
+        bench.linkSystemLibrary("crypto");
+    }
 
     bench.addCSourceFiles(.{
         .files = c_sources,
@@ -506,8 +518,14 @@ pub fn build(b: *std.Build) void {
     bench_crypto.addIncludePath(b.path("src/bridge/Mayaqua"));
 
     // Link system OpenSSL libraries
-    bench_crypto.linkSystemLibrary("ssl");
-    bench_crypto.linkSystemLibrary("crypto");
+    // On macOS, explicitly control the library path to avoid duplicate RPATH entries
+    if (target_os == .macos) {
+        bench_crypto.linkSystemLibrary2("ssl", .{ .use_pkg_config = .force });
+        bench_crypto.linkSystemLibrary2("crypto", .{ .use_pkg_config = .force });
+    } else {
+        bench_crypto.linkSystemLibrary("ssl");
+        bench_crypto.linkSystemLibrary("crypto");
+    }
 
     bench_crypto.linkLibC();
 
@@ -556,8 +574,14 @@ pub fn build(b: *std.Build) void {
     }
 
     // Link system OpenSSL libraries
-    ffi_lib.linkSystemLibrary("ssl");
-    ffi_lib.linkSystemLibrary("crypto");
+    // On macOS, explicitly control the library path to avoid duplicate RPATH entries
+    if (target_os == .macos) {
+        ffi_lib.linkSystemLibrary2("ssl", .{ .use_pkg_config = .force });
+        ffi_lib.linkSystemLibrary2("crypto", .{ .use_pkg_config = .force });
+    } else {
+        ffi_lib.linkSystemLibrary("ssl");
+        ffi_lib.linkSystemLibrary("crypto");
+    }
 
     b.installArtifact(ffi_lib);
 
